@@ -5,13 +5,17 @@ import pytest
 
 from attitude_sim.quaternions import axis_angle_to_quat, quat_to_rotation
 from attitude_sim.sensors import (
+    STAR_FOV_HALF_ANGLE,
     GyroModel,
     VectorSensor,
     arw_si,
+    available_sensors,
     gyro_arw_std,
     gyro_rrw_std,
+    in_fov,
     magnetometer,
     rrw_si,
+    star_tracker,
     sun_sensor,
 )
 
@@ -166,3 +170,33 @@ def test_fov_half_angle_and_zero_boresight_rejected():
         VectorSensor(v_inertial=np.array([1.0, 0.0, 0.0]), fov_half_angle=-0.1)
     with pytest.raises(ValueError, match="boresight"):
         VectorSensor(v_inertial=np.array([1.0, 0.0, 0.0]), boresight_body=np.zeros(3))
+
+
+def test_in_fov_helper_and_available_sensors():
+    z = np.array([0.0, 0.0, 1.0])
+    assert in_fov(z, z, STAR_FOV_HALF_ANGLE)
+    assert not in_fov(np.array([1.0, 0.0, 0.0]), z, STAR_FOV_HALF_ANGLE)
+    assert in_fov(np.array([1.0, 0.0, 0.0]), z, None)
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    mag = magnetometer(sigma=0.0, seed=0)
+    sun = sun_sensor(sigma=0.0, eclipse=True, seed=1)
+    assert [s.name for s in available_sensors([mag, sun], q)] == ["mag"]
+
+
+def test_star_tracker_fov_drops_out_of_cone():
+    star = star_tracker(
+        v_inertial=np.array([1.0, 0.0, 0.0]),
+        sigma=0.0,
+        boresight_body=np.array([0.0, 0.0, 1.0]),
+        seed=0,
+    )
+    assert star.name == "star"
+    assert star.fov_half_angle == pytest.approx(STAR_FOV_HALF_ANGLE)
+    q_id = np.array([1.0, 0.0, 0.0, 0.0])
+    # Identity: star is +x_B, 90° from +z boresight → gated.
+    assert star.measure(q_id) is None
+    assert not star.available(q_id)
+    q_in = axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), np.pi / 2)
+    v_b = star.measure(q_in)
+    assert v_b is not None
+    np.testing.assert_allclose(v_b, [0.0, 0.0, 1.0], atol=1e-12)

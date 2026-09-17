@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from attitude_sim.controls import PID_WN, default_cubesat_inertia
 from attitude_sim.plots import attitude_error_mrp, mrp_error_from_log
 from attitude_sim.quaternions import geodesic_angle, quat_error
 from attitude_sim.scenarios import (
@@ -17,9 +18,17 @@ from attitude_sim.scenarios import (
     resolve_controller,
     resolve_use_env,
     scenario_catalog_text,
+    scenario_cubesat_gains,
     scenario_state,
 )
 from attitude_sim.sim import make_scenario_config, make_sim_disturbances, run_slew
+
+
+def test_scenario_cubesat_gains_match_stock_helpers():
+    report = scenario_cubesat_gains()
+    np.testing.assert_allclose(report.inertia, default_cubesat_inertia())
+    assert report.wn == PID_WN
+    assert report.tau_max == 0.02
 
 
 def test_scenario_names_include_hold_and_eigenaxis():

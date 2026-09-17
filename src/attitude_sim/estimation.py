@@ -27,8 +27,11 @@ covariance on the unit-sphere tangent plane.
 Truth is sampled from the plant ``(q, ω)`` pair returned by
 ``step_rigid_body``; this module does not integrate Euler's equation.
 
-Coarse attitude: ``triad_attitude`` / ``triad_q0_from_sensors`` (Wahba
-TRIAD).  Consistency: ``mekf_error_state``, ``nees``,
+Coarse attitude: ``triad_attitude`` / ``triad_q0_from_sensors`` /
+``try_triad_q0_from_sensors`` (Wahba TRIAD).  Occulted / out-of-FOV
+vector stubs are skipped; fewer than two available measurements
+degrades gracefully (``try_*`` returns ``None``).  Consistency:
+``mekf_error_state``, ``nees``,
 ``chi2_mean_nees_bounds`` (state / NEES) and ``nis``,
 ``mekf_vector_nis``, ``InnovationLog``, ``chi2_mean_nis_bounds``
 (measurement / rank-2 NIS).  See ``docs/estimation.md``.
@@ -214,6 +217,21 @@ def triad_q0_from_sensors(q: np.ndarray, sensors: list[VectorSensor]) -> np.ndar
         raise ValueError("TRIAD coarse init needs two available vector sensors")
     (v_b1, v_I1), (v_b2, v_I2) = pairs
     return triad_attitude(v_b1, v_I1, v_b2, v_I2)
+
+
+def try_triad_q0_from_sensors(
+    q: np.ndarray,
+    sensors: list[VectorSensor],
+) -> np.ndarray | None:
+    """TRIAD from available sensors, or ``None`` if gating leaves fewer than two.
+
+    Occulted / out-of-FOV / parallel-reference failures degrade to
+    ``None`` instead of raising so coarse-init callers can keep ``q_0``.
+    """
+    try:
+        return triad_q0_from_sensors(q, sensors)
+    except ValueError:
+        return None
 
 
 def mekf_error_state(

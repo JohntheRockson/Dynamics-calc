@@ -108,19 +108,29 @@ table defaults.  Negative densities are rejected.  Controller Euclidean
 
 ## Vector measurements
 
-Magnetometer and sun-sensor stubs (`magnetometer`, `sun_sensor`) return
-noisy unit vectors.  Inertial references are **constant** (no IGRF, no
-dipole, no albedo, no AgentCAD).  Optional `bias_body` is a hard-iron /
-boresight offset applied before re-normalization.
+Magnetometer, sun-sensor, and star-tracker stubs (`magnetometer`,
+`sun_sensor`, `star_tracker`) return noisy unit vectors.  Inertial
+references are **constant** (no IGRF, no dipole, no albedo, no AgentCAD).
+Optional `bias_body` is a hard-iron / boresight offset applied before
+re-normalization.
 
 Optional stub flags (not ephemerides):
 
 - `occulted=True` / sun factory `eclipse=True` drops that sample.
   This is a boolean, not an umbra / Earth-occultation geometry model.
-- `fov_half_angle` (rad, default `None` = unlimited) is a cone about
-  `boresight_body` (default body +z).  Gating uses the *true* body-frame
-  direction.  `measure` returns `None` when unavailable;
-  `vectors_from_sensors` skips those samples.
+- `fov_half_angle` (rad, default `None` = unlimited for mag/sun) is a
+  cone about `boresight_body` (default body +z).  Gating uses the *true*
+  body-frame direction:
+
+  \[
+  \text{in FOV} \iff \hat v_b\cdot\hat b_{\mathrm{bore}} \ge \cos\alpha_{\mathrm{FOV}}.
+  \]
+
+  `measure` returns `None` when unavailable; `vectors_from_sensors` and
+  TRIAD skip those samples.
+- `star_tracker` is the same LOS model with a tighter default \(\sigma\)
+  and an 8° half-cone (`STAR_FOV_HALF_ANGLE`).  It is not a lost-in-space
+  quaternion catalog.
 
 Sequential MEKF updates use
 
@@ -140,11 +150,14 @@ Filters in the SimLab **default to the true** \(q_0\) (`SimConfig.coarse_init=Fa
 no `--coarse-init`).  That preserves the current demo.
 
 Optional Wahba TRIAD (`triad_attitude` / `--coarse-init`) builds
-orthonormal triads from two body/inertial pairs (mag then sun) and the
-rotation \(v_I = R(q)\,v_B\).  The first pair is the primary.  Parallel
-references raise; fewer than two *available* sensors falls back to true
-\(q_0\) with a warning.  TRIAD is a lost-in-space *coarse* align, not a
-Davenport q-method / QUEST solver.
+orthonormal triads from two body/inertial pairs (first two *available*
+mag / sun / star stubs) and the rotation \(v_I = R(q)\,v_B\).  The first
+pair is the primary.  Parallel references raise.  Occulted / out-of-FOV
+vectors are dropped; `try_triad_q0_from_sensors` returns `None` when
+fewer than two remain (SimLab warns and keeps true \(q_0\)).  A remaining
+in-FOV star + mag pair still yields TRIAD when the sun is eclipsed.
+TRIAD is a lost-in-space *coarse* align, not a Davenport q-method /
+QUEST solver.
 
 ## MEKF NEES / consistency
 

@@ -129,6 +129,8 @@ Each trial randomizes, within bounds:
 
 It does not rewrite the plant, controllers, or estimators. Failures are counted, not treated as a process error (the command still exits 0 after printing the table). `--help` lists the IC / noise / inertia knobs. Optional Controls knobs on the **same** harness (defaults off): `--tau-dist-max` samples a constant body disturbance, and `--gain-scale-min` / `--gain-scale-max` log-uniformly scale the implemented PID gains or LQR \(K\).
 
+Each trial applies the #38 cubesat helpers (`tune_pid_second_order` / `bryson_lqr_costs` via `cubesat_gain_report` and `cubesat_controller_kwargs`) to the **sampled** inertia so PID \(K_p,K_d,K_i\) and LQR \(Q,R\) match that plant. That is the same path `run_slew` uses; CLI flags are unchanged.
+
 ### Metrics
 
 | Metric | Meaning |
@@ -328,7 +330,14 @@ Default \(Q,R\) are Bryson placeholders (\(1/\theta_{\mathrm{ref}}^{2}\), \(1/\o
 
 See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument and the cubesat-scale **gain / cost tuning report** (`tune_pid_second_order`, `bryson_lqr_costs`, `cubesat_gain_report`).
 
-**Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\). Inertial references stay constant (no IGRF). Optional stub flags: sun `eclipse` / `occulted`, and a FOV half-angle cone about `boresight_body` (`measure` returns `None` when unavailable).
+**Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun / star-tracker stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\). Inertial references stay constant (no IGRF). FOV / eclipse gating:
+
+\[
+\cos\alpha = \hat v_b\cdot\hat b_{\mathrm{bore}},\qquad
+\text{available iff not occulted and }(\alpha_{\mathrm{FOV}}=\emptyset\text{ or }\cos\alpha\ge\cos\alpha_{\mathrm{FOV}}).
+\]
+
+`measure` returns `None` when the sample is unavailable (sun `eclipse` / `occulted`, or outside the half-cone about `boresight_body`). `star_tracker` defaults to an 8° half-cone. TRIAD / MEKF drop gated vectors; fewer than two available pairs degrades to `try_triad_q0_from_sensors → None` (SimLab `--coarse-init` keeps true \(q_0\)).
 
 **Estimation** (`--estimator`; see [docs/estimation.md](docs/estimation.md) for the noise / process-noise / NEES story):
 
@@ -344,6 +353,16 @@ The controller always consumes \((\hat{q},\,\hat{\omega})\) from the selected so
 
 **Actuator** (optional; default unlimited / no lag so prior closed-loop runs match).  After the PID/LQR command, `attitude_sim.actuators` clips each axis to \(\pm\tau_{\max,i}\) (reaction-wheel limits) and can apply a first-order lag \(\dot\tau=(u-\tau)/T\).  Logged \(\tau\) is the applied wheel torque.  CLI: `--actuator-tau-max` (scalar or `x,y,z`) and `--actuator-tau` (seconds).  This is independent of the controller Euclidean \(|\tau|\le\tau_{\max}\) clamp; see [`docs/controls.md`](docs/controls.md).
 
+**Magnetic torquer** (library-only, not a SimLab CLI flag).  `attitude_sim.magnetic` models a three-axis dipole with per-axis \(|m_i|\le m_{\max,i}\):
+
+\[
+m=\frac{B\times\tau_{\mathrm{cmd}}}{\|B\|^{2}},\qquad
+m\leftarrow\mathrm{clip}(m,\,\pm m_{\max}),\qquad
+\tau=m\times B.
+\]
+
+\(\tau\) is always orthogonal to \(B\).  Optional remanent \(m_{\mathrm{res}}\) is handed to the existing residual-dipole disturbance (`residual_dipole_handoff` → `ResidualDipoleTorque`) so commanded and leftover dipoles share \(\tau=m\times B\).
+
 ## Architecture
 
 ```
@@ -351,7 +370,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
                  ↓
             controller (PID | LQR)  →  τ_cmd
                  ↓
-            actuator (per-axis clip, optional lag)  →  τ
+            actuator (wheels: per-axis clip, optional lag; MTQ library: m × B)  →  τ
                  ↓
             + τ_d + τ_env (GG / dipole / aero / SRP; GG+dipole on hold / --env; else default off)
                  ↓
@@ -372,9 +391,10 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.scenarios` | Named closed-loop pack (`slew`, `detumble`, `hold`, `eigenaxis`) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch; `tune_pid_second_order` / `bryson_lqr_costs` |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
-| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels |
-| `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
-| `attitude_sim.estimation` | MEKF and Mahony complementary filter |
+| `attitude_sim.magnetic` | Magnetic torquer \(\tau=m\times B\), per-axis \(\|m\|\) sat, residual-dipole handoff — **not** a SimLab CLI flag |
+| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels, MTQ |
+| `attitude_sim.sensors` | Gyro + unit-vector mag/sun/star models (FOV + eclipse gating) |
+| `attitude_sim.estimation` | MEKF and Mahony complementary filter; TRIAD skips gated vectors |
 | `attitude_sim.sim` | SimLab CLI + `run_sim` / `run_slew`; `--scenario` / `--list-scenarios` |
 | `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`; slew only) |
 | `attitude_sim.plots` | `{scenario}_summary.png`, `{stem}_mrp.png`, `{stem}_env_torque.png`, `{scenario}_attitude.gif`, MC `mc_*.png` |

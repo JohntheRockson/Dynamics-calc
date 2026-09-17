@@ -271,6 +271,38 @@ in \(|\tau|\), then the wheels clip each axis and (optionally) lag.
 PID anti-windup can apply the same `clip_torque` box on the command (`tau_max`)
 so \(K_i\) sees per-axis saturation, not only the Euclidean ball.
 
+## Magnetic torquer (library)
+
+`attitude_sim.magnetic.MagneticTorquer` is **not** a SimLab CLI flag.  A
+body dipole \(m\) in a field \(B\) produces
+
+\[
+\tau = m \times B,
+\]
+
+always orthogonal to \(B\).  Per-axis coil limits \(|m_i|\le m_{\max,i}\)
+use the same clip contract as the wheels.  When a torque is commanded,
+the cross-product allocation is
+
+\[
+m = (B \times \tau_{\mathrm{cmd}}) / \|B\|^{2}
+\]
+
+(\(m=0\) if \(B\approx 0\)), then saturate, then \(\tau=m\times B\).
+Uncommanded remanence `residual_m` is handed to
+`ResidualDipoleTorque` (`residual_dipole_handoff`) so leftover dipole
+uses the existing disturbance model rather than a second \(\tau=m\times B\).
+
+## Monte Carlo / scenario defaults
+
+SimLab `run_slew` and the Monte Carlo harness apply
+`cubesat_controller_kwargs` (from `cubesat_gain_report` /
+`tune_pid_second_order` / `bryson_lqr_costs`) to the **trial** inertia
+before `make_controller`.  On the stock plant the numbers match the
+table above.  Scenario ICs are unchanged; `scenario_cubesat_gains()` is
+the same snapshot.  Existing CLI flags (`--gain-scale-*`,
+`--controller`, …) are unchanged.
+
 ## Eigenaxis slew profile
 
 `attitude_sim.slew.rest_to_rest_eigenaxis` builds a rest-to-rest bang-coast-bang / trapezoidal

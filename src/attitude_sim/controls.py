@@ -827,5 +827,53 @@ def make_controller(mode: str, inertia: np.ndarray, **kwargs) -> PIDAttitudeCont
     raise ValueError(f"unknown controller mode {mode!r}; use 'pid' or 'lqr'")
 
 
+def cubesat_controller_kwargs(
+    mode: str,
+    I_ref: np.ndarray | float | None = None,
+    *,
+    tau_max: float | None = DEFAULT_TORQUE_LIMIT,
+) -> dict[str, np.ndarray]:
+    """PID ``kp,kd,ki`` or LQR ``Q,R`` from :func:`cubesat_gain_report`.
+
+    Used by SimLab / Monte Carlo so trial inertia gets the #38 tune
+    helpers rather than a second copy of the gain formulas.  ``mode`` is
+    ``pid`` or ``lqr``.  On the stock plant the numbers match
+    :func:`make_controller` defaults.
+    """
+    lim = DEFAULT_TORQUE_LIMIT if tau_max is None else float(tau_max)
+    if not np.isfinite(lim) or lim <= 0.0:
+        lim = DEFAULT_TORQUE_LIMIT
+    report = cubesat_gain_report(I_ref, tau_max=lim)
+    name = str(mode).lower()
+    if name == "pid":
+        return {"kp": report.kp, "kd": report.kd, "ki": report.ki}
+    if name in {"lqr", "attitude-lqr", "attitudelqr"}:
+        return {"Q": report.Q, "R": report.R}
+    raise ValueError(f"unknown controller mode {mode!r}; use 'pid' or 'lqr'")
+
+
+def make_cubesat_controller(
+    mode: str,
+    I_ref: np.ndarray | float | None = None,
+    *,
+    gain_scale: float = 1.0,
+    torque_limit: float | None = DEFAULT_TORQUE_LIMIT,
+    **kwargs,
+) -> PIDAttitudeController | LQRAttitudeController:
+    """Build PID/LQR from :func:`cubesat_gain_report` (stock ``wn``, Bryson ``Q,R``).
+
+    Explicit ``kp`` / ``kd`` / ``ki`` / ``Q`` / ``R`` in ``kwargs`` still
+    win.  ``torque_limit`` is forwarded unchanged (including ``None``).
+    """
+    J = default_cubesat_inertia() if I_ref is None else as_inertia_ref(I_ref)
+    tau_for_report = DEFAULT_TORQUE_LIMIT if torque_limit is None else float(torque_limit)
+    tune = cubesat_controller_kwargs(mode, J, tau_max=tau_for_report)
+    for key, value in tune.items():
+        kwargs.setdefault(key, value)
+    kwargs.setdefault("gain_scale", gain_scale)
+    kwargs.setdefault("torque_limit", torque_limit)
+    return make_controller(mode, J, **kwargs)
+
+
 # Public alias used in Controls notes / issue text.
 AttitudeLQR = LQRAttitudeController
