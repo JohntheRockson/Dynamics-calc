@@ -419,12 +419,82 @@ def write_json(path: Path, summary: MonteCarloSummary) -> None:
     path.write_text(json.dumps(summary.as_dict(), indent=2) + "\n")
 
 
+def _as_float(value: object) -> float:
+    if value is None or value == "":
+        return float("nan")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise TypeError(f"cannot convert {type(value).__name__} to float")
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    raise TypeError(f"cannot convert {type(value).__name__} to int")
+
+
+def trial_from_row(row: dict) -> TrialResult:
+    """Rebuild a ``TrialResult`` from CSV/JSON (empty strings are NaN)."""
+    return TrialResult(
+        trial=int(row["trial"]),
+        seed=int(row["seed"]),
+        final_att_error_deg=_as_float(row.get("final_att_error_deg")),
+        settle_time_s=_as_float(row.get("settle_time_s")),
+        peak_torque=_as_float(row.get("peak_torque")),
+        q_norm_err=_as_float(row.get("q_norm_err")),
+        omega0_norm=_as_float(row.get("omega0_norm")),
+        q0_from_identity_deg=_as_float(row.get("q0_from_identity_deg")),
+        noise_scale=_as_float(row.get("noise_scale")),
+        failed=bool(row.get("failed", False)),
+        fail_reason=str(row.get("fail_reason") or ""),
+    )
+
+
+def summary_from_dict(payload: dict) -> MonteCarloSummary:
+    """Rebuild a summary from ``MonteCarloSummary.as_dict`` / JSON."""
+    trials = [trial_from_row(row) for row in payload.get("trials") or []]
+    return MonteCarloSummary(
+        n=_as_int(payload.get("n"), len(trials)),
+        n_fail=_as_int(payload.get("n_fail")),
+        n_nan=_as_int(payload.get("n_nan")),
+        n_non_unit=_as_int(payload.get("n_non_unit")),
+        n_diverged=_as_int(payload.get("n_diverged")),
+        n_settled=_as_int(payload.get("n_settled")),
+        final_err_mean_deg=_as_float(payload.get("final_err_mean_deg")),
+        final_err_median_deg=_as_float(payload.get("final_err_median_deg")),
+        final_err_p95_deg=_as_float(payload.get("final_err_p95_deg")),
+        settle_mean_s=_as_float(payload.get("settle_mean_s")),
+        peak_torque_max=_as_float(payload.get("peak_torque_max")),
+        peak_torque_mean=_as_float(payload.get("peak_torque_mean")),
+        controller=str(payload.get("controller") or ""),
+        estimator=str(payload.get("estimator") or ""),
+        t_final=_as_float(payload.get("t_final")),
+        settle_deg=_as_float(payload.get("settle_deg")),
+        trials=trials,
+    )
+
+
+def summary_from_json(path: Path) -> MonteCarloSummary:
+    return summary_from_dict(json.loads(Path(path).read_text()))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m attitude_sim.monte_carlo",
         description=(
             "Monte Carlo robustness sweep of closed-loop slews "
-            "(randomized IC, sensor noise, optional inertia perturbation)."
+            "(randomized IC, sensor noise, optional inertia perturbation). "
+            "Slew-only: detumble is a SimLab scenario, not part of this harness."
         ),
     )
     p.add_argument("--n", type=int, default=50, help="number of trials")
@@ -463,6 +533,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--csv", type=Path, default=None, help="optional per-trial CSV path")
     p.add_argument("--json", type=Path, default=None, help="optional summary JSON path")
+    p.add_argument(
+        "--from-json",
+        type=Path,
+        default=None,
+        help="load a previous harness JSON (skip running trials; for plots/re-export)",
+    )
+    p.add_argument(
+        "--plot",
+        action="store_true",
+        help="write summary PNGs (histogram + settle-vs-noise scatter) under --out-dir",
+    )
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("outputs"),
+        help="directory for --plot figures (default: outputs/)",
+    )
     return p
 
 
@@ -487,7 +574,10 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    summary = run_monte_carlo(config_from_args(args))
+    if args.from_json is not None:
+        summary = summary_from_json(args.from_json)
+    else:
+        summary = run_monte_carlo(config_from_args(args))
     print(format_summary(summary))
     if args.csv is not None:
         write_csv(args.csv, summary)
@@ -495,6 +585,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.json is not None:
         write_json(args.json, summary)
         print(f"json: {args.json}")
+    if args.plot:
+        from attitude_sim.plots import plot_monte_carlo
+
+        for path in plot_monte_carlo(summary, args.out_dir):
+            print(f"plot: {path}")
     return 0
 
 

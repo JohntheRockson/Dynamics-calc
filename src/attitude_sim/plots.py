@@ -11,6 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import animation
+from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from attitude_sim.quaternions import quat_to_rotation
@@ -117,6 +118,186 @@ def plot_slew(log, path: Path) -> Path:
     fig.savefig(path, dpi=140)
     plt.close(fig)
     return path
+
+
+MC_ERROR_HIST_NAME = "mc_final_att_error_hist.png"
+MC_SETTLE_SCATTER_NAME = "mc_settle_vs_noise.png"
+
+
+def _trial_attr(trial, name: str, default=None):
+    if isinstance(trial, dict):
+        return trial.get(name, default)
+    return getattr(trial, name, default)
+
+
+def _trial_float(trial, name: str) -> float:
+    value = _trial_attr(trial, name, float("nan"))
+    if value is None or value == "":
+        return float("nan")
+    return float(value)
+
+
+def _trial_failed(trial) -> bool:
+    return bool(_trial_attr(trial, "failed", False))
+
+
+def _mc_title(summary) -> str:
+    controller = getattr(summary, "controller", "?")
+    estimator = getattr(summary, "estimator", "?")
+    n = getattr(summary, "n", len(getattr(summary, "trials", []) or []))
+    n_fail = getattr(summary, "n_fail", 0)
+    t_final = getattr(summary, "t_final", float("nan"))
+    t_txt = f"{t_final:g}" if np.isfinite(float(t_final)) else "?"
+    return f"Monte Carlo slew  N={n}  fail={n_fail}  {controller}+{estimator}  t_final={t_txt} s"
+
+
+def plot_mc_error_histogram(summary, path: Path) -> Path:
+    """Histogram of final geodesic attitude error (deg) for healthy trials."""
+    _style()
+    trials = list(getattr(summary, "trials", []) or [])
+    ok = [t for t in trials if not _trial_failed(t)]
+    errs = np.array([_trial_float(t, "final_att_error_deg") for t in ok], dtype=float)
+    errs = errs[np.isfinite(errs)]
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.6), constrained_layout=True)
+    if errs.size:
+        bins = min(24, max(8, int(np.sqrt(errs.size)) + 4))
+        ax.hist(errs, bins=bins, color="#4c78a8", edgecolor="white", linewidth=0.6)
+        mean = getattr(summary, "final_err_mean_deg", float(np.mean(errs)))
+        median = getattr(summary, "final_err_median_deg", float(np.median(errs)))
+        p95 = getattr(summary, "final_err_p95_deg", float(np.percentile(errs, 95)))
+        if np.isfinite(float(mean)):
+            ax.axvline(float(mean), color="#e45756", ls="--", lw=1.4, label=f"mean {mean:.3f}°")
+        if np.isfinite(float(median)):
+            ax.axvline(float(median), color="#f58518", ls="-.", lw=1.4, label=f"median {median:.3f}°")
+        if np.isfinite(float(p95)):
+            ax.axvline(float(p95), color="#54a24b", ls=":", lw=1.6, label=f"p95 {p95:.3f}°")
+        ax.legend(loc="upper right")
+    else:
+        ax.text(0.5, 0.5, "no finite healthy-trial errors", ha="center", va="center", transform=ax.transAxes)
+
+    ax.set_xlabel("final geodesic attitude error (deg)")
+    ax.set_ylabel("trial count")
+    ax.set_title("Final attitude-error histogram")
+    fig.suptitle(_mc_title(summary), fontsize=12)
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def plot_mc_settle_vs_noise(summary, path: Path) -> Path:
+    """Scatter of settle-time proxy vs log-uniform sensor-noise scale."""
+    _style()
+    trials = list(getattr(summary, "trials", []) or [])
+    settle_deg = getattr(summary, "settle_deg", float("nan"))
+    t_final = float(getattr(summary, "t_final", float("nan")))
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.6), constrained_layout=True)
+    n_settled = n_unsettled = n_failed = 0
+    for trial in trials:
+        scale = _trial_float(trial, "noise_scale")
+        settle = _trial_float(trial, "settle_time_s")
+        if not np.isfinite(scale):
+            continue
+        if _trial_failed(trial):
+            ax.scatter(
+                scale,
+                t_final if np.isfinite(t_final) else 0.0,
+                marker="x",
+                c="#e45756",
+                s=36,
+                zorder=3,
+            )
+            n_failed += 1
+            continue
+        if np.isfinite(settle):
+            ax.scatter(
+                scale,
+                settle,
+                marker="o",
+                c="#4c78a8",
+                s=32,
+                edgecolors="k",
+                linewidths=0.3,
+                zorder=2,
+            )
+            n_settled += 1
+        else:
+            y = t_final if np.isfinite(t_final) else 0.0
+            ax.scatter(
+                scale, y, marker="^", c="#f58518", s=40, edgecolors="k", linewidths=0.3, zorder=2
+            )
+            n_unsettled += 1
+
+    handles = []
+    if n_settled:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="#4c78a8",
+                markeredgecolor="k",
+                markersize=7,
+                label="settled",
+            )
+        )
+    if n_unsettled:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="w",
+                markerfacecolor="#f58518",
+                markeredgecolor="k",
+                markersize=8,
+                label="unsettled (at t_final)",
+            )
+        )
+    if n_failed:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="x",
+                color="#e45756",
+                markersize=7,
+                linestyle="None",
+                label="failed",
+            )
+        )
+    if handles:
+        ax.legend(handles=handles, loc="best")
+    if n_settled + n_unsettled + n_failed == 0:
+        ax.text(0.5, 0.5, "no trials to plot", ha="center", va="center", transform=ax.transAxes)
+
+    ax.set_xscale("log")
+    ax.set_xlabel("sensor-noise scale (log-uniform draw)")
+    band = f" (< {settle_deg:g} deg)" if np.isfinite(float(settle_deg)) else ""
+    ax.set_ylabel(f"settle-time proxy{band} (s)")
+    ax.set_title("Settle time vs noise scale")
+    fig.suptitle(_mc_title(summary), fontsize=12)
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def plot_monte_carlo(summary, out_dir: Path) -> list[Path]:
+    """Write the standard Monte Carlo summary PNGs into ``out_dir``."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    return [
+        plot_mc_error_histogram(summary, out / MC_ERROR_HIST_NAME),
+        plot_mc_settle_vs_noise(summary, out / MC_SETTLE_SCATTER_NAME),
+    ]
 
 
 def write_attitude_gif(log, path: Path, fps: int = 20, max_frames: int = 80) -> Path:
