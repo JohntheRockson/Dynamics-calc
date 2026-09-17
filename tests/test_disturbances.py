@@ -188,8 +188,8 @@ def test_tilted_dipole_off_equator_has_radial_component():
     np.testing.assert_allclose(m, [0.0, 0.0, -EARTH_MAG_MOMENT])
     r = np.array([0.0, 0.0, _R])  # geographic pole
     B = dipole_field_eci(r, m)
-    # At the pole, r̂ = ẑ, m = −μ_m ẑ ⇒ B = [3(m·r̂)r̂ − m]/r³ = −2 m / r³ = +2 μ_m/r³ ẑ
-    np.testing.assert_allclose(B, [0.0, 0.0, 2.0 * EARTH_MAG_MOMENT / _R**3])
+    # At the north pole, r̂ = ẑ, m = −μ_m ẑ ⇒ B = [3(m·r̂)r̂ − m]/r³ = −2 μ_m/r³ ẑ
+    np.testing.assert_allclose(B, [0.0, 0.0, -2.0 * EARTH_MAG_MOMENT / _R**3])
     tilted = earth_dipole_field_eci(r, tilt_rad=np.deg2rad(11.5), ra_rad=0.4)
     assert abs(tilted[0]) + abs(tilted[1]) > 1e-8
     assert not np.allclose(tilted, B)
