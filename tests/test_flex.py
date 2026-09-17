@@ -272,8 +272,19 @@ def test_rejects_bad_construction_and_nonfinite_state():
     with pytest.raises(ValueError, match="damping"):
         HingedAppendage(_HUB_J, damping=-0.01)
     plant = _plant()
+    np.testing.assert_allclose(plant.axis, [0.0, 0.0, 1.0])
+    np.testing.assert_allclose(plant.inertia_inv, np.linalg.inv(_HUB_J))
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    omega = np.array([0.1, -0.2, 0.3])
+    h_b = plant.angular_momentum_body(omega, 0.4)
+    h_i = plant.angular_momentum_inertial(q, omega, 0.4)
+    np.testing.assert_allclose(h_i, h_b)
     with pytest.raises(ValueError, match="dt must be positive"):
         step_flex(plant, np.zeros(3), 0.0, 0.0, np.zeros(3), 0.0)
+    with pytest.raises(ValueError, match="finite"):
+        unit_hinge_axis([np.nan, 0.0, 0.0])
+    with pytest.raises(ValueError, match="finite"):
+        plant.omega_dot(np.zeros(3), [np.nan, 0.0, 0.0], 0.0, 0.0)
     with pytest.raises(ValueError, match="finite"):
         plant.omega_dot([np.nan, 0.0, 0.0], np.zeros(3), 0.0, 0.0)
     with pytest.raises(ValueError, match="finite"):
