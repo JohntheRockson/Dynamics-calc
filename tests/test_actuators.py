@@ -204,7 +204,10 @@ def test_dump_unloads_excess_and_pairs_external():
     dt = 0.01
     # Zero attitude command: leftover authority is the full box.
     tau = act.apply(np.zeros(3), dt)
-    expected_dump = momentum_dump_torque(np.array([0.04, 0.0, -0.03]), 0.01, 2.0)
+    expected_dump = clip_torque(
+        momentum_dump_torque(np.array([0.04, 0.0, -0.03]), 0.01, 2.0),
+        0.05,
+    )
     np.testing.assert_allclose(tau, expected_dump)
     np.testing.assert_allclose(act.dump_command, expected_dump)
     np.testing.assert_allclose(act.external_torque, -expected_dump)
@@ -249,8 +252,21 @@ def test_dump_disabled_matches_prior_apply():
 def test_make_actuator_rejects_bad_dump_kwargs():
     with pytest.raises(ValueError, match="dump_gain"):
         make_actuator(h_dump=0.01, dump_gain=-0.5)
+    with pytest.raises(ValueError, match="dump_gain"):
+        make_actuator(h_dump=0.01, dump_gain=float("nan"))
     with pytest.raises(ValueError, match="non-negative"):
         TorqueActuator(h_dump=-0.01)
+
+
+def test_reset_tau0_and_dump_with_lag():
+    act = make_actuator(tau_max=0.05, time_constant=0.05, h_dump=0.01, dump_gain=1.0)
+    act.reset(tau0=np.array([0.01, 0.0, 0.0]), h0=np.array([0.03, 0.0, 0.0]))
+    np.testing.assert_allclose(act.torque, [0.01, 0.0, 0.0])
+    tau = act.apply(np.zeros(3), 0.01)
+    assert np.all(np.abs(tau) <= 0.05 + 1e-12)
+    assert act.momentum[0] < 0.03
+    with pytest.raises(ValueError, match="dt must be positive"):
+        act.apply(np.zeros(3), 0.0)
 
 
 def test_closed_loop_pid_hold_dump_rejects_bias_without_windup():
