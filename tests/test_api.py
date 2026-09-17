@@ -1,0 +1,26 @@
+"""Public package API and packaging smoke."""
+
+import attitude_sim
+
+
+def test_version_and_public_exports():
+    assert attitude_sim.__version__ == "0.1.0"
+    for name in (
+        "MahonyFilter",
+        "ComplementaryFilter",
+        "run_sim",
+        "run_slew",
+        "SimConfig",
+        "SimLog",
+        "make_controller",
+        "make_estimator",
+        "geodesic_angle",
+        "axis_angle_to_quat",
+        "quat_to_rotation",
+        "is_principal",
+    ):
+        assert hasattr(attitude_sim, name)
+    assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
+    assert attitude_sim.run_sim is attitude_sim.run_slew
+    assert "MahonyFilter" in attitude_sim.__all__
+    assert "run_sim" in attitude_sim.__all__

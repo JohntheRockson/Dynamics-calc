@@ -12,6 +12,7 @@ from attitude_sim.quaternions import (
     quat_integrate_const_omega,
     quat_multiply,
     quat_normalize,
+    quat_to_euler321,
     quat_to_rotation,
     rotation_to_quat,
     rotation_vector_error,
@@ -90,3 +91,22 @@ def test_repeated_integration_preserves_unit_norm(n_steps):
         omega = rng.normal(scale=0.4, size=3)
         q = quat_integrate_const_omega(q, omega, 0.05)
     assert abs(np.linalg.norm(q) - 1.0) < 1e-12
+
+
+def test_normalize_zero_quaternion_is_identity():
+    np.testing.assert_allclose(quat_normalize([0.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, 0.0])
+
+
+def test_double_cover_is_same_attitude():
+    q = axis_angle_to_quat(np.array([0.2, 0.5, 0.8]), 0.7)
+    assert geodesic_angle(q, -q) < 1e-15
+    np.testing.assert_allclose(quat_to_rotation(q), quat_to_rotation(-q), atol=1e-15)
+
+
+def test_quat_to_euler321_principal_rotations():
+    ypr_yaw = quat_to_euler321(axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.4))
+    np.testing.assert_allclose(ypr_yaw, [0.4, 0.0, 0.0], atol=1e-12)
+    ypr_pitch = quat_to_euler321(axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), 0.3))
+    np.testing.assert_allclose(ypr_pitch, [0.0, 0.3, 0.0], atol=1e-12)
+    ypr_roll = quat_to_euler321(axis_angle_to_quat(np.array([1.0, 0.0, 0.0]), 0.25))
+    np.testing.assert_allclose(ypr_roll, [0.0, 0.0, 0.25], atol=1e-12)

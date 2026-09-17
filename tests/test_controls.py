@@ -2,6 +2,8 @@
 
 import numpy as np
 
+import pytest
+
 from attitude_sim.controls import (
     DEFAULT_TORQUE_LIMIT,
     LQR_THETA_REF,
@@ -127,3 +129,29 @@ def test_lqr_holds_against_constant_body_disturbance():
     k_theta = float(np.mean(np.diag(lqr.K[:, :3])))
     predicted = np.linalg.norm(tau_dist) / k_theta
     assert abs(err[-1] - predicted) / predicted < 0.25
+
+
+def test_make_controller_unknown_mode():
+    with pytest.raises(ValueError, match="unknown controller"):
+        make_controller("sliding", _inertia())
+
+
+def test_controllers_are_double_cover_invariant():
+    """q and −q are the same attitude; torque must not flip with the cover."""
+    J = _inertia()
+    q = axis_angle_to_quat(np.array([0.2, 0.5, 0.8]), 0.7)
+    q_des = axis_angle_to_quat(np.array([0.1, -0.2, 0.9]), -0.4)
+    omega = np.array([0.05, -0.02, 0.01])
+    pid = PIDAttitudeController(J)
+    lqr = LQRAttitudeController(J)
+    pid.reset()
+    t_pid = pid.command(q, omega, q_des, dt=0.01)
+    pid.reset()
+    t_pid_neg_q = pid.command(-q, omega, q_des, dt=0.01)
+    pid.reset()
+    t_pid_neg_des = pid.command(q, omega, -q_des, dt=0.01)
+    np.testing.assert_allclose(t_pid, t_pid_neg_q, atol=1e-15)
+    np.testing.assert_allclose(t_pid, t_pid_neg_des, atol=1e-15)
+    t_lqr = lqr.command(q, omega, q_des, dt=0.01)
+    np.testing.assert_allclose(t_lqr, lqr.command(-q, omega, q_des, dt=0.01), atol=1e-15)
+    np.testing.assert_allclose(t_lqr, lqr.command(q, omega, -q_des, dt=0.01), atol=1e-15)
