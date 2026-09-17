@@ -44,7 +44,7 @@ Artifacts land in `outputs/slew_summary.png` and `outputs/slew_attitude.gif`.
 pytest
 ```
 
-Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), and a closed-loop slew smoke test (true-state PID/LQR plus control on MEKF / Mahony estimates).
+Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), and a closed-loop slew smoke test (true-state PID/LQR plus control on MEKF / Mahony estimates).
 
 ## Equations
 
@@ -109,12 +109,12 @@ B = \begin{bmatrix} 0 \\ J^{-1} \end{bmatrix},\qquad
 
 where \(K\) is the CARE gain from `scipy.linalg.solve_continuous_are`.
 
-**Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\). Optional magnetometer / sun sensors return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\).
+**Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\).
 
-**Estimation.** Switchable:
+**Estimation.** Switchable (see [docs/estimation.md](docs/estimation.md) for the noise / process-noise story):
 
-- `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with sequential vector updates.
-- `mahony` — complementary SO(3) observer with the same sensors.
+- `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates.
+- `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\).
 - `truth` — full-state feedback (no estimator), for plant/controller checkout.
 
 The controller always consumes \((\hat{q},\,\hat{\omega})\) from the selected source.
