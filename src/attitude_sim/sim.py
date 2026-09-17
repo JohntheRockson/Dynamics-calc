@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from attitude_sim.actuators import make_actuator, parse_tau_max
+from attitude_sim.actuators import DEFAULT_DUMP_GAIN, make_actuator, parse_tau_max
 from attitude_sim.controls import DEFAULT_TORQUE_LIMIT, cubesat_controller_kwargs, make_controller
 from attitude_sim.disturbances import (
     AerodynamicTorque,
@@ -92,6 +92,8 @@ class SimConfig:
     rw_visc: float = 0.0
     rw_coulomb: float = 0.0
     rw_gyroscopic: bool = True
+    actuator_h_dump: float | np.ndarray | None = None
+    actuator_dump_gain: float = DEFAULT_DUMP_GAIN
     tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gravity_gradient: bool = False
     residual_dipole: bool = False
@@ -151,13 +153,14 @@ class SimLog:
     estimator: str
     scenario: str = "slew"
     tau_env: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    h_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    tau_ext: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     plot_path: Path | None = None
     gif_path: Path | None = None
     innovation_csv: Path | None = None
     mean_nis: float | None = None
     mrp_plot_path: Path | None = None
     env_plot_path: Path | None = None
-    h_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     omega_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     rw_tau_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
     rw_h_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
@@ -207,6 +210,8 @@ def make_scenario_config(
     rw_visc: float = 0.0,
     rw_coulomb: float = 0.0,
     rw_gyroscopic: bool = True,
+    actuator_h_dump: float | np.ndarray | None = None,
+    actuator_dump_gain: float = DEFAULT_DUMP_GAIN,
     gravity_gradient: bool = False,
     residual_dipole: bool = False,
     aerodynamic: bool = False,
@@ -283,6 +288,8 @@ def make_scenario_config(
         rw_visc=rw_visc,
         rw_coulomb=rw_coulomb,
         rw_gyroscopic=rw_gyroscopic,
+        actuator_h_dump=actuator_h_dump,
+        actuator_dump_gain=actuator_dump_gain,
         gravity_gradient=gg,
         residual_dipole=rd,
         aerodynamic=aerodynamic,
@@ -447,7 +454,8 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
 
     ``run_sim`` is a public alias — this is not slew-only.  Environmental
     torques from ``make_sim_disturbances`` are added to the plant input after
-    the actuator; ``step_rigid_body`` is unchanged.
+    the actuator, together with an optional dump pairing ``τ_ext``.
+    ``step_rigid_body`` is unchanged.
     """
     cfg = cfg if cfg is not None else SimConfig()
     if cfg.dt <= 0.0:
@@ -476,6 +484,8 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         visc_friction=cfg.rw_visc,
         coulomb_friction=cfg.rw_coulomb,
         gyroscopic=cfg.rw_gyroscopic,
+        h_dump=cfg.actuator_h_dump,
+        dump_gain=cfg.actuator_dump_gain,
     )
     actuator.reset()
 
@@ -566,12 +576,13 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     w_hist = np.zeros((n, 3))
     tau_hist = np.zeros((n, 3))
     tau_env_hist = np.zeros((n, 3))
+    h_wheel_hist = np.zeros((n, 3))
+    tau_ext_hist = np.zeros((n, 3))
     qh_hist = np.zeros((n, 4))
     wh_hist = np.zeros((n, 3))
     rw: ReactionWheelAssembly | None = (
         actuator if isinstance(actuator, ReactionWheelAssembly) else None
     )
-    h_hist = np.zeros((n, 3)) if rw is not None else np.zeros((0, 3))
     ww_hist = np.zeros((n, 3)) if rw is not None else np.zeros((0, 3))
     tau_sat_hist = np.zeros((n, 3), dtype=bool) if rw is not None else np.zeros((0, 3), dtype=bool)
     h_sat_hist = np.zeros((n, 3), dtype=bool) if rw is not None else np.zeros((0, 3), dtype=bool)
@@ -592,8 +603,10 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         tau_cmd = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
         tau = actuator.apply(tau_cmd, cfg.dt, omega=omega)
         tau_hist[k] = tau
+        h_wheel_hist[k] = actuator.momentum
+        if hasattr(actuator, "external_torque"):
+            tau_ext_hist[k] = actuator.external_torque
         if rw is not None:
-            h_hist[k] = rw.momentum
             ww_hist[k] = rw.wheel_speed
             tau_sat_hist[k] = rw.torque_saturated
             h_sat_hist[k] = rw.momentum_saturated
@@ -602,11 +615,16 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
                 env.tau_body(q, omega, float(t[k])), dtype=float
             ).reshape(3)
         # τ[k] is held over [t[k], t[k+1]).  Environmental torque is ZOH at
-        # the left endpoint (same hold as the actuator).  Do not take an extra
-        # unused plant step after the last logged sample.
+        # the left endpoint (same hold as the actuator).  Optional dump
+        # pairing τ_ext cancels the wheel dump on the spacecraft.  Do not
+        # take an extra unused plant step after the last logged sample.
         if k + 1 < n:
             q, omega = step_rigid_body(
-                body, q, omega, tau + tau_dist + tau_env_hist[k], cfg.dt
+                body,
+                q,
+                omega,
+                tau + tau_dist + tau_env_hist[k] + tau_ext_hist[k],
+                cfg.dt,
             )
 
     euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
@@ -636,7 +654,8 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         estimator=cfg.estimator,
         scenario=cfg.scenario,
         tau_env=tau_env_hist,
-        h_wheel=h_hist,
+        h_wheel=h_wheel_hist,
+        tau_ext=tau_ext_hist,
         omega_wheel=ww_hist,
         rw_tau_sat=tau_sat_hist,
         rw_h_sat=h_sat_hist,
@@ -904,6 +923,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the ω×h_w couple from the RW body torque (default: include it)",
     )
     p.add_argument(
+        "--actuator-h-dump",
+        default=None,
+        help=(
+            "wheel-momentum dump threshold [N·m·s]: scalar or x,y,z "
+            "(default: off; dump uses leftover wheel authority after the attitude command)"
+        ),
+    )
+    p.add_argument(
+        "--actuator-dump-gain",
+        type=float,
+        default=DEFAULT_DUMP_GAIN,
+        help="deadzone dump gain [1/s] (default: 1; ignored unless --actuator-h-dump is set)",
+    )
+    p.add_argument(
         "--gyro-sigma-v",
         type=float,
         default=None,
@@ -973,6 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
         actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
         rw_h_max = parse_tau_max(args.rw_h_max, "--rw-h-max")
         rw_inertia = parse_tau_max(args.rw_inertia, "--rw-inertia")
+        actuator_h_dump = parse_tau_max(args.actuator_h_dump, "--actuator-h-dump")
     except ValueError as exc:
         parser.error(str(exc))
     if args.dt <= 0.0:
@@ -983,6 +1017,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--rw-visc must be >= 0")
     if args.rw_coulomb < 0.0:
         parser.error("--rw-coulomb must be >= 0")
+    if args.actuator_dump_gain < 0.0:
+        parser.error("--actuator-dump-gain must be >= 0")
     if args.orbit_radius <= 0.0:
         parser.error("--orbit-radius must be positive")
     if args.panel_area < 0.0:
@@ -1020,6 +1056,8 @@ def main(argv: list[str] | None = None) -> int:
         rw_visc=args.rw_visc,
         rw_coulomb=args.rw_coulomb,
         rw_gyroscopic=not args.rw_no_gyro,
+        actuator_h_dump=actuator_h_dump,
+        actuator_dump_gain=args.actuator_dump_gain,
         gravity_gradient=args.gravity_gradient,
         residual_dipole=args.residual_dipole,
         aerodynamic=args.aerodynamic,

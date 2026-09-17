@@ -346,6 +346,40 @@ table above.  Scenario ICs are unchanged; `scenario_cubesat_gains()` is
 the same snapshot.  Existing CLI flags (`--gain-scale-*`,
 `--controller`, …) are unchanged.
 
+### Wheel-momentum dump
+
+Wheels store the integral of applied torque.  The optional proxy
+
+\[
+\dot h = -\tau,\qquad
+\tau_{\mathrm{dump}} = k\,\mathrm{sign}(h)\,\max\bigl(|h|-h_{\mathrm{dump}},\,0\bigr)
+\]
+
+is a deadzone unload (`momentum_dump_torque`) on `TorqueActuator`.
+\(h_{\mathrm{dump}}=\mathrm{None}\) (the default) tracks \(h\) but applies
+no dump, so prior closed-loop runs match.  When the threshold is set, dump
+is added *after* the PID/LQR command is boxed and uses only leftover
+per-axis authority (`clip_torque` of the sum minus the boxed command).
+That leaves `apply_torque_limits` / PID anti-windup on the attitude
+command alone.  The fuller `ReactionWheelAssembly` path keeps its reserved
+`τ_dump` hook and is not replaced by this proxy.
+
+An equal-and-opposite external torque \(\tau_{\mathrm{ext}}=-\tau_{\mathrm{dump}}\)
+(magnetorquer / thruster stand-in) is paired on the plant so the spacecraft
+net dump is zero.  Logged \(\tau\) is still the wheel torque; SimLab also
+stores \(h\) and \(\tau_{\mathrm{ext}}\).  Constant \(\tau_d\) rejection stays
+on the PID integral (LQR still has no \(K_i\)); dump only unloads the wheels
+that accumulated while holding that bias.
+
+```bash
+python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
+    --tau-dist 0.002,-0.001,0.0008 --actuator-h-dump 0.01 \
+    --actuator-dump-gain 1 --t-final 30 --no-gif
+```
+
+`--actuator-h-dump` is a scalar or `x,y,z` (N·m·s), parsed like
+`--actuator-tau-max`.  Both PID and LQR see the same post-controller dump.
+
 ## Eigenaxis slew profile
 
 `attitude_sim.slew.rest_to_rest_eigenaxis` builds a rest-to-rest bang-coast-bang / trapezoidal

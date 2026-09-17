@@ -26,6 +26,8 @@ def test_parser_defaults_to_slew():
     assert args.rw_visc == 0.0
     assert args.rw_coulomb == 0.0
     assert args.rw_no_gyro is False
+    assert args.actuator_h_dump is None
+    assert args.actuator_dump_gain == 1.0
     assert args.coarse_init is False
     assert args.angle_deg is None
     assert args.env is False
