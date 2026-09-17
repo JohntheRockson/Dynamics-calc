@@ -20,11 +20,13 @@ from attitude_sim.disturbances import (
     SolarRadiationPressureTorque,
 )
 from attitude_sim.estimation import (
+    COARSE_INIT_METHODS,
     ComplementaryFilter,
     InnovationLog,
     MultiplicativeEKF,
+    coarse_q0_from_sensors,
     make_estimator,
-    try_triad_q0_from_sensors,
+    normalize_coarse_init_method,
     vectors_from_sensors,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
@@ -56,6 +58,7 @@ from attitude_sim.sensors import (
 
 DIPOLE_MODELS = ("tilted", "orbit_normal")
 SRP_ECLIPSE_MODES = ("off", "on", "cylindrical")
+COARSE_INIT_METHOD_CHOICES = COARSE_INIT_METHODS
 # LEO-scale circular orbit used only when env-model flags are on.
 # Defaults preserve the prior constant-τ_d-only plant.
 DEFAULT_ORBIT_RADIUS = 7.0e6
@@ -124,6 +127,7 @@ class SimConfig:
     star_fov_half_angle: float | None = None
     star_sigma: float = 5e-5
     coarse_init: bool = False
+    coarse_init_method: str = "triad"
     seed: int = 1
     plot: bool = True
     gif: bool = True
@@ -235,6 +239,7 @@ def make_scenario_config(
     star_fov_half_angle: float | None = None,
     star_sigma: float | None = None,
     coarse_init: bool = False,
+    coarse_init_method: str = "triad",
     gyro_sigma_v: float | None = None,
     gyro_sigma_u: float | None = None,
     mag_sigma: float | None = None,
@@ -260,6 +265,8 @@ def make_scenario_config(
     ``hold`` (or ``--env``) turns GG + residual dipole on with a demo-scale
     residual dipole.  ``--no-env`` turns GG/dipole off.  Orbit / dipole /
     panel knobs are stored even when the models are off.
+    ``coarse_init`` stays false (true ``q_0`` demo).  ``coarse_init_method``
+    is ``triad`` unless QUEST / Davenport is requested.
     """
     q0, omega0, q_des = scenario_state(scenario, angle_deg=angle_deg)
     name = scenario.lower()
@@ -303,6 +310,7 @@ def make_scenario_config(
         sun_fov_half_angle=sun_fov_half_angle,
         star_fov_half_angle=star_fov_half_angle,
         coarse_init=coarse_init,
+        coarse_init_method=coarse_init_method,
         seed=seed,
         plot=plot,
         gif=gif,
@@ -332,6 +340,7 @@ def make_scenario_config(
         cfg.srp_cr = float(srp_cr)
     if srp_eclipse is not None:
         cfg.srp_eclipse = str(srp_eclipse)
+    cfg.coarse_init_method = normalize_coarse_init_method(cfg.coarse_init_method)
     if gyro_sigma_v is not None:
         cfg.gyro_sigma_v = float(gyro_sigma_v)
     if gyro_sigma_u is not None:
@@ -496,8 +505,8 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     env = make_sim_disturbances(cfg)
 
     # Full-state feedback does not consume measurements. Skip gyro / vector
-    # construction and sampling so the truth path stays cheap. Coarse TRIAD
-    # init only applies when an estimator will run.
+    # construction and sampling so the truth path stays cheap. Coarse TRIAD /
+    # QUEST / Davenport init only applies when an estimator will run.
     gyro: GyroModel | None = None
     sensors: list[VectorSensor] = []
     q_est0 = q
@@ -538,18 +547,18 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
                 )
             )
         if cfg.coarse_init:
-            q_triad = try_triad_q0_from_sensors(q, sensors)
-            if q_triad is None:
+            method = normalize_coarse_init_method(cfg.coarse_init_method)
+            try:
+                q_est0 = coarse_q0_from_sensors(q, sensors, method=method)
+            except ValueError as exc:
                 warnings.warn(
-                    "coarse TRIAD init skipped (fewer than two available "
-                    "vector sensors after FOV/eclipse gating); "
-                    "estimator starts at true q0",
+                    f"coarse {method.upper()} init skipped ({exc}; "
+                    "fewer than two available vector sensors after "
+                    "FOV/eclipse gating); estimator starts at true q0",
                     UserWarning,
                     stacklevel=2,
                 )
                 q_est0 = q
-            else:
-                q_est0 = q_triad
     estimator = make_sim_estimator(cfg, q_est0)
     if estimator is not None and not sensors:
         warnings.warn(
@@ -760,8 +769,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--coarse-init",
         action="store_true",
         help=(
-            "TRIAD coarse attitude from mag+sun at t=0 so MEKF/Mahony need not "
-            "start at true q0 (default: start at true q0, current demo)"
+            "coarse attitude from mag+sun at t=0 so MEKF/Mahony need not "
+            "start at true q0 (default: start at true q0, current demo). "
+            "Solver is --coarse-init-method (default TRIAD)"
+        ),
+    )
+    p.add_argument(
+        "--coarse-init-method",
+        choices=COARSE_INIT_METHOD_CHOICES,
+        default="triad",
+        help=(
+            "Wahba solver used with --coarse-init: triad (default, two-vector), "
+            "quest, or davenport (q-method; both use all available vectors)"
         ),
     )
     p.add_argument("--seed", type=int, default=1, help="RNG seed for sensors")
@@ -1075,6 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         coarse_init=args.coarse_init,
+        coarse_init_method=args.coarse_init_method,
         gyro_sigma_v=args.gyro_sigma_v,
         gyro_sigma_u=args.gyro_sigma_u,
         mag_sigma=args.mag_sigma,
