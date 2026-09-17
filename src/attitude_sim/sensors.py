@@ -37,6 +37,11 @@ Optional stub realism (flags only, not ephemerides):
   body-frame direction, not the noisy measurement.
 ``measure`` returns ``None`` when the sample is unavailable so estimators
 skip that vector on that step.
+
+A star-tracker factory (:func:`star_tracker`) is the same unit-vector
+stub with a tighter Cartesian ``sigma`` and a default ~8° half-cone FOV
+(catalog LOS, not a lost-in-space quaternion).  TRIAD / coarse attitude
+drop gated vectors and degrade when fewer than two remain.
 """
 
 from __future__ import annotations
@@ -49,6 +54,10 @@ from attitude_sim.quaternions import quat_to_rotation
 
 # deg/√hr → rad/√s = rad/s/√Hz  (divide by √3600 = 60)
 _DEG_SQRT_HR_TO_SI = np.deg2rad(1.0) / 60.0
+# Typical cubesat star-tracker half-cone (rad).  ``None`` on mag/sun keeps
+# the unlimited demo FOV; star-tracker factory defaults to this cone.
+STAR_FOV_HALF_ANGLE = float(np.deg2rad(8.0))
+STAR_SIGMA = 5e-5
 
 
 def arw_si(deg_per_sqrt_hr: float) -> float:
@@ -79,6 +88,30 @@ def _as_rng(seed: int | np.random.Generator | None) -> np.random.Generator:
     if isinstance(seed, np.random.Generator):
         return seed
     return np.random.default_rng(seed)
+
+
+def in_fov(
+    v_body: np.ndarray,
+    boresight_body: np.ndarray,
+    fov_half_angle: float | None,
+) -> bool:
+    """True if ``v_body`` lies inside the half-cone about ``boresight_body``.
+
+    ``fov_half_angle is None`` is unlimited (always in FOV).  A zero or
+    vanishing ``v_body`` is out of FOV.  Half-angle is in radians.
+    """
+    if fov_half_angle is None:
+        return True
+    half = float(fov_half_angle)
+    if half < 0.0:
+        raise ValueError("fov_half_angle must be >= 0")
+    v = np.asarray(v_body, dtype=float).reshape(3)
+    b = np.asarray(boresight_body, dtype=float).reshape(3)
+    vn = float(np.linalg.norm(v))
+    bn = float(np.linalg.norm(b))
+    if vn < 1e-15 or bn < 1e-15:
+        return False
+    return float(np.dot(v / vn, b / bn)) >= float(np.cos(half))
 
 
 @dataclass
@@ -173,15 +206,9 @@ class VectorSensor:
         """True unless occulted or the true body vector is outside the FOV cone."""
         if self.occulted:
             return False
-        if self.fov_half_angle is None:
-            return True
         R = quat_to_rotation(q)
         v_b = R.T @ self.v_inertial
-        vn = float(np.linalg.norm(v_b))
-        if vn < 1e-15:
-            return False
-        cosine = float(np.dot(v_b / vn, self.boresight_body))
-        return cosine >= float(np.cos(self.fov_half_angle))
+        return in_fov(v_b, self.boresight_body, self.fov_half_angle)
 
     def measure(self, q: np.ndarray) -> np.ndarray | None:
         if not self.available(q):
@@ -193,6 +220,11 @@ class VectorSensor:
         if n < 1e-15:
             return np.array([1.0, 0.0, 0.0])
         return v_b / n
+
+
+def available_sensors(sensors: list[VectorSensor], q: np.ndarray) -> list[VectorSensor]:
+    """Return sensors whose sample is not occulted / out of FOV at ``q``."""
+    return [s for s in sensors if s.available(q)]
 
 
 def magnetometer(
@@ -248,4 +280,38 @@ def sun_sensor(
         ),
         fov_half_angle=fov_half_angle,
         occulted=eclipse,
+    )
+
+
+def star_tracker(
+    v_inertial: np.ndarray | None = None,
+    sigma: float = STAR_SIGMA,
+    bias_body: np.ndarray | None = None,
+    seed: int | np.random.Generator | None = None,
+    fov_half_angle: float | None = STAR_FOV_HALF_ANGLE,
+    boresight_body: np.ndarray | None = None,
+    occulted: bool = False,
+) -> VectorSensor:
+    """Star-tracker line-of-sight stub (catalog unit vector + FOV cone).
+
+    Same ``v_b = R(q)ᵀ v_I`` model as mag/sun.  Default ``sigma`` is
+    tighter than the sun stub; default FOV is an 8° half-cone about
+    ``boresight_body`` (body +z).  Out-of-FOV / ``occulted`` samples
+    return ``None`` so TRIAD / MEKF drop that vector.  This is not a
+    lost-in-space quaternion star catalog.
+    """
+    if v_inertial is None:
+        # Distinct from default mag / sun so TRIAD pairs stay well conditioned.
+        v_inertial = np.array([0.15, 0.85, 0.50])
+    return VectorSensor(
+        v_inertial=v_inertial,
+        sigma=sigma,
+        bias_body=np.zeros(3) if bias_body is None else bias_body,
+        seed=seed,
+        name="star",
+        boresight_body=(
+            np.array([0.0, 0.0, 1.0]) if boresight_body is None else boresight_body
+        ),
+        fov_half_angle=fov_half_angle,
+        occulted=occulted,
     )

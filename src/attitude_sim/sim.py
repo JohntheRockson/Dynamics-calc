@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from attitude_sim.actuators import make_actuator, parse_tau_max
-from attitude_sim.controls import make_controller
+from attitude_sim.controls import DEFAULT_TORQUE_LIMIT, cubesat_controller_kwargs, make_controller
 from attitude_sim.disturbances import (
     AerodynamicTorque,
     CircularOrbit,
@@ -24,7 +24,7 @@ from attitude_sim.estimation import (
     InnovationLog,
     MultiplicativeEKF,
     make_estimator,
-    triad_q0_from_sensors,
+    try_triad_q0_from_sensors,
     vectors_from_sensors,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
@@ -44,7 +44,14 @@ from attitude_sim.scenarios import (
     scenario_catalog_text,
     scenario_state,
 )
-from attitude_sim.sensors import GyroModel, VectorSensor
+from attitude_sim.sensors import (
+    STAR_FOV_HALF_ANGLE,
+    GyroModel,
+    VectorSensor,
+    magnetometer,
+    star_tracker,
+    sun_sensor,
+)
 
 DIPOLE_MODELS = ("tilted", "orbit_normal")
 SRP_ECLIPSE_MODES = ("off", "on", "cylindrical")
@@ -102,6 +109,12 @@ class SimConfig:
     sun_sigma: float = 2e-3
     use_mag: bool = True
     use_sun: bool = True
+    use_star: bool = False
+    sun_eclipse: bool = False
+    mag_fov_half_angle: float | None = None
+    sun_fov_half_angle: float | None = None
+    star_fov_half_angle: float | None = None
+    star_sigma: float = 5e-5
     coarse_init: bool = False
     seed: int = 1
     plot: bool = True
@@ -171,6 +184,12 @@ def make_scenario_config(
     srp_eclipse: str | None = None,
     use_mag: bool = True,
     use_sun: bool = True,
+    use_star: bool = False,
+    sun_eclipse: bool = False,
+    mag_fov_half_angle: float | None = None,
+    sun_fov_half_angle: float | None = None,
+    star_fov_half_angle: float | None = None,
+    star_sigma: float | None = None,
     coarse_init: bool = False,
     gyro_sigma_v: float | None = None,
     gyro_sigma_u: float | None = None,
@@ -227,6 +246,11 @@ def make_scenario_config(
         mrp_plot=write_mrp,
         use_mag=use_mag,
         use_sun=use_sun,
+        use_star=use_star,
+        sun_eclipse=sun_eclipse,
+        mag_fov_half_angle=mag_fov_half_angle,
+        sun_fov_half_angle=sun_fov_half_angle,
+        star_fov_half_angle=star_fov_half_angle,
         coarse_init=coarse_init,
         seed=seed,
         plot=plot,
@@ -265,6 +289,8 @@ def make_scenario_config(
         cfg.mag_sigma = float(mag_sigma)
     if sun_sigma is not None:
         cfg.sun_sigma = float(sun_sigma)
+    if star_sigma is not None:
+        cfg.star_sigma = float(star_sigma)
     if log_innovations is not None:
         cfg.log_innovations = Path(log_innovations)
     return cfg
@@ -386,11 +412,16 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         raise ValueError("t_final must be non-negative")
     rng = np.random.default_rng(cfg.seed)
     body = RigidBody(cfg.inertia)
+    tau_for_tune = (
+        DEFAULT_TORQUE_LIMIT if cfg.torque_limit is None else float(cfg.torque_limit)
+    )
+    tune = cubesat_controller_kwargs(cfg.controller, cfg.inertia, tau_max=tau_for_tune)
     ctrl = make_controller(
         cfg.controller,
         cfg.inertia,
         torque_limit=cfg.torque_limit,
         gain_scale=cfg.gain_scale,
+        **tune,
     )
     ctrl.reset()
     actuator = make_actuator(tau_max=cfg.actuator_tau_max, time_constant=cfg.actuator_tau)
@@ -417,32 +448,46 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         )
         if cfg.use_mag:
             sensors.append(
-                VectorSensor(
-                    v_inertial=np.array([0.3, 0.1, 0.95]),
+                magnetometer(
                     sigma=cfg.mag_sigma,
                     seed=rng,
-                    name="mag",
+                    fov_half_angle=cfg.mag_fov_half_angle,
                 )
             )
         if cfg.use_sun:
             sensors.append(
-                VectorSensor(
-                    v_inertial=np.array([1.0, 0.05, 0.02]),
+                sun_sensor(
                     sigma=cfg.sun_sigma,
                     seed=rng,
-                    name="sun",
+                    eclipse=cfg.sun_eclipse,
+                    fov_half_angle=cfg.sun_fov_half_angle,
+                )
+            )
+        if cfg.use_star:
+            sensors.append(
+                star_tracker(
+                    sigma=cfg.star_sigma,
+                    seed=rng,
+                    fov_half_angle=(
+                        STAR_FOV_HALF_ANGLE
+                        if cfg.star_fov_half_angle is None
+                        else float(cfg.star_fov_half_angle)
+                    ),
                 )
             )
         if cfg.coarse_init:
-            try:
-                q_est0 = triad_q0_from_sensors(q, sensors)
-            except ValueError as exc:
+            q_triad = try_triad_q0_from_sensors(q, sensors)
+            if q_triad is None:
                 warnings.warn(
-                    f"coarse TRIAD init skipped ({exc}); estimator starts at true q0",
+                    "coarse TRIAD init skipped (fewer than two available "
+                    "vector sensors after FOV/eclipse gating); "
+                    "estimator starts at true q0",
                     UserWarning,
                     stacklevel=2,
                 )
                 q_est0 = q
+            else:
+                q_est0 = q_triad
     estimator = make_sim_estimator(cfg, q_est0)
     if estimator is not None and not sensors:
         warnings.warn(

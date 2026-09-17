@@ -16,11 +16,13 @@ from attitude_sim.controls import (
     as_inertia_ref,
     bryson_lqr_costs,
     bryson_lqr_weights,
+    cubesat_controller_kwargs,
     cubesat_gain_report,
     default_cubesat_inertia,
     design_attitude_lqr,
     is_spd,
     lqr_second_order_equiv,
+    make_cubesat_controller,
     pid_gains_from_wn,
     recommended_pid_wn,
     tune_pid_second_order,
@@ -193,6 +195,22 @@ def test_tuned_gains_settle_small_eigenaxis():
     assert err_lqr[-1] < 0.05 * err_lqr[0]
     # Full PID still shrinks the error; the slow Ki mode is moving at 12 s.
     assert err_pid[-1] < 0.5 * err_pid[0]
+
+
+def test_make_cubesat_controller_matches_report():
+    J = _inertia()
+    pid_kw = cubesat_controller_kwargs("pid", J)
+    lqr_kw = cubesat_controller_kwargs("lqr", J)
+    np.testing.assert_allclose(pid_kw["kp"], 2.0 * (PID_WN**2) * J)
+    Q, R = bryson_lqr_costs()
+    np.testing.assert_allclose(lqr_kw["Q"], Q)
+    np.testing.assert_allclose(lqr_kw["R"], R)
+    pid = make_cubesat_controller("pid", J)
+    np.testing.assert_allclose(pid.kp, pid_kw["kp"])
+    lqr = make_cubesat_controller("lqr", J)
+    np.testing.assert_allclose(lqr.Q, Q)
+    with pytest.raises(ValueError, match="unknown controller"):
+        cubesat_controller_kwargs("nope", J)
 
 
 def test_is_spd_rejects_indefinite():

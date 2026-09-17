@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from attitude_sim.controls import PID_WN, cubesat_gain_report
 from attitude_sim.estimation import MultiplicativeEKF
 from attitude_sim.monte_carlo import (
     FAIL_DIVERGED,
@@ -76,6 +77,16 @@ def test_parser_defaults():
     assert args.gyro_sigma_u is None
     assert args.mag_sigma is None
     assert args.sun_sigma is None
+
+
+def test_sample_trial_config_wires_cubesat_tune_helpers():
+    """MC snapshots #38 cubesat_gain_report on the trial inertia."""
+    mc = MonteCarloConfig(n=1, seed=0, inertia_frac=0.0, torque_limit=0.02)
+    cfg, extras = sample_trial_config(mc, 0, np.random.default_rng(0))
+    report = cubesat_gain_report(cfg.inertia, tau_max=0.02)
+    assert extras["cubesat_wn"] == pytest.approx(PID_WN)
+    assert extras["cubesat_recommended_wn"] == pytest.approx(report.recommended_wn)
+    assert extras["cubesat_kp_00"] == pytest.approx(report.kp[0, 0])
 
 
 def test_sample_trial_config_scales_base_sensor_noise():

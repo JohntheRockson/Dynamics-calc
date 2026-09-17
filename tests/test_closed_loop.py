@@ -267,6 +267,22 @@ def test_coarse_init_without_two_sensors_warns_and_keeps_true_q0():
     assert np.rad2deg(log.est_att_error[0]) < 2.0
 
 
+def test_coarse_init_sun_eclipse_falls_back_without_star():
+    q0 = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.5)
+    with pytest.warns(UserWarning, match="FOV/eclipse gating"):
+        log = run_slew(
+            _cfg(
+                q0=q0,
+                estimator="mekf",
+                t_final=0.03,
+                coarse_init=True,
+                sun_eclipse=True,
+            )
+        )
+    assert log.est_att_error is not None
+    assert np.rad2deg(log.est_att_error[0]) < 2.0
+
+
 def test_make_sim_disturbances_default_off():
     env = make_sim_disturbances(SimConfig())
     assert env is None

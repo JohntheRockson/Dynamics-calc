@@ -17,6 +17,7 @@ from attitude_sim.estimation import (
     nees,
     triad_attitude,
     triad_q0_from_sensors,
+    try_triad_q0_from_sensors,
     vectors_from_sensors,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
@@ -28,7 +29,7 @@ from attitude_sim.quaternions import (
     quat_normalize,
     quat_to_rotation,
 )
-from attitude_sim.sensors import GyroModel, magnetometer, sun_sensor
+from attitude_sim.sensors import GyroModel, magnetometer, star_tracker, sun_sensor
 from attitude_sim.sim import default_inertia
 
 
@@ -286,6 +287,45 @@ def test_triad_q0_needs_two_available_sensors():
         triad_q0_from_sensors(q, [mag, sun])
     with pytest.raises(ValueError, match="two available"):
         triad_q0_from_sensors(q, [mag])
+
+
+def test_triad_drops_gated_vectors_and_degrades_gracefully():
+    """FOV / eclipse masks drop vectors; TRIAD uses remaining pair or None."""
+    q_true = axis_angle_to_quat(np.array([0.2, 0.5, 0.8]), 0.6)
+    mag = magnetometer(sigma=0.0, seed=0)
+    sun = sun_sensor(sigma=0.0, eclipse=True, seed=1)
+    # Star in FOV: rotate so +z boresight looks at the default catalog LOS.
+    star = star_tracker(sigma=0.0, seed=2)
+    # Default star inertial is not along +z at identity; force a pair that is
+    # in FOV by pointing boresight at the catalog vector in the body frame.
+    R = quat_to_rotation(q_true)
+    v_b_star = R.T @ star.v_inertial
+    star_in = star_tracker(
+        v_inertial=star.v_inertial,
+        sigma=0.0,
+        boresight_body=v_b_star,
+        fov_half_angle=np.deg2rad(8.0),
+        seed=2,
+    )
+    star_out = star_tracker(
+        v_inertial=star.v_inertial,
+        sigma=0.0,
+        boresight_body=np.array([0.0, 0.0, 1.0]),
+        fov_half_angle=np.deg2rad(1.0),
+        seed=3,
+    )
+    # Sun eclipsed → dropped; mag + in-FOV star still gives TRIAD.
+    q_hat = try_triad_q0_from_sensors(q_true, [mag, sun, star_in])
+    assert q_hat is not None
+    assert geodesic_angle(q_hat, q_true) < 1e-10
+    vecs = vectors_from_sensors(q_true, [mag, sun, star_in])
+    names = [row[3] for row in vecs]
+    assert "sun" not in names
+    assert "mag" in names and "star" in names
+
+    # Sun eclipsed and star out of FOV → only mag remains → graceful None.
+    assert try_triad_q0_from_sensors(q_true, [mag, sun, star_out]) is None
+    assert "star" not in [row[3] for row in vectors_from_sensors(q_true, [star_out])]
 
 
 def test_mekf_error_state_matches_right_multiply_inject():

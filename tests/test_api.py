@@ -19,6 +19,12 @@ def test_version_and_public_exports():
         "tune_pid_second_order",
         "bryson_lqr_costs",
         "cubesat_gain_report",
+        "cubesat_controller_kwargs",
+        "make_cubesat_controller",
+        "MagneticTorquer",
+        "magnetic_torque",
+        "clip_dipole",
+        "try_triad_q0_from_sensors",
         "make_estimator",
         "geodesic_angle",
         "axis_angle_to_quat",
@@ -81,6 +87,9 @@ def test_version_and_public_exports():
     assert "tune_pid_second_order" in attitude_sim.__all__
     assert "bryson_lqr_costs" in attitude_sim.__all__
     assert "cubesat_gain_report" in attitude_sim.__all__
+    assert "MagneticTorquer" in attitude_sim.__all__
+    assert "try_triad_q0_from_sensors" in attitude_sim.__all__
+    assert "make_cubesat_controller" in attitude_sim.__all__
     assert "inertial_torque" in attitude_sim.__all__
     assert "trapezoid_inertial_impulse" in attitude_sim.__all__
     assert "SCENARIOS" in attitude_sim.__all__

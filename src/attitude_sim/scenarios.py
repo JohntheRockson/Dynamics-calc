@@ -34,6 +34,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
+from attitude_sim.controls import DEFAULT_TORQUE_LIMIT, CubesatGainReport, cubesat_gain_report
 from attitude_sim.disturbances import (
     CircularOrbit,
     EnvironmentalTorques,
@@ -86,6 +87,19 @@ SCENARIO_BLURBS: Mapping[str, str] = {
     "hold": "identity hold under EnvironmentalTorques (GG + demo-scale residual dipole, default PID)",
     "eigenaxis": "principal-axis (body z) rest-to-rest slew (default LQR, --angle-deg default 30)",
 }
+
+
+def scenario_cubesat_gains(
+    inertia: np.ndarray | None = None,
+    *,
+    tau_max: float = DEFAULT_TORQUE_LIMIT,
+) -> CubesatGainReport:
+    """PID / LQR numbers used by SimLab and Monte Carlo defaults (#38 helpers).
+
+    Does not change scenario ICs; ``run_slew`` / MC apply the same report
+    to the (possibly perturbed) plant inertia.
+    """
+    return cubesat_gain_report(inertia, tau_max=tau_max)
 
 
 def default_t_final(scenario: str) -> float:

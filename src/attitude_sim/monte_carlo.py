@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from attitude_sim.controls import cubesat_gain_report
 from attitude_sim.plant import inertia_from_principal, principal_moments_and_axes
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
 from attitude_sim.sim import (
@@ -295,6 +296,9 @@ def sample_trial_config(
         gain_scale = log_uniform(rng, lo, hi)
     cfg.gain_scale = gain_scale
 
+    # #38 cubesat helpers: SimLab run_slew applies tune_pid_second_order /
+    # bryson_lqr_costs via cubesat_controller_kwargs on this trial inertia.
+    report = cubesat_gain_report(inertia, tau_max=float(mc.torque_limit))
     extras = {
         "noise_scale": float(noise_scale),
         "omega0_norm": float(np.linalg.norm(omega0)),
@@ -303,6 +307,9 @@ def sample_trial_config(
         ),
         "gain_scale": float(gain_scale),
         "tau_dist_norm": float(tau_dist_norm),
+        "cubesat_wn": float(report.wn),
+        "cubesat_recommended_wn": float(report.recommended_wn),
+        "cubesat_kp_00": float(report.kp[0, 0]),
     }
     return cfg, extras
 
