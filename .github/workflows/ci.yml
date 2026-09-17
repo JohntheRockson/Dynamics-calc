@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+env:
+  MPLBACKEND: Agg
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   pytest:
@@ -13,7 +18,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install package
         run: pip install -e ".[dev]"
       - name: Run unit tests
-        run: pytest
+        run: pytest -v --tb=short
+      - name: CLI smoke (both scenarios)
+        run: |
+          python -m attitude_sim --scenario slew --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
