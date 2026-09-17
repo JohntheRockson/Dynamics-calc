@@ -117,7 +117,6 @@ def test_gg_spherical_inertia_is_identically_zero():
 def test_gg_independent_of_omega_and_orthogonal_to_zenith():
     J = np.diag([0.05, 0.06, 0.07])
     q = quat_normalize([0.4, 0.3, 0.2, 0.8])
-    state = _equatorial_state(0.7)
     gg = GravityGradientTorque(J, orbit=CircularOrbit(radius=_R))
     t = 12.0
     tau_a = gg.tau_body(q, np.zeros(3), t)
