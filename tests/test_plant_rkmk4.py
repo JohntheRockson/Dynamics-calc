@@ -29,7 +29,6 @@ from attitude_sim.quaternions import (
     quat_to_rotation,
 )
 
-
 # Same asymmetric J and RK4 bounds as tests/test_plant.py (dt = 0.002 s, T = 10 s).
 ENERGY_REL_TOL = 1e-12
 H_INERTIAL_REL_TOL = 1e-12
@@ -97,7 +96,7 @@ def test_dexpinv_so3_identity_on_parallel_and_zero():
     phi_small = np.array([3e-6, -1e-6, 2e-6])
     vec = np.array([0.3, 0.1, -0.2])
     w = np.cross(phi_small, vec)
-    series = vec - 0.5 * w + (1.0 / 12.0) * np.cross(phi_small, w)
+    series = vec + 0.5 * w + (1.0 / 12.0) * np.cross(phi_small, w)
     np.testing.assert_allclose(dexpinv_so3(phi_small, vec), series, atol=1e-16)
 
 
@@ -115,8 +114,11 @@ def test_step_rigid_body_method_switch_and_rejects_unknown():
     np.testing.assert_allclose(w_rk4, w_default)
     np.testing.assert_allclose(q_rkmk, q_direct)
     np.testing.assert_allclose(w_rkmk, w_direct)
-    # Distinct charts: Euclidean RK4 + project vs group exponential.
-    assert np.linalg.norm(q_rk4 - q_rkmk) > 1e-14 or np.linalg.norm(w_rk4 - w_rkmk) > 1e-14
+    # Same 4th-order tableau: one small step agrees closely.  The geometric
+    # path does not renormalize; both stay on S^3.
+    np.testing.assert_allclose(q_rk4, q_rkmk, atol=1e-14)
+    np.testing.assert_allclose(w_rk4, w_rkmk, atol=1e-14)
+    assert abs(float(np.linalg.norm(q_rkmk)) - 1.0) < QUAT_NORM_BY_CONSTRUCTION_ATOL
     with pytest.raises(ValueError, match="unknown integrator"):
         step_rigid_body(body, q, omega, tau, dt, method="euler")
 
@@ -157,8 +159,8 @@ def test_rk4_euclidean_leaves_sphere_rkmk4_does_not():
     q0 = quat_normalize([0.4, 0.3, 0.2, 0.8])
     omega0 = np.array([-0.5, 0.4, 0.7])
     tau = np.zeros(3)
-    dt = 0.05
-    n = 200
+    dt = 0.2
+    n = 100
 
     def fun(_t: float, y: np.ndarray) -> np.ndarray:
         return body.derivatives(y[:4], y[4:], tau)

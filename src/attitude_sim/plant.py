@@ -105,10 +105,11 @@ The exponential ``Exp: R³ → S³`` (rotation vector → unit quaternion) is
 and is unit by construction (``cos²(θ/2) + sin²(θ/2) = 1``).  The inverse
 exponential differential on so(3) is
 
-    dexp⁻¹_φ(v) = v − ½ φ×v
+    dexp⁻¹_φ(v) = v + ½ φ×v
                   + [1 − (θ/2) cot(θ/2)] / θ²  ·  φ×(φ×v)
 
-with the small-θ series ``v − ½ φ×v + (1/12) φ×(φ×v)``.  Euler's equation
+with the small-θ series ``v + ½ φ×v + (1/12) φ×(φ×v)`` (right-trivialized,
+matching ``q̇ = (1/2) q ⊗ ω̂``).  Euler's equation
 lives in Euclidean R³, so the same RK4 tableau applies directly to ``ω``.
 Unlike classical RK4, RKMK4 does **not** renormalize ``q``.
 
@@ -399,13 +400,14 @@ def so3_quat_exp(phi: np.ndarray) -> np.ndarray:
 def dexpinv_so3(phi: np.ndarray, vec: np.ndarray) -> np.ndarray:
     """Right-trivialized ``dexp⁻¹_φ(v)`` on so(3).
 
-        dexp⁻¹_φ(v) = v − ½ φ×v
+        dexp⁻¹_φ(v) = v + ½ φ×v
                       + [1 − (θ/2) cot(θ/2)] / θ²  ·  φ×(φ×v)
 
-    with ``θ = ||φ||``.  The small-θ series (Bernoulli truncation used by
-    classical RKMK4) is
+    with ``θ = ||φ||``.  The sign of the linear commutator is the
+    *right*-trivialized convention (``q̇ = (1/2) q ⊗ ω̂`` / ``Ṙ = R ω̂``).
+    The small-θ series (Bernoulli truncation used by classical RKMK4) is
 
-        v − ½ φ×v + (1/12) φ×(φ×v).
+        v + ½ φ×v + (1/12) φ×(φ×v).
 
     When ``v`` is parallel to ``φ``, the cross terms vanish and the map is
     the identity, so a constant body rate is integrated exactly.
@@ -415,13 +417,13 @@ def dexpinv_so3(phi: np.ndarray, vec: np.ndarray) -> np.ndarray:
     theta = float(np.linalg.norm(phi))
     w = np.cross(phi, vec)
     if theta < _DEXP_SERIES_EPS:
-        return vec - 0.5 * w + (1.0 / 12.0) * np.cross(phi, w)
+        return vec + 0.5 * w + (1.0 / 12.0) * np.cross(phi, w)
     half = 0.5 * theta
     s = np.sin(half)
     # |φ| from one RKMK stage is O(|ω| dt) ≪ 2π for practical sample times.
     cot_half = np.cos(half) / s
     beta = (1.0 - half * cot_half) / (theta * theta)
-    return vec - 0.5 * w + beta * np.cross(phi, w)
+    return vec + 0.5 * w + beta * np.cross(phi, w)
 
 
 def rkmk4_step(
