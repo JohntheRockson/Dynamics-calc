@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from attitude_sim.controls import make_controller
-from attitude_sim.estimation import make_estimator, vectors_from_sensors
+from attitude_sim.estimation import (
+    ComplementaryFilter,
+    MultiplicativeEKF,
+    make_estimator,
+    vectors_from_sensors,
+)
 from attitude_sim.plant import RigidBody, step_rigid_body
 from attitude_sim.quaternions import (
     axis_angle_to_quat,
@@ -143,9 +149,37 @@ def make_scenario_config(
     )
 
 
+def make_sim_estimator(
+    cfg: SimConfig,
+    q0: np.ndarray,
+) -> ComplementaryFilter | MultiplicativeEKF | None:
+    """Build the SimLab estimator, forwarding gyro densities to the MEKF.
+
+    ``SimConfig.gyro_sigma_v`` / ``gyro_sigma_u`` are the truth-gyro ARW/RRW
+    densities *and* the MEKF Farrenkopf process-noise densities.  Mahony has
+    no process-noise matrix; ``truth`` returns ``None``.
+    """
+    mode = cfg.estimator.lower()
+    if mode in {"mekf", "kalman", "ekf"}:
+        return make_estimator(
+            mode,
+            q0=q0,
+            sigma_v=cfg.gyro_sigma_v,
+            sigma_u=cfg.gyro_sigma_u,
+        )
+    return make_estimator(mode, q0=q0)
+
+
 def run_slew(cfg: SimConfig | None = None) -> SimLog:
-    """Closed-loop SimLab run (slew or detumble); optionally writes plot/GIF."""
+    """Closed-loop SimLab run (slew or detumble); optionally writes plot/GIF.
+
+    ``run_sim`` is a public alias — this is not slew-only.
+    """
     cfg = cfg if cfg is not None else SimConfig()
+    if cfg.dt <= 0.0:
+        raise ValueError("dt must be positive")
+    if cfg.t_final < 0.0:
+        raise ValueError("t_final must be non-negative")
     rng = np.random.default_rng(cfg.seed)
     body = RigidBody(cfg.inertia)
     ctrl = make_controller(cfg.controller, cfg.inertia, torque_limit=cfg.torque_limit)
@@ -182,7 +216,14 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
             )
         )
 
-    estimator = make_estimator(cfg.estimator, q0=q)
+    estimator = make_sim_estimator(cfg, q)
+    if estimator is not None and not sensors:
+        warnings.warn(
+            f"estimator {cfg.estimator!r} is running with no vector sensors "
+            "(gyro-only); full attitude is not observable from rate alone",
+            UserWarning,
+            stacklevel=2,
+        )
 
     n = int(np.round(cfg.t_final / cfg.dt)) + 1
     t = np.arange(n, dtype=float) * cfg.dt
@@ -192,7 +233,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     qh_hist = np.zeros((n, 4))
     wh_hist = np.zeros((n, 3))
 
-    for k, tk in enumerate(t):
+    for k in range(n):
         q_hist[k] = q
         w_hist[k] = omega
 
@@ -207,7 +248,10 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         wh_hist[k] = omega_hat
         tau = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
         tau_hist[k] = tau
-        q, omega = step_rigid_body(body, q, omega, tau + tau_dist, cfg.dt)
+        # τ[k] is held over [t[k], t[k+1]).  Do not take an extra unused
+        # plant step after the last logged sample.
+        if k + 1 < n:
+            q, omega = step_rigid_body(body, q, omega, tau + tau_dist, cfg.dt)
 
     euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
     att_error = np.array([geodesic_angle(qi, q_des) for qi in q_hist])
@@ -250,6 +294,9 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     return log
 
 
+run_sim = run_slew
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m attitude_sim",
@@ -288,7 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--angle-deg",
         type=float,
         default=75.0,
-        help="commanded principal rotation for --scenario slew (deg)",
+        help="commanded principal rotation for --scenario slew (deg); ignored for detumble",
     )
     p.add_argument(
         "--tau-dist",
@@ -299,14 +346,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _parse_vec3(text: str, name: str) -> np.ndarray:
-    parts = [p.strip() for p in text.split(",")]
+    parts = [p.strip() for p in str(text).split(",")]
     if len(parts) != 3:
         raise ValueError(f"{name} must be three comma-separated numbers, got {text!r}")
-    return np.array([float(p) for p in parts], dtype=float)
+    try:
+        return np.array([float(p) for p in parts], dtype=float)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be three comma-separated numbers, got {text!r}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        tau_dist = _parse_vec3(args.tau_dist, "--tau-dist")
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.dt <= 0.0:
+        parser.error("--dt must be positive")
     cfg = make_scenario_config(
         args.scenario,
         dt=args.dt,
@@ -314,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         controller=args.controller,
         estimator=args.estimator,
         angle_deg=args.angle_deg,
-        tau_dist=_parse_vec3(args.tau_dist, "--tau-dist"),
+        tau_dist=tau_dist,
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         seed=args.seed,

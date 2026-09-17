@@ -1,8 +1,12 @@
 """Closed-loop SimLab smoke tests, including control on filter estimates."""
 
-import numpy as np
+import warnings
 
-from attitude_sim.sim import SimConfig, make_scenario_config, run_slew
+import numpy as np
+import pytest
+
+from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF
+from attitude_sim.sim import SimConfig, make_scenario_config, make_sim_estimator, run_slew
 
 
 def _cfg(**kwargs) -> SimConfig:
@@ -38,6 +42,8 @@ def test_pid_on_mekf_estimates_smoke():
     assert log.final_att_error_deg < 6.0
     assert np.linalg.norm(log.omega[-1]) < 0.05
     assert log.est_att_error is not None
+    np.testing.assert_allclose(np.linalg.norm(log.q, axis=1), 1.0, atol=1e-12)
+    np.testing.assert_allclose(np.linalg.norm(log.q_hat, axis=1), 1.0, atol=1e-12)
     # Filter should be tracking the plant by the second half of the run.
     late = log.est_att_error[len(log.t) // 2 :]
     assert np.rad2deg(np.median(late)) < 5.0
@@ -101,6 +107,8 @@ def test_pid_hold_rejects_body_disturbance():
     )
     assert log.final_att_error_deg < 1.5
     assert np.linalg.norm(log.omega[-1]) < 0.02
+    # Logged τ is the control command (not plant torque); at rest it cancels τ_d.
+    np.testing.assert_allclose(log.tau[-1], -tau_dist, atol=2e-4)
 
 
 def test_lqr_hold_rejects_body_disturbance():
@@ -118,3 +126,51 @@ def test_lqr_hold_rejects_body_disturbance():
     )
     assert log.final_att_error_deg < 3.0
     assert np.linalg.norm(log.omega[-1]) < 0.02
+
+
+def test_pid_mekf_detumble_dumps_rate():
+    log = run_slew(
+        make_scenario_config(
+            "detumble",
+            controller="pid",
+            estimator="mekf",
+            t_final=22.0,
+            plot=False,
+            gif=False,
+            seed=3,
+        )
+    )
+    w0 = float(np.linalg.norm(log.omega[0]))
+    w1 = float(np.linalg.norm(log.omega[-1]))
+    assert w0 > 0.5
+    assert w1 < 0.05
+    assert w1 < 0.15 * w0
+    assert log.final_att_error_deg < 6.0
+    np.testing.assert_allclose(np.linalg.norm(log.q, axis=1), 1.0, atol=1e-12)
+    np.testing.assert_allclose(np.linalg.norm(log.q_hat, axis=1), 1.0, atol=1e-12)
+
+
+def test_make_sim_estimator_forwards_gyro_noise():
+    q0 = np.array([1.0, 0.0, 0.0, 0.0])
+    cfg = SimConfig(estimator="mekf", gyro_sigma_v=1.23e-3, gyro_sigma_u=4.56e-6)
+    est = make_sim_estimator(cfg, q0)
+    assert isinstance(est, MultiplicativeEKF)
+    assert est.sigma_v == 1.23e-3
+    assert est.sigma_u == 4.56e-6
+    assert make_sim_estimator(SimConfig(estimator="truth"), q0) is None
+    mahony = make_sim_estimator(SimConfig(estimator="mahony"), q0)
+    assert isinstance(mahony, ComplementaryFilter)
+
+
+def test_run_rejects_non_positive_dt():
+    with pytest.raises(ValueError, match="dt must be positive"):
+        run_slew(_cfg(dt=0.0, t_final=0.1, estimator="truth"))
+
+
+def test_gyro_only_estimator_warns():
+    with pytest.warns(UserWarning, match="vector sensors"):
+        run_slew(_cfg(estimator="mekf", use_mag=False, use_sun=False, t_final=0.05))
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        run_slew(_cfg(estimator="truth", use_mag=False, use_sun=False, t_final=0.05))
+    assert not any("vector sensors" in str(w.message) for w in rec)

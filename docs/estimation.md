@@ -85,6 +85,11 @@ about \(3^\circ\) attitude 1σ (initialized on the true \(q\)) and
 \(\sim 3\,\mathrm{mrad/s}\) bias 1σ, consistent with the SimLab gyro bias
 of a few mrad/s.
 
+The SimLab (`attitude_sim.sim.make_sim_estimator`) copies
+`SimConfig.gyro_sigma_v` / `gyro_sigma_u` into the MEKF so the filter
+\(Q_d\) matches the truth gyro.  Changing those config fields used to
+retune only the sensor, not the estimator.
+
 ## Vector measurements
 
 Magnetometer and sun-sensor stubs (`magnetometer`, `sun_sensor`) return

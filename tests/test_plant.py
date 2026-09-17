@@ -281,3 +281,39 @@ def test_pack_unpack_state_roundtrip():
     q2, w2 = unpack_state(y)
     np.testing.assert_allclose(q2, q)
     np.testing.assert_allclose(w2, omega)
+
+
+def test_spherical_constant_torque_matches_closed_form():
+    """For J = I I_3, ω̇ = τ/I is exact; RK4 of a constant vector field is exact."""
+    inertia_scale = 2.0
+    body = RigidBody(inertia_scale * np.eye(3))
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    omega = np.zeros(3)
+    tau = np.array([0.01, -0.02, 0.03])
+    dt = 0.01
+    n = 200
+    for _ in range(n):
+        q, omega = step_rigid_body(body, q, omega, tau, dt)
+    expected = tau / inertia_scale * n * dt
+    np.testing.assert_allclose(omega, expected, atol=1e-12)
+    expected_T = 0.5 * inertia_scale * float(expected @ expected)
+    assert abs(body.kinetic_energy(omega) - expected_T) < 1e-14
+    assert abs(np.linalg.norm(q) - 1.0) < QUAT_NORM_ABS_TOL
+
+
+def test_work_energy_theorem_with_constant_torque():
+    """ΔT ≈ ∫ ω·τ dt (trapezoid) for a ZOH torque on an asymmetric body."""
+    body = RigidBody(np.diag([1.5, 2.5, 3.5]))
+    q = quat_normalize([0.4, 0.3, 0.2, 0.8])
+    omega = np.array([-0.5, 0.4, 0.7])
+    tau = np.array([0.04, -0.02, 0.01])
+    dt = 0.001
+    t0 = body.kinetic_energy(omega)
+    work = 0.0
+    for _ in range(2000):
+        w0 = omega.copy()
+        q, omega = step_rigid_body(body, q, omega, tau, dt)
+        work += 0.5 * float((w0 + omega) @ tau) * dt
+    t1 = body.kinetic_energy(omega)
+    assert abs(t1 - t0 - work) / abs(work) < 1e-6
+    assert abs(np.linalg.norm(q) - 1.0) < QUAT_NORM_ABS_TOL

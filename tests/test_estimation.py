@@ -229,3 +229,10 @@ def test_mekf_unit_norm_and_symmetric_p_after_steps():
     assert abs(np.linalg.norm(filt.q) - 1.0) < 1e-12
     np.testing.assert_allclose(filt.P, filt.P.T, atol=1e-12)
     assert filt.q[0] >= 0.0 or abs(filt.q[0]) < 1.0  # finite; sign is free
+
+
+def test_farrenkopf_and_stm_reject_non_positive_dt():
+    with pytest.raises(ValueError, match="dt must be positive"):
+        farrenkopf_Qd(1e-3, 1e-6, 0.0)
+    with pytest.raises(ValueError, match="dt must be positive"):
+        mekf_stm(np.zeros(3), -0.01)
