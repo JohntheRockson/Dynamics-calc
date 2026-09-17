@@ -25,7 +25,6 @@ from attitude_sim.plant import (
 )
 from attitude_sim.quaternions import quat_normalize
 
-
 # Smallsat-class principal tensor (same numbers as SimLab default).
 _SMALLSAT_J = np.diag([0.05, 0.06, 0.07])
 
@@ -188,7 +187,7 @@ def _torque_free_drift(body: RigidBody, q0, omega0, dt: float, t_final: float):
     e0 = body.kinetic_energy(omega)
     h0 = body.angular_momentum_inertial(q, omega)
     hb0 = np.linalg.norm(body.angular_momentum_body(omega))
-    n = int(round(t_final / dt))
+    n = round(t_final / dt)
     for _ in range(n):
         q, omega = step_rigid_body(body, q, omega, np.zeros(3), dt)
     assert np.all(np.isfinite(q))
@@ -250,7 +249,7 @@ def test_unit_quat_under_torque_and_perturbed_inertia():
     omega = rng.normal(scale=0.3, size=3)
     for dt in DTS:
         qi, wi = q.copy(), omega.copy()
-        for _ in range(int(round(0.5 / dt))):
+        for _ in range(round(0.5 / dt)):
             tau = rng.normal(scale=0.04, size=3)
             qi, wi = step_rigid_body(body, qi, wi, tau, dt)
             assert np.all(np.isfinite(qi))

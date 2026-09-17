@@ -30,6 +30,7 @@ Truth is sampled from the plant ``(q, ω)`` pair returned by
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -114,7 +115,7 @@ def _unit3(v: np.ndarray) -> np.ndarray:
 
 
 def iter_vector_meas(
-    vector_meas: list[VectorMeas] | None,
+    vector_meas: Sequence[VectorMeas] | None,
 ) -> list[tuple[np.ndarray, np.ndarray, float | None]]:
     """Normalize ``(v_b, v_I[, sigma])`` tuples from sensors or tests."""
     if not vector_meas:
@@ -176,7 +177,7 @@ class ComplementaryFilter:
         self,
         omega_m: np.ndarray,
         dt: float,
-        vector_meas: list[VectorMeas] | None = None,
+        vector_meas: Sequence[VectorMeas] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         omega_m = np.asarray(omega_m, dtype=float).reshape(3)
         omega_corr = np.zeros(3)
@@ -254,6 +255,7 @@ class MultiplicativeEKF:
 
         Phi = mekf_stm(omega_hat, dt)
         Qd = farrenkopf_Qd(self.sigma_v, self.sigma_u, dt)
+        assert self.P is not None
         self.P = Phi @ self.P @ Phi.T + Qd
         self.P = 0.5 * (self.P + self.P.T)
         return omega_hat
@@ -270,6 +272,7 @@ class MultiplicativeEKF:
         # Rank-2 unit-vector noise (tangent to the sphere) plus a nugget.
         sig2 = float(sigma) ** 2
         R = sig2 * (np.eye(3) - np.outer(v_hat, v_hat)) + (1e-12 * max(sig2, 1.0)) * np.eye(3)
+        assert self.P is not None
         S = H @ self.P @ H.T + R
         K = self.P @ H.T @ np.linalg.solve(S, np.eye(3))
         dx = K @ (v_b_meas - v_hat)
@@ -286,7 +289,7 @@ class MultiplicativeEKF:
         self,
         omega_m: np.ndarray,
         dt: float,
-        vector_meas: list[VectorMeas] | None = None,
+        vector_meas: Sequence[VectorMeas] | None = None,
         vector_sigma: float = 2e-3,
     ) -> tuple[np.ndarray, np.ndarray]:
         omega_hat = self.predict(omega_m, dt)

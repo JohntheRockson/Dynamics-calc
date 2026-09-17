@@ -137,7 +137,7 @@ class PIDAttitudeController:
         n = np.linalg.norm(z_next)
         if n > max_z > 0.0:
             z_next *= max_z / n
-        tau = -self.kp @ e_q - self.kd @ e_w - self.ki @ z_next
+        tau = -np.asarray(self.kp) @ e_q - np.asarray(self.kd) @ e_w - np.asarray(self.ki) @ z_next
         if self.gyroscopic_cancel:
             tau = tau + np.cross(omega, self.inertia @ omega)
         tau = _saturate(tau, self.torque_limit)
@@ -208,7 +208,7 @@ class LQRAttitudeController:
         omega_des = np.zeros(3) if omega_des is None else np.asarray(omega_des, dtype=float).reshape(3)
         dtheta = rotation_vector_error(q, q_des)
         x = np.concatenate([dtheta, omega - omega_des])
-        tau = -self.K @ x
+        tau = -np.asarray(self.K) @ x
         if self.gyroscopic_cancel:
             tau = tau + np.cross(omega, self.inertia @ omega)
         return _saturate(tau, self.torque_limit)

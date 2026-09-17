@@ -74,7 +74,7 @@ def test_first_order_lag_step_response():
     dt = 0.001
     act = make_actuator(tau_max=1.0, time_constant=T)
     act.reset()
-    n = int(round(T / dt))
+    n = round(T / dt)
     tau = np.zeros(3)
     for _ in range(n):
         tau = act.apply(np.array([1.0, 0.0, 0.0]), dt)

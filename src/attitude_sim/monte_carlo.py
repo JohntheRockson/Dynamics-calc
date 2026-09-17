@@ -20,7 +20,13 @@ import numpy as np
 
 from attitude_sim.plant import inertia_from_principal, principal_moments_and_axes
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
-from attitude_sim.sim import SimConfig, SimLog, default_inertia, make_scenario_config, run_slew
+from attitude_sim.sim import (
+    SimConfig,
+    SimLog,
+    default_inertia,
+    make_scenario_config,
+    run_slew,
+)
 
 FAIL_NAN = "nan"
 FAIL_NON_UNIT = "non_unit_quat"
