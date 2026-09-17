@@ -6,6 +6,10 @@ Both laws use the shortest-path multiplicative error
 
 and body-rate feedback.  The controller may be fed either true plant
 state or filter estimates.
+
+Default gains are sized to the M1 smallsat-class plant
+``J ≈ diag(0.05, 0.06, 0.07) kg·m²`` and actuator ``|τ| ≤ 0.02 N·m``
+(see ``docs/controls.md``).
 """
 
 from __future__ import annotations
@@ -17,10 +21,27 @@ from scipy import linalg
 
 from attitude_sim.quaternions import attitude_error_vector, rotation_vector_error
 
+# --- plant-scale defaults (M1 smallsat + 20 mN·m wheels) -------------------
+# Opening 75° PD torque is ~τ_max; 2% settling is a few tens of seconds.
+DEFAULT_TORQUE_LIMIT = 0.02
+PID_WN = 0.5
+PID_ZETA = 1.0
+# Ki = coeff · wn³ J  →  PI zero near wn/4; slow mode still inside a 30 s hold.
+PID_KI_WN_COEFF = 0.5
+# ∫e_q dt clamp: Ki · limit ≳ 0.3 τ_max so a 2–5 mN·m bias can be held.
+PID_INTEGRAL_LIMIT = 3.0
+# Only integrate when ||e_q|| is small (~11° geodesic) so the slew does not wind up.
+PID_INTEGRAL_GATE = 0.10
+
+# Bryson references for Q, R.  K_θ ≈ τ_ref / θ_ref puts the linear region
+# around 14°, not a 1° bang-bang, while wn_LQR ≈ 1.1 rad/s stays near PID.
+LQR_THETA_REF = 0.25  # rad
+LQR_OMEGA_REF = 0.20  # rad/s
+LQR_TAU_REF = DEFAULT_TORQUE_LIMIT  # N·m
+
 
 def _as_pd_gain(value: np.ndarray | float, inertia: np.ndarray) -> np.ndarray:
     """Broadcast a scalar / 3-vector / 3x3 into a 3x3 body-frame gain."""
-    J = np.asarray(inertia, dtype=float).reshape(3, 3)
     arr = np.asarray(value, dtype=float)
     if arr.ndim == 0:
         return float(arr) * np.eye(3)
@@ -31,36 +52,66 @@ def _as_pd_gain(value: np.ndarray | float, inertia: np.ndarray) -> np.ndarray:
     raise ValueError(f"gain must be scalar, 3-vector, or 3x3; got shape {arr.shape}")
 
 
+def pid_gains_from_wn(
+    inertia: np.ndarray,
+    wn: float = PID_WN,
+    zeta: float = PID_ZETA,
+    ki_wn_coeff: float = PID_KI_WN_COEFF,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Inertia-scaled PID matrices for quaternion-vector error ``e_q ≈ θ/2``.
+
+    Matching a rotation-vector PD ``τ = −wn² J θ − 2 ζ wn J ω`` requires
+
+        Kp = 2 wn² J ,   Kd = 2 ζ wn J ,   Ki = ki_wn_coeff · wn³ J.
+    """
+    J = np.asarray(inertia, dtype=float).reshape(3, 3)
+    kp = 2.0 * (wn**2) * J
+    kd = 2.0 * zeta * wn * J
+    ki = ki_wn_coeff * (wn**3) * J
+    return kp, kd, ki
+
+
+def bryson_lqr_weights(
+    theta_ref: float = LQR_THETA_REF,
+    omega_ref: float = LQR_OMEGA_REF,
+    tau_ref: float = LQR_TAU_REF,
+) -> tuple[float, float, float]:
+    """Return ``(q_att, q_rate, r_torque)`` from Bryson reference magnitudes."""
+    return 1.0 / (theta_ref**2), 1.0 / (omega_ref**2), 1.0 / (tau_ref**2)
+
+
 @dataclass
 class PIDAttitudeController:
     """PID on quaternion vector error + body rate, with anti-windup.
 
     ``τ = −Kp e_q − Kd (ω − ω_des) − Ki z`` plus optional gyroscopic
-    cancellation ``ω × Jω``.  Gains default to inertia-scaled PD for a
-    target natural frequency and damping.
+    cancellation ``ω × Jω`` and optional ``|τ| ≤ τ_max``.  Gains default
+    to inertia-scaled PD for a target natural frequency and damping.
     """
 
     inertia: np.ndarray
     kp: np.ndarray | float | None = None
     kd: np.ndarray | float | None = None
     ki: np.ndarray | float | None = None
-    wn: float = 0.45
-    zeta: float = 1.0
-    integral_limit: float = 0.2
-    torque_limit: float | None = 0.02
+    wn: float = PID_WN
+    zeta: float = PID_ZETA
+    ki_wn_coeff: float = PID_KI_WN_COEFF
+    integral_limit: float = PID_INTEGRAL_LIMIT
+    integral_gate: float = PID_INTEGRAL_GATE
+    torque_limit: float | None = DEFAULT_TORQUE_LIMIT
     gyroscopic_cancel: bool = True
     _z: np.ndarray = field(default_factory=lambda: np.zeros(3), init=False, repr=False)
 
     def __post_init__(self) -> None:
         J = np.asarray(self.inertia, dtype=float).reshape(3, 3)
         self.inertia = 0.5 * (J + J.T)
-        # q_e ≈ θ/2 so Kp q_e ≈ (wn² J) θ  ⇒  Kp = 2 wn² J
+        kp0, kd0, ki0 = pid_gains_from_wn(self.inertia, self.wn, self.zeta, self.ki_wn_coeff)
         if self.kp is None:
-            self.kp = 2.0 * (self.wn**2) * self.inertia
+            self.kp = kp0
         if self.kd is None:
-            self.kd = 2.0 * self.zeta * self.wn * self.inertia
+            self.kd = kd0
         if self.ki is None:
-            self.ki = 0.08 * (self.wn**3) * self.inertia
+            self.ki = ki0
         self.kp = _as_pd_gain(self.kp, self.inertia)
         self.kd = _as_pd_gain(self.kd, self.inertia)
         self.ki = _as_pd_gain(self.ki, self.inertia)
@@ -80,7 +131,8 @@ class PIDAttitudeController:
         omega_des = np.zeros(3) if omega_des is None else np.asarray(omega_des, dtype=float).reshape(3)
         e_q = attitude_error_vector(q, q_des)
         e_w = omega - omega_des
-        z_next = self._z + e_q * dt
+        integrate = np.linalg.norm(e_q) <= self.integral_gate
+        z_next = self._z + e_q * dt if integrate else self._z.copy()
         max_z = self.integral_limit
         n = np.linalg.norm(z_next)
         if n > max_z > 0.0:
@@ -89,7 +141,7 @@ class PIDAttitudeController:
         if self.gyroscopic_cancel:
             tau = tau + np.cross(omega, self.inertia @ omega)
         tau = _saturate(tau, self.torque_limit)
-        # Anti-windup: only integrate when unsaturated (or error is helping)
+        # Anti-windup: freeze the integrator while the command is saturated.
         if self.torque_limit is None or np.linalg.norm(tau) < self.torque_limit * (1.0 - 1e-9):
             self._z = z_next
         return tau
@@ -104,27 +156,41 @@ class LQRAttitudeController:
 
         δθ̇ = ω ,   ω̇ = J⁻¹ τ
 
-    so ``A = [[0, I], [0, 0]]``, ``B = [[0], [J⁻¹]]``.  The CARE is
-    solved once; the online law is ``τ = −K [δθ; ω]`` with optional
+    so ``A = [[0, I], [0, 0]]``, ``B = [[0], [J⁻¹]]``.  Default ``Q``, ``R``
+    are Bryson placeholders; the CARE is solved once unless ``K`` is
+    supplied.  The online law is ``τ = −K [δθ; ω]`` with optional
     gyroscopic cancellation and torque saturation.
     """
 
     inertia: np.ndarray
-    q_att: float = 6.0
-    q_rate: float = 0.8
-    r_torque: float = 8.0
-    torque_limit: float | None = 0.02
+    q_att: float = 1.0 / (LQR_THETA_REF**2)
+    q_rate: float = 1.0 / (LQR_OMEGA_REF**2)
+    r_torque: float = 1.0 / (LQR_TAU_REF**2)
+    torque_limit: float | None = DEFAULT_TORQUE_LIMIT
     gyroscopic_cancel: bool = True
-    K: np.ndarray = field(init=False)
+    K: np.ndarray | None = None
+    Q: np.ndarray | None = field(default=None, repr=False)
+    R: np.ndarray | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         J = np.asarray(self.inertia, dtype=float).reshape(3, 3)
         self.inertia = 0.5 * (J + J.T)
-        A, B = linearize_attitude(self.inertia)
-        Q = np.diag([self.q_att] * 3 + [self.q_rate] * 3)
-        R = self.r_torque * np.eye(3)
-        P = linalg.solve_continuous_are(A, B, Q, R)
-        self.K = np.linalg.solve(R, B.T @ P)
+        if self.Q is None:
+            self.Q = np.diag([self.q_att] * 3 + [self.q_rate] * 3)
+        else:
+            self.Q = np.asarray(self.Q, dtype=float)
+        if self.R is None:
+            self.R = self.r_torque * np.eye(3)
+        else:
+            self.R = np.asarray(self.R, dtype=float)
+        if self.K is None:
+            A, B = linearize_attitude(self.inertia)
+            P = linalg.solve_continuous_are(A, B, self.Q, self.R)
+            self.K = np.linalg.solve(self.R, B.T @ P)
+        else:
+            self.K = np.asarray(self.K, dtype=float)
+            if self.K.shape != (3, 6):
+                raise ValueError(f"LQR gain K must be 3x6; got {self.K.shape}")
 
     def reset(self) -> None:
         return None
