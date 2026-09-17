@@ -33,6 +33,7 @@ def test_version_and_public_exports():
         "TorqueActuator",
         "clip_torque",
         "make_actuator",
+        "momentum_dump_torque",
         "shape_pid_command",
         "triad_attitude",
         "InnovationLog",
@@ -83,6 +84,7 @@ def test_version_and_public_exports():
     assert "AttitudeLQR" in attitude_sim.__all__
     assert "run_sim" in attitude_sim.__all__
     assert "TorqueActuator" in attitude_sim.__all__
+    assert "momentum_dump_torque" in attitude_sim.__all__
     assert "triad_attitude" in attitude_sim.__all__
     assert "InnovationLog" in attitude_sim.__all__
     assert "shape_pid_command" in attitude_sim.__all__

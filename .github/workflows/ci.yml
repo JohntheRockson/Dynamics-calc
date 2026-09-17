@@ -61,6 +61,9 @@ jobs:
             --tau-dist 0.002,-0.001,0.0008 --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth \
             --actuator-tau-max 0.02 --actuator-tau 0.05 --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
+            --tau-dist 0.002,-0.001,0.0008 --actuator-h-dump 0.01 \
+            --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth \
             --actuator-tau-max 0.02 --rw-h-max 0.004 --rw-visc 1e-6 --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth \

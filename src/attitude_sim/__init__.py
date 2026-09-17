@@ -1,6 +1,11 @@
 """Rigid-body attitude dynamics, control, and estimation (Milestone 1)."""
 
-from attitude_sim.actuators import TorqueActuator, clip_torque, make_actuator
+from attitude_sim.actuators import (
+    TorqueActuator,
+    clip_torque,
+    make_actuator,
+    momentum_dump_torque,
+)
 from attitude_sim.controls import (
     AttitudeLQR,
     LQRAttitudeController,
@@ -162,6 +167,7 @@ __all__ = [
     "make_magnetic_torquer",
     "make_reaction_wheels",
     "make_scenario_config",
+    "momentum_dump_torque",
     "mrp_B",
     "mrp_derivative",
     "mrp_switch",
