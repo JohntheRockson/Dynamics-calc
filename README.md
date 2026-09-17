@@ -20,7 +20,7 @@ Or `pip install -r requirements.txt` (runtime deps only) and keep `src/` on `PYT
 
 `python -m attitude_sim` is the SimLab entry point (`attitude_sim.sim`). It closes the loop
 
-sensors → estimator → controller → plant (RK4)
+sensors → estimator → controller → actuator → plant (RK4)
 
 and writes a summary PNG plus a short attitude GIF. Two named scenarios:
 
@@ -36,6 +36,8 @@ python -m attitude_sim --controller lqr --estimator mekf --t-final 40
 python -m attitude_sim --controller pid --estimator truth --no-gif
 python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
     --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
+python -m attitude_sim --controller pid --estimator truth \
+    --actuator-tau-max 0.02 --actuator-tau 0.05 --no-gif
 python -m attitude_sim --help
 ```
 
@@ -98,7 +100,7 @@ python -m attitude_sim.monte_carlo --n 50 --estimator truth --t-final 22
 pytest
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]` on **Python 3.10 and 3.12**, runs `pytest -v`, then no-plot CLI smokes (slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, plus a tiny Monte Carlo entry: `python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling). Coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), and a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
+GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]` on **Python 3.10 and 3.12**, runs `pytest -v`, then no-plot CLI smokes (slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, plus a tiny Monte Carlo entry: `python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling). Coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), and a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
 
 ## Equations (what the SimLab integrates)
 
@@ -175,12 +177,16 @@ Gyro-only (`--no-mag --no-sun` with `mekf` / `mahony`) is allowed but warns: ful
 
 The controller always consumes \((\hat{q},\,\hat{\omega})\) from the selected source. The programmatic entry point is `attitude_sim.run_sim` (alias of `run_slew`).
 
+**Actuator** (optional; default unlimited / no lag so prior closed-loop runs match).  After the PID/LQR command, `attitude_sim.actuators` clips each axis to \(\pm\tau_{\max,i}\) (reaction-wheel limits) and can apply a first-order lag \(\dot\tau=(u-\tau)/T\).  Logged \(\tau\) is the applied wheel torque.  CLI: `--actuator-tau-max` (scalar or `x,y,z`) and `--actuator-tau` (seconds).  This is independent of the controller Euclidean \(|\tau|\le\tau_{\max}\) clamp; see [`docs/controls.md`](docs/controls.md).
+
 ## Architecture
 
 ```
 sensors  →  estimator (MEKF / Mahony / truth)
                  ↓
-            controller (PID | LQR)  →  τ
+            controller (PID | LQR)  →  τ_cmd
+                 ↓
+            actuator (per-axis clip, optional lag)  →  τ
                  ↓
             rigid-body plant (RK4)  →  q, ω
                  ↓
@@ -192,7 +198,8 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers (principal axes / validation), Euler equation, RK4 |
 | `attitude_sim.controls` | PID and CARE LQR, `--controller` switch |
-| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia notes |
+| `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
+| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, wheels |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
 | `attitude_sim.sim` | SimLab scenarios + CLI (`slew`, `detumble`); `run_sim` / `run_slew` |
