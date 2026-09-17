@@ -51,6 +51,7 @@ from attitude_sim.plant import (
     trapezoid_inertial_impulse,
     validate_inertia,
 )
+from attitude_sim.plots import attitude_error_mrp, plot_env_torque, plot_mrp_error
 from attitude_sim.quaternions import (
     axis_angle_to_quat,
     geodesic_angle,
@@ -61,12 +62,18 @@ from attitude_sim.quaternions import (
     quat_to_euler321,
     quat_to_rotation,
 )
-from attitude_sim.sim import SimConfig, SimLog, run_sim, run_slew
+from attitude_sim.scenarios import (
+    SCENARIOS,
+    make_hold_environmental_torques,
+    scenario_catalog_text,
+)
+from attitude_sim.sim import SimConfig, SimLog, make_scenario_config, run_sim, run_slew
 
 # Mahony is the complementary-filter implementation; keep both names public.
 MahonyFilter = ComplementaryFilter
 
 __all__ = [
+    "SCENARIOS",
     "AerodynamicTorque",
     "AttitudeLQR",
     "CircularOrbit",
@@ -86,6 +93,7 @@ __all__ = [
     "SolarRadiationPressureTorque",
     "TorqueActuator",
     "aerodynamic_torque",
+    "attitude_error_mrp",
     "axis_angle_to_quat",
     "clip_torque",
     "design_attitude_lqr",
@@ -99,11 +107,15 @@ __all__ = [
     "make_actuator",
     "make_controller",
     "make_estimator",
+    "make_hold_environmental_torques",
+    "make_scenario_config",
     "mrp_B",
     "mrp_derivative",
     "mrp_switch",
     "mrp_to_quat",
     "mrp_to_rotation",
+    "plot_env_torque",
+    "plot_mrp_error",
     "principal_moments_and_axes",
     "quat_conjugate",
     "quat_error",
@@ -116,6 +128,7 @@ __all__ = [
     "rkmk4_step",
     "run_sim",
     "run_slew",
+    "scenario_catalog_text",
     "shape_pid_command",
     "solve_care",
     "srp_torque",
