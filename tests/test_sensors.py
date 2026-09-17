@@ -144,7 +144,7 @@ def test_vector_sensor_fov_gate_uses_true_body_direction():
     # Identity: sun is +x_B, 90° from +z boresight → out of 20° FOV.
     assert sun.measure(q_id) is None
     # Rotate so body +z points at inertial +x (the sun).
-    q_in = axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), -np.pi / 2)
+    q_in = axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), np.pi / 2)
     v_b = sun.measure(q_in)
     assert v_b is not None
     np.testing.assert_allclose(v_b, [0.0, 0.0, 1.0], atol=1e-12)
