@@ -81,7 +81,8 @@ attitude–bias cross block: bias random walk integrates into angle.  The
 scaffold's first-order \(Q_d \approx G Q_c G^{\top} dt\) dropped both.
 
 Default \(P_0 \approx \mathrm{diag}(3\times10^{-3} I_3,\, 10^{-5} I_3)\):
-about \(3^\circ\) attitude 1σ (initialized on the true \(q\)) and
+about \(3^\circ\) attitude 1σ (initialized on the true \(q\), or on a
+TRIAD coarse \(\hat q\) when `--init-triad` is set) and
 \(\sim 3\,\mathrm{mrad/s}\) bias 1σ, consistent with the SimLab gyro bias
 of a few mrad/s.
 
@@ -108,6 +109,43 @@ with rank-2 tangent-plane \(R = \sigma^2 (I - \hat v_b\hat v_b^{\top})\)
 plus a small nugget.  `vectors_from_sensors` forwards each sensor's
 `sigma` so mag and sun can have different \(R\).
 
+## TRIAD coarse attitude (lost-in-space)
+
+Default SimLab still initializes MEKF / Mahony at the **true** \(q_0\).
+That is convenient for filter checkout and is **not** lost-in-space.
+
+TRIAD (`attitude_sim.triad`) is a two-observation attitude fix.  The
+first pair is the primary (more trusted) direction.  Right-handed frames
+
+\[
+t_1 = v_1,\qquad
+t_2 = (v_1\times v_2)/\|v_1\times v_2\|,\qquad
+t_3 = t_1\times t_2
+\]
+
+are built in body and inertial coordinates; the DCM with those columns
+satisfies this repo's map \(v_I = R(q)\,v_B\):
+
+\[
+R = M_I M_B^{\top}.
+\]
+
+`triad_from_meas` takes the usual `(v_b, v_I[, σ])` tuples.  When both
+pairs include a `σ`, the lower-σ observation is the TRIAD primary (sun
+before mag with the default SimLab stubs).  (Anti)parallel pairs raise
+`ValueError` — there is no unique TRIAD frame.
+
+Opt in with `SimConfig.init_from_triad=True` or CLI `--init-triad`.
+Requires `--estimator mekf` or `mahony` and both mag and sun.  The MEKF
+is **not** rewritten: same \(P_0\), same Farrenkopf \(Q_d\).  TRIAD only
+replaces the initial \(\hat q\).  Default \(P_0\) (\(\sim 3^\circ\) 1σ)
+is still a reasonable envelope for noisy TRIAD with the M1 mag/sun stubs.
+
+```bash
+python -m attitude_sim --estimator mekf --init-triad --t-final 40 --no-gif
+pytest tests/test_triad.py
+```
+
 ## Mahony complementary filter
 
 Same sensors and error convention.  The **kinematics** rate includes the
@@ -132,6 +170,6 @@ Default gains \(k_p = 1.5\), \(k_i = 0.08\) (1/s).
 From the repo root (after `pip install -e ".[dev]"`):
 
 ```bash
-pytest tests/test_estimation.py tests/test_sensors.py
+pytest tests/test_estimation.py tests/test_sensors.py tests/test_triad.py
 pytest                          # full suite, including closed-loop smoke
 ```

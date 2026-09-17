@@ -2,7 +2,7 @@
 
 from attitude_sim.actuators import TorqueActuator, clip_torque, make_actuator
 from attitude_sim.controls import LQRAttitudeController, PIDAttitudeController, make_controller
-from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF, make_estimator
+from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF, make_estimator, triad
 from attitude_sim.plant import (
     RigidBody,
     inertia_from_principal,
@@ -56,6 +56,7 @@ __all__ = [
     "run_sim",
     "run_slew",
     "step_rigid_body",
+    "triad",
     "validate_inertia",
 ]
 

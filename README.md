@@ -38,6 +38,7 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
     --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
 python -m attitude_sim --controller pid --estimator truth \
     --actuator-tau-max 0.02 --actuator-tau 0.05 --no-gif
+python -m attitude_sim --estimator mekf --init-triad --no-gif
 python -m attitude_sim --help
 ```
 
@@ -190,6 +191,8 @@ See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
 - `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\). Also exported as `attitude_sim.MahonyFilter`.
 - `truth` — full-state feedback (no estimator), for plant/controller checkout. SimLab skips gyro and vector-sensor sampling on this path.
 
+Default filter init is the true \(q_0\). `--init-triad` (or `SimConfig.init_from_triad`) builds a coarse \(\hat q\) from mag+sun with TRIAD instead, so MEKF/Mahony can start lost-in-space; both vector sensors are required. See [docs/estimation.md](docs/estimation.md).
+
 Gyro-only (`--no-mag --no-sun` with `mekf` / `mahony`) is allowed but warns: full attitude is not observable from rate alone.
 
 The controller always consumes \((\hat{q},\,\hat{\omega})\) from the selected source. The programmatic entry point is `attitude_sim.run_sim` (alias of `run_slew`).
@@ -218,7 +221,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
 | `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, wheels |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
-| `attitude_sim.estimation` | MEKF and Mahony complementary filter |
+| `attitude_sim.estimation` | MEKF, Mahony complementary filter, TRIAD coarse init |
 | `attitude_sim.sim` | SimLab scenarios + CLI (`slew`, `detumble`); `run_sim` / `run_slew` |
 | `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`) |
 | `attitude_sim.plots` | `{scenario}_summary.png` and `{scenario}_attitude.gif` |
@@ -233,4 +236,5 @@ Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06
 | `lqr` | `truth` | Linearized LQR pointing |
 | `pid` or `lqr` | `truth` | Body-torque hold: `--angle-deg 0 --tau-dist …` |
 | `pid` or `lqr` | `mekf` | Control on Kalman estimates (default) |
+| `pid` or `lqr` | `mekf` + `--init-triad` | Same, but coarse TRIAD \(\hat q_0\) instead of true \(q_0\) |
 | `pid` or `lqr` | `mahony` | Control on complementary-filter estimates |

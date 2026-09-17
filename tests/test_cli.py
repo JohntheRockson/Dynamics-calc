@@ -14,6 +14,7 @@ def test_parser_defaults_to_slew():
     assert args.estimator == "mekf"
     assert args.actuator_tau_max is None
     assert args.actuator_tau is None
+    assert args.init_triad is False
 
 
 def test_parser_detumble_and_flags():
@@ -114,6 +115,36 @@ def test_main_rejects_bad_tau_dist():
 def test_main_rejects_non_positive_dt():
     with pytest.raises(SystemExit):
         main(["--dt", "0", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_parser_and_main_init_triad():
+    args = build_parser().parse_args(["--init-triad"])
+    assert args.init_triad is True
+    assert (
+        main(
+            [
+                "--estimator",
+                "mekf",
+                "--init-triad",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+    cfg = make_scenario_config("slew", init_from_triad=True, plot=False, gif=False)
+    assert cfg.init_from_triad is True
+
+
+def test_main_rejects_init_triad_without_vectors_or_on_truth():
+    with pytest.raises(SystemExit):
+        main(["--init-triad", "--estimator", "truth", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--init-triad", "--no-sun", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--init-triad", "--no-mag", "--t-final", "0.05", "--no-plot", "--no-gif"])
 
 
 def test_main_rejects_bad_actuator_tau_max():

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF
+from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
 from attitude_sim.sim import SimConfig, make_scenario_config, make_sim_estimator, run_slew
 
 
@@ -204,3 +205,25 @@ def test_truth_path_skips_sensor_sampling(monkeypatch):
     run_slew(_cfg(estimator="mekf", t_final=0.05))
     assert gyro_calls["n"] > 0
     assert vec_calls["n"] > 0
+
+
+def test_pid_mekf_from_triad_init_smoke():
+    """Lost-in-space coarse init: TRIAD then a short closed-loop slew on MEKF."""
+    q0 = axis_angle_to_quat(np.array([0.3, -0.5, 0.8]), np.deg2rad(55.0))
+    log = run_slew(
+        _cfg(
+            controller="pid",
+            estimator="mekf",
+            init_from_triad=True,
+            q0=q0,
+            t_final=28.0,
+        )
+    )
+    assert log.est_att_error is not None
+    assert geodesic_angle(log.q_hat[0], log.q[0]) < np.deg2rad(5.0)
+    assert geodesic_angle(log.q_hat[0], np.array([1.0, 0.0, 0.0, 0.0])) > np.deg2rad(20.0)
+    assert log.final_att_error_deg < 6.0
+    assert np.linalg.norm(log.omega[-1]) < 0.05
+    np.testing.assert_allclose(np.linalg.norm(log.q_hat, axis=1), 1.0, atol=1e-12)
+    late = log.est_att_error[len(log.t) // 2 :]
+    assert np.rad2deg(np.median(late)) < 5.0

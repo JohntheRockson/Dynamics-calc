@@ -26,6 +26,9 @@ covariance on the unit-sphere tangent plane.
 
 Truth is sampled from the plant ``(q, ω)`` pair returned by
 ``step_rigid_body``; this module does not integrate Euler's equation.
+
+TRIAD (``triad`` / ``triad_from_meas``) is a two-vector coarse attitude
+for lost-in-space init; it does not replace MEKF or Mahony.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from attitude_sim.quaternions import (
     quat_multiply,
     quat_normalize,
     quat_to_rotation,
+    rotation_to_quat,
     skew,
 )
 from attitude_sim.sensors import VectorSensor
@@ -321,3 +325,68 @@ def vectors_from_sensors(
 ) -> list[tuple[np.ndarray, np.ndarray, float]]:
     """Sample each vector sensor and attach its Cartesian ``sigma`` for R."""
     return [(s.measure(q), s.v_inertial, s.sigma) for s in sensors]
+
+
+_TRIAD_ALIGN_EPS = 1e-8
+
+
+def triad(
+    v1_body: np.ndarray,
+    v1_inertial: np.ndarray,
+    v2_body: np.ndarray,
+    v2_inertial: np.ndarray,
+) -> np.ndarray:
+    """Coarse attitude from two vector observations (TRIAD).
+
+    The first pair is the **primary** (more trusted) observation.  TRIAD
+    builds right-handed frames
+
+        t1 = v1 ,   t2 = (v1 × v2) / ‖v1 × v2‖ ,   t3 = t1 × t2
+
+    in body and inertial coordinates and returns the scalar-first
+    quaternion ``q`` with ``v_I = R(q) v_B`` (this repo's convention).
+    Equivalent DCM: ``R = M_I M_Bᵀ`` with columns ``(t1, t2, t3)``.
+
+    Raises ``ValueError`` if a pair is degenerate or the two directions
+    are (anti)parallel, so a unique TRIAD frame does not exist.
+    """
+    b1 = _unit3(v1_body)
+    r1 = _unit3(v1_inertial)
+    b2 = _unit3(v2_body)
+    r2 = _unit3(v2_inertial)
+    tb = np.cross(b1, b2)
+    tn = np.cross(r1, r2)
+    nb = float(np.linalg.norm(tb))
+    nn = float(np.linalg.norm(tn))
+    if nb < _TRIAD_ALIGN_EPS or nn < _TRIAD_ALIGN_EPS:
+        raise ValueError("TRIAD needs two non-parallel vector observations")
+    t2b = tb / nb
+    t2n = tn / nn
+    t3b = np.cross(b1, t2b)
+    t3n = np.cross(r1, t2n)
+    M_b = np.column_stack((b1, t2b, t3b))
+    M_n = np.column_stack((r1, t2n, t3n))
+    # A maps inertial → body (b = A r); this repo's R is Aᵀ (v_I = R v_B).
+    R = M_n @ M_b.T
+    return rotation_to_quat(R)
+
+
+def triad_from_meas(vector_meas: Sequence[VectorMeas]) -> np.ndarray:
+    """TRIAD from ``(v_b, v_I[, sigma])`` pairs.  First two observations are used.
+
+    When both pairs carry a ``sigma``, the lower-σ observation is the
+    TRIAD primary (sun before mag with the default SimLab stubs).
+    """
+    meas = iter_vector_meas(vector_meas)
+    if len(meas) < 2:
+        raise ValueError("TRIAD needs two non-parallel vector observations")
+
+    def _sigma_key(item: tuple[np.ndarray, np.ndarray, float | None]) -> float:
+        sigma = item[2]
+        return float("inf") if sigma is None else float(sigma)
+
+    # Stable: unspecified σ keeps input order; specified σ prefers accuracy.
+    ordered = sorted(meas[:2], key=_sigma_key)
+    v1_b, v1_I, _ = ordered[0]
+    v2_b, v2_I, _ = ordered[1]
+    return triad(v1_b, v1_I, v2_b, v2_I)

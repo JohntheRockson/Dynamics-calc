@@ -14,6 +14,7 @@ def test_version_and_public_exports():
         "SimLog",
         "make_controller",
         "make_estimator",
+        "triad",
         "geodesic_angle",
         "axis_angle_to_quat",
         "quat_to_rotation",
@@ -28,3 +29,4 @@ def test_version_and_public_exports():
     assert "MahonyFilter" in attitude_sim.__all__
     assert "run_sim" in attitude_sim.__all__
     assert "TorqueActuator" in attitude_sim.__all__
+    assert "triad" in attitude_sim.__all__
