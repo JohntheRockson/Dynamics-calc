@@ -57,6 +57,8 @@ jobs:
           python -m attitude_sim --controller lqr --estimator mahony --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
             --tau-dist 0.002,-0.001,0.0008 --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
+            --env-gg --env-dipole 0.08,-0.01,0.02 --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth \
             --actuator-tau-max 0.02 --actuator-tau 0.05 --t-final 0.2 --no-plot --no-gif
           # MC harness is slew-only; detumble is a SimLab scenario, not in the sweep.

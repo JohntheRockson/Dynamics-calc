@@ -7,7 +7,13 @@ import pytest
 
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
-from attitude_sim.sim import SimConfig, make_scenario_config, make_sim_estimator, run_slew
+from attitude_sim.sim import (
+    SimConfig,
+    make_environmental_torques,
+    make_scenario_config,
+    make_sim_estimator,
+    run_slew,
+)
 
 
 def _cfg(**kwargs) -> SimConfig:
@@ -258,3 +264,106 @@ def test_coarse_init_without_two_sensors_warns_and_keeps_true_q0():
         )
     assert log.est_att_error is not None
     assert np.rad2deg(log.est_att_error[0]) < 2.0
+
+
+def test_make_environmental_torques_defaults_off():
+    cfg = SimConfig()
+    assert cfg.env_gg is False
+    assert cfg.env_dipole is None
+    assert make_environmental_torques(cfg) is None
+    assert make_environmental_torques(_cfg(estimator="truth")) is None
+
+
+def test_make_environmental_torques_gg_and_dipole():
+    from attitude_sim.disturbances import EnvironmentalTorques
+
+    m = np.array([0.08, -0.01, 0.02])
+    env = make_environmental_torques(
+        _cfg(estimator="truth", env_gg=True, env_dipole=m, dipole_model="orbit_normal")
+    )
+    assert isinstance(env, EnvironmentalTorques)
+    assert env.gravity_gradient is not None
+    assert env.residual_dipole is not None
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    w = np.zeros(3)
+    tau = env.tau_body(q, w, 0.0)
+    tau_gg = env.gravity_gradient.tau_body(q, w, 0.0)
+    tau_m = env.residual_dipole.tau_body(q, w, 0.0)
+    np.testing.assert_allclose(tau, tau_gg + tau_m)
+    assert np.linalg.norm(tau) > 0.0
+
+
+def test_make_environmental_torques_rejects_bad_knobs():
+    with pytest.raises(ValueError, match="orbit_radius"):
+        make_environmental_torques(_cfg(estimator="truth", env_gg=True, orbit_radius=0.0))
+    with pytest.raises(ValueError, match="dipole_model"):
+        make_environmental_torques(
+            _cfg(estimator="truth", env_dipole=np.ones(3), dipole_model="igrf")
+        )
+    with pytest.raises(ValueError, match="env_dipole"):
+        make_environmental_torques(
+            _cfg(estimator="truth", env_dipole=np.array([np.nan, 0.0, 0.0]))
+        )
+    with pytest.raises(ValueError, match="orbit_inclination_deg"):
+        make_environmental_torques(
+            _cfg(estimator="truth", env_gg=True, orbit_inclination_deg=np.inf)
+        )
+
+
+def test_closed_loop_env_disturbances_smoke_and_differ_from_off():
+    """GG + residual dipole are plant-only and default off (backward compatible)."""
+    base = dict(
+        controller="pid",
+        estimator="truth",
+        t_final=0.2,
+        q0=np.array([1.0, 0.0, 0.0, 0.0]),
+        q_des=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    off = run_slew(_cfg(**base))
+    on = run_slew(
+        _cfg(
+            **base,
+            env_gg=True,
+            env_dipole=np.array([0.15, 0.0, 0.0]),
+            dipole_model="orbit_normal",
+        )
+    )
+    np.testing.assert_allclose(np.linalg.norm(on.q, axis=1), 1.0, atol=1e-12)
+    assert np.all(np.isfinite(on.omega))
+    assert np.all(np.isfinite(on.tau))
+    assert not np.allclose(on.omega, off.omega)
+    # Constant --tau-dist still stacks with environmental τ.
+    both = run_slew(
+        _cfg(
+            **base,
+            tau_dist=np.array([0.001, 0.0, 0.0]),
+            env_gg=True,
+            env_dipole=np.array([0.15, 0.0, 0.0]),
+            dipole_model="orbit_normal",
+        )
+    )
+    assert not np.allclose(both.omega, on.omega)
+
+
+def test_env_gg_only_principal_hold_matches_off():
+    """Identity hold + equatorial orbit: body x along zenith at t=0, GG ≈ 0."""
+    base = dict(
+        controller="pid",
+        estimator="truth",
+        t_final=0.05,
+        q0=np.array([1.0, 0.0, 0.0, 0.0]),
+        q_des=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    off = run_slew(_cfg(**base))
+    gg = run_slew(_cfg(**base, env_gg=True))
+    np.testing.assert_allclose(gg.omega, off.omega, atol=1e-10)
+    np.testing.assert_allclose(gg.q, off.q, atol=1e-12)
+
+
+def test_env_gg_skewed_attitude_differs_from_off():
+    q0 = np.array([0.6, 0.1, -0.2, 0.7])
+    q0 = q0 / np.linalg.norm(q0)
+    base = dict(controller="pid", estimator="truth", t_final=0.2, q0=q0, q_des=q0)
+    off = run_slew(_cfg(**base))
+    gg = run_slew(_cfg(**base, env_gg=True, orbit_inclination_deg=51.6))
+    assert not np.allclose(gg.omega, off.omega)
