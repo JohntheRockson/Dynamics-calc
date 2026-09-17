@@ -1,7 +1,6 @@
 """Controller construction, inertia-scaled defaults, and disturbance rejection."""
 
 import numpy as np
-
 import pytest
 
 from attitude_sim.controls import (

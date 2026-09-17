@@ -190,40 +190,43 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     q_des = quat_normalize(cfg.q_des)
     tau_dist = np.asarray(cfg.tau_dist, dtype=float).reshape(3)
 
-    gyro = GyroModel(
-        sigma_v=cfg.gyro_sigma_v,
-        sigma_u=cfg.gyro_sigma_u,
-        bias=np.asarray(cfg.gyro_bias, dtype=float).copy(),
-        seed=rng,
-    )
-    sensors: list[VectorSensor] = []
-    if cfg.use_mag:
-        sensors.append(
-            VectorSensor(
-                v_inertial=np.array([0.3, 0.1, 0.95]),
-                sigma=cfg.mag_sigma,
-                seed=rng,
-                name="mag",
-            )
-        )
-    if cfg.use_sun:
-        sensors.append(
-            VectorSensor(
-                v_inertial=np.array([1.0, 0.05, 0.02]),
-                sigma=cfg.sun_sigma,
-                seed=rng,
-                name="sun",
-            )
-        )
-
     estimator = make_sim_estimator(cfg, q)
-    if estimator is not None and not sensors:
-        warnings.warn(
-            f"estimator {cfg.estimator!r} is running with no vector sensors "
-            "(gyro-only); full attitude is not observable from rate alone",
-            UserWarning,
-            stacklevel=2,
+    # Full-state feedback does not consume measurements. Skip gyro / vector
+    # construction and sampling so the truth path stays cheap.
+    gyro: GyroModel | None = None
+    sensors: list[VectorSensor] = []
+    if estimator is not None:
+        gyro = GyroModel(
+            sigma_v=cfg.gyro_sigma_v,
+            sigma_u=cfg.gyro_sigma_u,
+            bias=np.asarray(cfg.gyro_bias, dtype=float).copy(),
+            seed=rng,
         )
+        if cfg.use_mag:
+            sensors.append(
+                VectorSensor(
+                    v_inertial=np.array([0.3, 0.1, 0.95]),
+                    sigma=cfg.mag_sigma,
+                    seed=rng,
+                    name="mag",
+                )
+            )
+        if cfg.use_sun:
+            sensors.append(
+                VectorSensor(
+                    v_inertial=np.array([1.0, 0.05, 0.02]),
+                    sigma=cfg.sun_sigma,
+                    seed=rng,
+                    name="sun",
+                )
+            )
+        if not sensors:
+            warnings.warn(
+                f"estimator {cfg.estimator!r} is running with no vector sensors "
+                "(gyro-only); full attitude is not observable from rate alone",
+                UserWarning,
+                stacklevel=2,
+            )
 
     n = int(np.round(cfg.t_final / cfg.dt)) + 1
     t = np.arange(n, dtype=float) * cfg.dt
@@ -237,11 +240,11 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         q_hist[k] = q
         w_hist[k] = omega
 
-        omega_m = gyro.measure(omega, cfg.dt)
-        vecs = vectors_from_sensors(q, sensors) if sensors else None
-        if estimator is None:
+        if estimator is None or gyro is None:
             q_hat, omega_hat = q.copy(), omega.copy()
         else:
+            omega_m = gyro.measure(omega, cfg.dt)
+            vecs = vectors_from_sensors(q, sensors) if sensors else None
             q_hat, omega_hat = estimator.step(omega_m, cfg.dt, vecs)
 
         qh_hist[k] = q_hat

@@ -20,7 +20,6 @@ from attitude_sim.plant import (
 )
 from attitude_sim.quaternions import quat_normalize
 
-
 # Asymmetric J, dt = 0.002 s, T = 10 s.  Bounds sit ~100× above the observed
 # RK4 residuals (~1e-14) for these cases so they stay honest without being flaky.
 ENERGY_REL_TOL = 1e-12

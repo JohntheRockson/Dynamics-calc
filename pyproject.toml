@@ -18,7 +18,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
 
 [project.scripts]
 attitude-sim = "attitude_sim.sim:main"
@@ -37,4 +42,45 @@ pythonpath = ["src"]
 addopts = "--tb=short -ra"
 filterwarnings = [
     "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Real defects only: unused names, undefined names, pyupgrade, a few bugbears.
+# E501 is left off so CI does not churn scientific comments / equations.
+# E741: principal-moment `I` is conventional in this codebase.
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B018"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["attitude_sim"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["matplotlib.*", "mpl_toolkits.*", "scipy.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["attitude_sim"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]

@@ -41,6 +41,12 @@ python -m attitude_sim --help
 
 `--angle-deg` sets the commanded principal rotation for `--scenario slew` and is ignored for `detumble`. `--tau-dist` is a constant body-frame disturbance added to the plant only.
 
+| Flag | CLI behavior |
+| --- | --- |
+| `--dt` | Sample / RK4 step (s). Must be `> 0`; otherwise argparse exits with an error (not a traceback). |
+| `--tau-dist` | Three comma-separated body-frame disturbance torques `[N·m]` (e.g. `0.002,-0.001,0.0008`). Wrong arity or non-floats → argparse error. Logged `τ` is the control command; `τ_d` is plant-only. |
+| `--no-mag --no-sun` | Gyro-only. Allowed; `mekf` / `mahony` emit a `UserWarning` because full attitude is not observable from rate. `truth` does not sample sensors and does not warn. |
+
 Local runs write `{scenario}_summary.png` and `{scenario}_attitude.gif` under `outputs/` (gitignored). The recruiter-facing slew plot/GIF below are the committed copies in `docs/figures/`.
 
 ## Slew plot and GIF
@@ -96,9 +102,14 @@ python -m attitude_sim.monte_carlo --n 50 --estimator truth --t-final 22
 
 ```bash
 pytest
+make lint          # ruff
+make typecheck     # mypy src
+make coverage      # pytest-cov → coverage.xml
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]` on **Python 3.10 and 3.12**, runs `pytest -v`, then no-plot CLI smokes (slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, plus a tiny Monte Carlo entry: `python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling). Coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), and a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
+GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]` on **Python 3.10, 3.11, and 3.12**, runs `pytest -v`, then no-plot CLI smokes (slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, plus a tiny Monte Carlo entry: `python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling). The 3.12 pytest job also writes `coverage.xml` (artifact). Separate jobs run `ruff check src tests`, `mypy src`, and a `python -m build` wheel install/import smoke. Coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), and a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
+
+There is no coverage fail-under gate: the XML is a report, not a quota. Ruff does not run `format` in CI (no whitespace churn). Mypy is scoped to `src/attitude_sim` with `ignore_missing_imports` only for matplotlib and scipy.
 
 ## Equations (what the SimLab integrates)
 
@@ -169,7 +180,7 @@ See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
 
 - `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates. SimLab forwards `SimConfig.gyro_sigma_v` / `gyro_sigma_u` into that \(Q_d\) so the filter process noise matches the truth gyro.
 - `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\). Also exported as `attitude_sim.MahonyFilter`.
-- `truth` — full-state feedback (no estimator), for plant/controller checkout.
+- `truth` — full-state feedback (no estimator), for plant/controller checkout. SimLab skips gyro and vector-sensor sampling on this path.
 
 Gyro-only (`--no-mag --no-sun` with `mekf` / `mahony`) is allowed but warns: full attitude is not observable from rate alone.
 

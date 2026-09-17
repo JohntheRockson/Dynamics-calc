@@ -178,7 +178,7 @@ def test_mekf_tracks_plant_truth_with_noisy_sensors():
     sun = sun_sensor(sigma=1.5e-3, seed=6)
     filt = MultiplicativeEKF(q=q.copy(), sigma_v=3e-4, sigma_u=1e-6)
     errors = []
-    for k in range(400):
+    for _ in range(400):
         omega_m = gyro.measure(omega, dt)
         vecs = vectors_from_sensors(q, [mag, sun])
         q_hat, _ = filt.step(omega_m, dt, vecs)
@@ -223,7 +223,7 @@ def test_mekf_unit_norm_and_symmetric_p_after_steps():
     v_I = np.array([0.2, 0.4, 0.9])
     v2 = np.array([1.0, -0.1, 0.0])
     q = np.array([1.0, 0.0, 0.0, 0.0])
-    for k in range(50):
+    for _ in range(50):
         q = quat_multiply(q, axis_angle_to_quat(np.array([0.1, 0.2, 0.9]), 0.01))
         filt.step(np.array([0.1, 0.2, 0.9]), 0.01, [_vector_meas(q, v_I), _vector_meas(q, v2)])
     assert abs(np.linalg.norm(filt.q) - 1.0) < 1e-12
