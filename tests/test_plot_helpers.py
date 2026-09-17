@@ -6,7 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
-from attitude_sim.plots import mrp_error_from_log, plot_env_torque, plot_mrp_error, plot_slew
+from attitude_sim.plots import (
+    energy_casimir_from_log,
+    mrp_error_from_log,
+    plot_energy_casimir,
+    plot_env_torque,
+    plot_mrp_error,
+    plot_polhode,
+    plot_slew,
+)
 from attitude_sim.sim import make_scenario_config, run_slew
 
 
@@ -102,3 +110,42 @@ def test_plot_helpers_accept_log_without_rerun(tmp_path: Path):
     sigma = mrp_error_from_log(log)
     assert sigma.shape == (len(log.t), 3)
     assert np.all(np.isfinite(sigma))
+
+
+def test_polhode_writes_summary_and_casimir_pngs(tmp_path: Path):
+    log = run_slew(
+        make_scenario_config(
+            "polhode",
+            t_final=0.25,
+            plot=True,
+            gif=False,
+            out_dir=tmp_path,
+        )
+    )
+    assert log.plot_path == tmp_path / "polhode_summary.png"
+    assert log.polhode_plot_path == tmp_path / "polhode_polhode.png"
+    assert log.casimir_plot_path == tmp_path / "polhode_casimir.png"
+    assert _ok_png(log.plot_path)
+    assert _ok_png(log.polhode_plot_path)
+    assert _ok_png(log.casimir_plot_path)
+    energy, h2 = energy_casimir_from_log(log)
+    assert energy.shape == (len(log.t),)
+    assert h2.shape == (len(log.t),)
+    assert np.all(np.isfinite(energy))
+    assert np.all(np.isfinite(h2))
+
+
+def test_polhode_plot_opt_in_from_closed_loop_log(tmp_path: Path):
+    log = run_slew(
+        make_scenario_config(
+            "slew",
+            estimator="truth",
+            t_final=0.12,
+            plot=False,
+            gif=False,
+        )
+    )
+    polh = plot_polhode(log, tmp_path / "from_log_polhode.png", inertia=log.inertia)
+    casi = plot_energy_casimir(log, tmp_path / "from_log_casimir.png", inertia=log.inertia)
+    assert _ok_png(polh)
+    assert _ok_png(casi)

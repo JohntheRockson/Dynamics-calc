@@ -56,6 +56,7 @@ jobs:
           python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario hold --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario eigenaxis --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --scenario polhode --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller lqr --estimator mahony --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
             --tau-dist 0.002,-0.001,0.0008 --t-final 0.2 --no-plot --no-gif
@@ -68,8 +69,11 @@ jobs:
             --aerodynamic --srp --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --log-innovations /tmp/mekf_nis.csv --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --list-scenarios
-          # MC harness is slew-only; detumble/hold/eigenaxis are SimLab scenarios, not in the sweep.
+          # MC default is slew; hold / eigenaxis / --env are opt-in (tiny N).
           python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
+          python -m attitude_sim.monte_carlo --n 3 --scenario eigenaxis --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
+          python -m attitude_sim.monte_carlo --n 3 --scenario hold --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
+          python -m attitude_sim.monte_carlo --n 3 --scenario slew --env --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
 
   packaging:
     runs-on: ubuntu-latest

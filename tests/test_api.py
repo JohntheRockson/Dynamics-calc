@@ -52,16 +52,20 @@ def test_version_and_public_exports():
         "mrp_B",
         "mrp_derivative",
         "SCENARIOS",
+        "MC_SCENARIOS",
         "make_scenario_config",
         "make_hold_environmental_torques",
         "plot_mrp_error",
         "plot_env_torque",
+        "plot_polhode",
+        "plot_energy_casimir",
         "attitude_error_mrp",
         "scenario_catalog_text",
         "kinetic_energy",
         "energy_casimir",
         "sample_polhode",
         "sample_herpolhode",
+        "run_polhode",
         "principal_spin_stability",
         "SpinStability",
         "Gyrostat",
@@ -96,7 +100,11 @@ def test_version_and_public_exports():
     assert "make_scenario_config" in attitude_sim.__all__
     assert "hold" in attitude_sim.SCENARIOS
     assert "eigenaxis" in attitude_sim.SCENARIOS
+    assert "polhode" in attitude_sim.SCENARIOS
+    assert attitude_sim.MC_SCENARIOS == ("slew", "hold", "eigenaxis")
     assert "sample_polhode" in attitude_sim.__all__
+    assert "run_polhode" in attitude_sim.__all__
+    assert "plot_polhode" in attitude_sim.__all__
     assert "SpinStability" in attitude_sim.__all__
     assert "Gyrostat" in attitude_sim.__all__
     assert "step_gyrostat" in attitude_sim.__all__
