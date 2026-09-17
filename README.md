@@ -34,6 +34,8 @@ python -m attitude_sim
 python -m attitude_sim --scenario detumble
 python -m attitude_sim --controller lqr --estimator mekf --t-final 40
 python -m attitude_sim --controller pid --estimator truth --no-gif
+python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
+    --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
 python -m attitude_sim --help
 ```
 
@@ -67,7 +69,7 @@ python -m attitude_sim --scenario detumble --out-dir outputs --no-gif
 pytest
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]`, runs `pytest -v`, then a no-plot CLI smoke of both scenarios. Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, and a detumble rate-dump smoke test.
+GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]`, runs `pytest -v`, then a no-plot CLI smoke of both scenarios. Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, a detumble rate-dump smoke test, and a constant body-torque hold (PID nulls the bias; LQR holds a small proportional residual). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
 
 ## Equations (what the SimLab integrates)
 
@@ -112,23 +114,25 @@ e_{q} = \operatorname{sign}(q_{e0})\, q_{e,1:3},\qquad
 \delta\theta \approx 2 e_{q}.
 \]
 
-**PID** (inertia-scaled PD, small integral, optional gyroscopic cancellation, saturation / anti-windup):
+**PID** (inertia-scaled PD plus integral, optional gyroscopic cancellation, torque saturation, gated anti-windup):
 
 \[
-\tau = -K_{p} e_{q} - K_{d}(\hat{\omega}-\omega_{\mathrm{des}}) - K_{i} z + \omega \times J\omega,
+\tau = -K_{p} e_{q} - K_{d}(\hat{\omega}-\omega_{\mathrm{des}}) - K_{i} z + \omega \times J\omega,\qquad |\tau|\le\tau_{\max}.
 \]
 
-with default \(K_{p} = 2\omega_{n}^{2} J\), \(K_{d} = 2\zeta\omega_{n} J\).
+Defaults use \(e_{q}\approx\theta/2\) so the rotation-vector loop has \(\omega_{n},\,\zeta\): \(K_{p} = 2\omega_{n}^{2} J\), \(K_{d} = 2\zeta\omega_{n} J\), \(K_{i} = \tfrac12\omega_{n}^{3} J\) with \(\omega_{n}=0.5\,\mathrm{rad/s}\), \(\zeta=1\). That \(\omega_{n}\) puts the opening 75° PD torque on the \(0.02\,\mathrm{N\cdot m}\) actuator. The integrator is gated to \(\|e_{q}\|\le 0.10\) so it rejects a body-frame bias without winding up on the slew.
 
 **LQR** on the rest linearization \(x=[\delta\theta,\,\omega]\), \(u=\tau\):
 
 \[
 A = \begin{bmatrix} 0 & I \\ 0 & 0 \end{bmatrix},\qquad
 B = \begin{bmatrix} 0 \\ J^{-1} \end{bmatrix},\qquad
-\tau = -K x + \omega \times J\omega,
+\tau = -K x + \omega \times J\omega,\qquad |\tau|\le\tau_{\max}.
 \]
 
-\(K\) from `scipy.linalg.solve_continuous_are`.
+Default \(Q,R\) are Bryson placeholders (\(1/\theta_{\mathrm{ref}}^{2}\), \(1/\omega_{\mathrm{ref}}^{2}\), \(1/\tau_{\max}^{2}\) with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\)). \(K\) is the CARE gain from `scipy.linalg.solve_continuous_are`, or a supplied \(3\times 6\) matrix. No integrator: a constant disturbance leaves \(\delta\theta_{\mathrm{ss}}\approx K_{\theta}^{-1}\tau_{d}\).
+
+See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
 
 **Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\).
 
@@ -157,6 +161,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers (principal axes / validation), Euler equation, RK4 |
 | `attitude_sim.controls` | PID and CARE LQR, `--controller` switch |
+| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia notes |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
 | `attitude_sim.sim` | SimLab scenarios + CLI (`slew`, `detumble`) |
@@ -170,5 +175,6 @@ Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06
 | --- | --- | --- |
 | `pid` | `truth` | Plant + quaternion PD/PID |
 | `lqr` | `truth` | Linearized LQR pointing |
+| `pid` or `lqr` | `truth` | Body-torque hold: `--angle-deg 0 --tau-dist …` |
 | `pid` or `lqr` | `mekf` | Control on Kalman estimates (default) |
 | `pid` or `lqr` | `mahony` | Control on complementary-filter estimates |

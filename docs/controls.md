@@ -1,0 +1,106 @@
+# Attitude control laws (Milestone 1)
+
+Both controllers consume \((\hat q,\,\hat\omega)\) — true plant state or filter
+estimates — and return a body-frame torque.  The plant is the smallsat-class
+principal inertia
+
+\[
+J = \mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2}
+\]
+
+with actuator saturation \(|\tau|\le\tau_{\max}=0.02\,\mathrm{N\cdot m}\).  Gains
+below are sized to that scale so a 75° rest-to-rest slew stays stable and a
+few-mN·m body disturbance is rejectable.
+
+## Error quaternion
+
+Scalar-first Hamilton product.  The frozen convention is
+
+\[
+q_{e} = q_{\mathrm{des}}^{\ast} \otimes \hat q,\qquad
+e_{q} = \operatorname{sign}(q_{e0})\, q_{e,1:3},\qquad
+\delta\theta \approx 2 e_{q}.
+\]
+
+\(e_{q}\) is the vector part of the shortest-path error (\(\|e_{q}\|=\sin(\theta/2)\)).
+\(\delta\theta\) is the small-angle rotation vector in radians.  PID feeds \(e_{q}\);
+LQR feeds \(\delta\theta\).
+
+## PID
+
+\[
+\tau = -K_{p} e_{q} - K_{d}(\hat\omega-\omega_{\mathrm{des}}) - K_{i} z
++\omega\times J\omega,\qquad
+| \tau | \le \tau_{\max}.
+\]
+
+\(z=\int e_{q}\,dt\) with a norm clamp \(\|z\|\le z_{\max}\) and two anti-windup
+rules: integrate only when \(\|e_{q}\|\) is inside a small gate, and freeze \(z\)
+while the command is saturated.  Gyroscopic cancellation and \(\tau_{\max}\) are
+optional (`gyroscopic_cancel`, `torque_limit`).
+
+Because \(e_{q}\approx\theta/2\), matching a rotation-vector PD
+\(\tau=- \omega_{n}^{2} J\,\theta - 2\zeta\omega_{n} J\,\omega\) gives the
+inertia-scaled defaults
+
+\[
+K_{p} = 2\omega_{n}^{2} J,\qquad
+K_{d} = 2\zeta\omega_{n} J,\qquad
+K_{i} = c\,\omega_{n}^{3} J
+\]
+
+with \(\omega_{n}=0.5\,\mathrm{rad/s}\), \(\zeta=1\), \(c=0.5\).
+
+**Why this \(\omega_{n}\).**  Peak PD torque on the stock 75° slew is
+\(|\tau|\approx \omega_{n}^{2} J\theta \approx 0.02\,\mathrm{N\cdot m}\), so the
+opening command sits on the actuator rather than an arbitrary gain.  Critically
+damped 2% settling is \(\sim 9\,\mathrm{s}\), well inside the 22–40 s scenario.
+\(K_{i}\) places a PI zero near \(\omega_{n}/4\); \(z_{\max}=3\) can hold
+\(\sim 0.3\,\tau_{\max}\) of bias.  The gate \(\|e_{q}\|\le 0.10\) (\(\sim 11°\))
+keeps the integrator off during the slew.
+
+A constant body torque \(\tau_{d}\) is rejected to (near) zero by the integral.
+PD alone leaves \(\theta_{\mathrm{ss}}\approx \tau_{d}/(\omega_{n}^{2} J)\).
+
+## LQR
+
+Linearize about rest with \(x=[\delta\theta,\,\omega]\) and \(u=\tau\):
+
+\[
+A=\begin{bmatrix}0&I\\0&0\end{bmatrix},\qquad
+B=\begin{bmatrix}0\\J^{-1}\end{bmatrix},\qquad
+\tau=-Kx+\omega\times J\omega,\qquad | \tau |\le\tau_{\max}.
+\]
+
+**Gain path.**  Default costs are Bryson placeholders
+
+\[
+Q=\mathrm{diag}\!\big(\underbrace{1/\theta_{\mathrm{ref}}^{2}}_{3},
+\underbrace{1/\omega_{\mathrm{ref}}^{2}}_{3}\big),\qquad
+R=(1/\tau_{\mathrm{ref}}^{2})I
+\]
+
+with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\),
+\(\omega_{\mathrm{ref}}=0.20\,\mathrm{rad/s}\),
+\(\tau_{\mathrm{ref}}=\tau_{\max}\).  \(K\) comes from the CARE
+(`scipy.linalg.solve_continuous_are`).  Passing `K=` skips the solve.
+
+On this plant those weights give \(K_{\theta}\approx\tau_{\max}/\theta_{\mathrm{ref}}=0.08\)
+(linear region \(\sim 14°\), equivalent \(\omega_{n}\approx 1.1\,\mathrm{rad/s}\),
+\(\zeta\approx 1\)).  The previous placeholders (\(Q_{\theta}=6\), \(R=8\)) produced
+\(K_{\theta}\approx 0.87\) and a \(\sim 1°\) saturating bang-bang, mismatched to
+20 mN·m wheels.
+
+LQR has no integrator.  A constant \(\tau_{d}\) leaves
+\(\delta\theta_{\mathrm{ss}}\approx K_{\theta}^{-1}\tau_{d}\) (about \(1.4°\) for
+a 2 mN·m bias).  That residual is the stiffness, not a tracker-to-zero.
+
+## Scenario
+
+```bash
+python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
+    --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
+```
+
+`--tau-dist` is a constant body-frame disturbance added to the plant only; the
+logged \(\tau\) is the control command.

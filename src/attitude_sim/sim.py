@@ -44,6 +44,7 @@ class SimConfig:
         default_factory=lambda: axis_angle_to_quat(SLEW_AXIS, np.deg2rad(75.0))
     )
     torque_limit: float = 0.02
+    tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gyro_sigma_v: float = 5e-4
     gyro_sigma_u: float = 1e-6
     gyro_bias: np.ndarray = field(default_factory=lambda: np.array([0.002, -0.001, 0.0015]))
@@ -94,6 +95,7 @@ def make_scenario_config(
     controller: str = "pid",
     estimator: str = "mekf",
     angle_deg: float = 75.0,
+    tau_dist: np.ndarray | None = None,
     use_mag: bool = True,
     use_sun: bool = True,
     seed: int = 1,
@@ -105,6 +107,7 @@ def make_scenario_config(
     name = scenario.lower()
     if name not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}; expected one of {SCENARIOS}")
+    dist = np.zeros(3) if tau_dist is None else np.asarray(tau_dist, dtype=float).reshape(3)
     if name == "detumble":
         return SimConfig(
             dt=dt,
@@ -115,6 +118,7 @@ def make_scenario_config(
             q0=axis_angle_to_quat(DETUMBLE_Q0_AXIS, np.deg2rad(40.0)),
             omega0=DETUMBLE_OMEGA0.copy(),
             q_des=np.array([1.0, 0.0, 0.0, 0.0]),
+            tau_dist=dist,
             use_mag=use_mag,
             use_sun=use_sun,
             seed=seed,
@@ -129,6 +133,7 @@ def make_scenario_config(
         estimator=estimator,
         scenario="slew",
         q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
+        tau_dist=dist,
         use_mag=use_mag,
         use_sun=use_sun,
         seed=seed,
@@ -149,6 +154,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     q = quat_normalize(cfg.q0)
     omega = np.asarray(cfg.omega0, dtype=float).reshape(3).copy()
     q_des = quat_normalize(cfg.q_des)
+    tau_dist = np.asarray(cfg.tau_dist, dtype=float).reshape(3)
 
     gyro = GyroModel(
         sigma_v=cfg.gyro_sigma_v,
@@ -201,7 +207,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         wh_hist[k] = omega_hat
         tau = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
         tau_hist[k] = tau
-        q, omega = step_rigid_body(body, q, omega, tau, cfg.dt)
+        q, omega = step_rigid_body(body, q, omega, tau + tau_dist, cfg.dt)
 
     euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
     att_error = np.array([geodesic_angle(qi, q_des) for qi in q_hist])
@@ -284,7 +290,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=75.0,
         help="commanded principal rotation for --scenario slew (deg)",
     )
+    p.add_argument(
+        "--tau-dist",
+        default="0,0,0",
+        help="constant body-frame disturbance torque [N·m], comma-separated (e.g. 0.002,0,0)",
+    )
     return p
+
+
+def _parse_vec3(text: str, name: str) -> np.ndarray:
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"{name} must be three comma-separated numbers, got {text!r}")
+    return np.array([float(p) for p in parts], dtype=float)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -296,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         controller=args.controller,
         estimator=args.estimator,
         angle_deg=args.angle_deg,
+        tau_dist=_parse_vec3(args.tau_dist, "--tau-dist"),
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         seed=args.seed,

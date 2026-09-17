@@ -84,3 +84,37 @@ def test_scenario_plot_names(tmp_path):
     )
     assert log.plot_path == tmp_path / "detumble_summary.png"
     assert log.plot_path.is_file()
+
+
+def test_pid_hold_rejects_body_disturbance():
+    q_des = np.array([1.0, 0.0, 0.0, 0.0])
+    tau_dist = np.array([0.002, -0.001, 0.0008])
+    log = run_slew(
+        _cfg(
+            controller="pid",
+            estimator="truth",
+            q0=q_des,
+            q_des=q_des,
+            tau_dist=tau_dist,
+            t_final=30.0,
+        )
+    )
+    assert log.final_att_error_deg < 1.5
+    assert np.linalg.norm(log.omega[-1]) < 0.02
+
+
+def test_lqr_hold_rejects_body_disturbance():
+    q_des = np.array([1.0, 0.0, 0.0, 0.0])
+    tau_dist = np.array([0.002, -0.001, 0.0008])
+    log = run_slew(
+        _cfg(
+            controller="lqr",
+            estimator="truth",
+            q0=q_des,
+            q_des=q_des,
+            tau_dist=tau_dist,
+            t_final=20.0,
+        )
+    )
+    assert log.final_att_error_deg < 3.0
+    assert np.linalg.norm(log.omega[-1]) < 0.02
