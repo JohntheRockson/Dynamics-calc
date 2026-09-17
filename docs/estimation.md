@@ -127,11 +127,53 @@ vector innovation; the **controller** rate does not:
 
 Default gains \(k_p = 1.5\), \(k_i = 0.08\) (1/s).
 
+## NEES consistency smoke
+
+Normalized Estimation Error Squared (NEES) for the 6-state MEKF error
+\(x = [\delta\alpha,\,\delta b]\) is
+
+\[
+\varepsilon = x^{\top} P^{-1} x .
+\]
+
+If the filter is consistent and the linear-Gaussian model holds, each
+independent sample is \(\chi^2\) with \(\dim(x)\) degrees of freedom
+(mean \(= \dim\)).  The attitude and bias *blocks* use the marginal
+\(P_{\alpha\alpha}\) / \(P_{bb}\) and are \(\chi^2_3\) (mean 3).  Mean
+NEES \(\ll n\) means \(P\) is pessimistic (covariance too large); mean
+NEES \(\gg n\) means \(P\) is optimistic (overconfident).
+
+`attitude_sim.nees` scores a **short open-loop** torque-free plant
+trajectory with matching Farrenkopf gyro densities and mag/sun \(\sigma\).
+The initial error is drawn from the same \(P_0\) the filter is started
+with, so \(t=0\) is a prior \(\chi^2_6\) sample.  Each later sample
+aligns the plant step, gyro interval, vector observations, and
+`MultiplicativeEKF.step` at the same instant (the SimLab closed-loop
+log is *not* rewritten).  The MEKF itself is unchanged.
+
+The CI smoke (`tests/test_nees.py`, eight runs × 1.6 s, \(dt=0.02\))
+asserts that the Monte-Carlo *mean* NEES stays in a **loose** band,
+not a textbook ANEES campaign (time samples on one trajectory are
+correlated; eight short runs are not a 95% \(\chi^2\) test):
+
+| Quantity | \(\chi^2\) dof | \(\mathrm{E}[\varepsilon]\) | Smoke band |
+| --- | --- | --- | --- |
+| full 6-state | 6 | 6 | \([1.5,\,18]\) ≈ \(0.25n \ldots 3n\) |
+| attitude \(\delta\alpha\) | 3 | 3 | \([0.5,\,12]\) |
+| bias \(\delta b\) | 3 | 3 | \([0.5,\,12]\) |
+
+Tune \(Q/R\) (or run a real Monte Carlo ANEES study) if you need a tight
+consistency campaign; do not tighten this gate until then.
+
+```bash
+pytest tests/test_nees.py
+```
+
 ## Running estimator tests
 
 From the repo root (after `pip install -e ".[dev]"`):
 
 ```bash
-pytest tests/test_estimation.py tests/test_sensors.py
+pytest tests/test_estimation.py tests/test_sensors.py tests/test_nees.py
 pytest                          # full suite, including closed-loop smoke
 ```
