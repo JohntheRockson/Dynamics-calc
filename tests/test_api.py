@@ -30,6 +30,11 @@ def test_version_and_public_exports():
         "ResidualDipoleTorque",
         "gravity_gradient_torque",
         "magnetic_dipole_torque",
+        "quat_to_mrp",
+        "mrp_to_quat",
+        "mrp_switch",
+        "mrp_B",
+        "mrp_derivative",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter

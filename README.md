@@ -178,6 +178,13 @@ Scalar-first unit quaternions \(q = [q_{w},\,q_{x},\,q_{y},\,q_{z}]\) with the H
 \dot{q} = \tfrac{1}{2}\, q \otimes \hat{\omega}.
 \]
 
+**Modified Rodrigues Parameters** (optional chart, `attitude_sim.mrp`; not the SimLab state). \(\sigma = q_{1:3}/(1+q_w)=\hat e\tan(\Phi/4)\). Inverse \(q_w=(1-\sigma^2)/(1+\sigma^2)\), \(q_{1:3}=2\sigma/(1+\sigma^2)\). Shadow set \(\sigma^s=-\sigma/\|\sigma\|^2\) is the same attitude (the opposite quaternion); switch when \(\|\sigma\|\) exceeds 1 (configurable) so the chart stays away from the \(\Phi=\pm 360^\circ\) pole. DCM \(R(\sigma)=R(q(\sigma))\) with this repo’s \(v_I=R\,v_b\). Kinematics
+
+\[
+\dot\sigma = \tfrac14 B(\sigma)\,\omega,\qquad
+B(\sigma)=(1-\sigma^2)I + 2[\sigma\times] + 2\sigma\sigma^{\top}.
+\]
+
 **Euler rotational dynamics** with body inertia \(J=J^{\top}\succ 0\) and external control torque \(\tau\):
 
 \[
@@ -270,6 +277,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | Module | Role |
 | --- | --- |
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
+| `attitude_sim.mrp` | Modified Rodrigues Parameters: quat/DCM conversions, shadow-set switch, \(\dot\sigma=\tfrac14 B(\sigma)\omega\) |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers, Euler equation, RK4 (default); optional RKMK4 via `step_rigid_body(..., method="rkmk4")` — **not** a SimLab CLI flag |
 | `attitude_sim.disturbances` | Gravity-gradient and residual-dipole `τ_body(q, ω, t or orbit)`; not wired into the CLI |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch |

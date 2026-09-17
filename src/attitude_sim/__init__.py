@@ -26,6 +26,14 @@ from attitude_sim.estimation import (
     make_estimator,
     triad_attitude,
 )
+from attitude_sim.mrp import (
+    mrp_B,
+    mrp_derivative,
+    mrp_switch,
+    mrp_to_quat,
+    mrp_to_rotation,
+    quat_to_mrp,
+)
 from attitude_sim.plant import (
     RigidBody,
     inertia_from_principal,
@@ -79,12 +87,18 @@ __all__ = [
     "make_actuator",
     "make_controller",
     "make_estimator",
+    "mrp_B",
+    "mrp_derivative",
+    "mrp_switch",
+    "mrp_to_quat",
+    "mrp_to_rotation",
     "principal_moments_and_axes",
     "quat_conjugate",
     "quat_error",
     "quat_multiply",
     "quat_normalize",
     "quat_to_euler321",
+    "quat_to_mrp",
     "quat_to_rotation",
     "rk4_step",
     "rkmk4_step",
