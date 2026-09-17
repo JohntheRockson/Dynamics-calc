@@ -14,12 +14,11 @@ from matplotlib import animation
 from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from attitude_sim.quaternions import quat_to_rotation
+from attitude_sim.mrp import quat_to_mrp
+from attitude_sim.quaternions import quat_error, quat_to_rotation
+from attitude_sim.scenarios import SCENARIO_TITLES
 
-_SCENARIO_TITLES = {
-    "slew": "Rest-to-rest slew",
-    "detumble": "Detumble to rest",
-}
+_SCENARIO_TITLES = dict(SCENARIO_TITLES)
 
 
 def _scenario_title(log) -> str:
@@ -112,6 +111,109 @@ def plot_slew(log, path: Path) -> Path:
     fig.suptitle(
         f"{_scenario_title(log)}  |  controller={log.controller}  estimator={log.estimator}",
         fontsize=13,
+    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def attitude_error_mrp(q: np.ndarray, q_des: np.ndarray) -> np.ndarray:
+    """Shadow-switched MRP of the attitude error ``q_e = q_des* ⊗ q``.
+
+    Post-process only: does not change the plant state.  ``||σ_e|| = tan(Φ/4)``
+    for geodesic angle ``Φ``.
+    """
+    qe = quat_error(q, q_des)
+    return quat_to_mrp(qe, switch=True)
+
+
+def mrp_error_from_log(log) -> np.ndarray:
+    """``(n, 3)`` MRP attitude error from logged quaternions (not the integrator)."""
+    q_des = np.asarray(log.q_des, dtype=float).reshape(4)
+    return np.vstack([attitude_error_mrp(qi, q_des) for qi in log.q])
+
+
+def plot_mrp_error(log, path: Path) -> Path:
+    """Write a post-process MRP chart of logged ``q`` vs ``q_des``.
+
+    The plant still integrates on S^3; this figure is ``σ(q_e)`` reconstructed
+    from the quaternion log (optional extra PNG, not a seventh summary panel).
+    """
+    _style()
+    t = log.t
+    sigma_e = mrp_error_from_log(log)
+    sigma_q = np.vstack([quat_to_mrp(qi, switch=True) for qi in log.q])
+    sigma_des = quat_to_mrp(log.q_des, switch=True)
+    phi = np.asarray(log.att_error, dtype=float)
+    tan_quarter = np.tan(0.25 * phi)
+
+    fig, axes = plt.subplots(3, 1, figsize=(8.6, 8.4), constrained_layout=True, sharex=True)
+
+    ax = axes[0]
+    for i, lab in enumerate([r"$\sigma_{e,x}$", r"$\sigma_{e,y}$", r"$\sigma_{e,z}$"]):
+        ax.plot(t, sigma_e[:, i], label=lab)
+    ax.set_ylabel("MRP")
+    ax.set_title(r"Attitude-error MRP $\sigma(q_{\mathrm{des}}^{\ast}\otimes q)$ (shadow-switched)")
+    ax.legend(ncol=3, loc="best")
+
+    ax = axes[1]
+    ax.plot(t, np.linalg.norm(sigma_e, axis=1), color="C3", label=r"$||\sigma_e||$")
+    ax.plot(t, tan_quarter, color="C0", ls="--", lw=1.2, label=r"$\tan(\Phi/4)$ from geodesic")
+    ax.set_ylabel("MRP mag")
+    ax.set_title("Chart magnitude vs geodesic quarter-angle")
+    ax.legend(loc="best")
+
+    ax = axes[2]
+    for i, lab in enumerate([r"$\sigma_x$", r"$\sigma_y$", r"$\sigma_z$"]):
+        ax.plot(t, sigma_q[:, i], label=lab)
+        ax.plot(t, np.full_like(t, sigma_des[i]), ls="--", lw=1, alpha=0.7, color=f"C{i}")
+    ax.set_ylabel("MRP")
+    ax.set_xlabel("t (s)")
+    ax.set_title(r"Body MRP $\sigma(q)$ (dashed = command)")
+    ax.legend(ncol=3, loc="best")
+
+    fig.suptitle(
+        f"MRP chart (post-process)  |  {_scenario_title(log)}  |  "
+        f"{log.controller}+{log.estimator}",
+        fontsize=12,
+    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def plot_env_torque(log, path: Path) -> Path:
+    """Write environmental-torque history plus the opposing control command."""
+    _style()
+    t = log.t
+    tau_env = np.asarray(getattr(log, "tau_env", np.zeros((len(t), 3))), dtype=float)
+    if tau_env.size == 0:
+        tau_env = np.zeros((len(t), 3))
+    fig, axes = plt.subplots(2, 1, figsize=(8.6, 6.4), constrained_layout=True, sharex=True)
+
+    ax = axes[0]
+    for i, lab in enumerate([r"$\tau_{\mathrm{env},x}$", r"$\tau_{\mathrm{env},y}$", r"$\tau_{\mathrm{env},z}$"]):
+        ax.plot(t, tau_env[:, i], label=lab)
+    ax.set_ylabel("N·m")
+    ax.set_title("Environmental body torque (GG + residual dipole)")
+    ax.legend(ncol=3, loc="best")
+
+    ax = axes[1]
+    ax.plot(t, np.linalg.norm(tau_env, axis=1), color="C3", label=r"$||\tau_{\mathrm{env}}||$")
+    ax.plot(t, np.linalg.norm(log.tau, axis=1), color="C0", ls="--", label=r"$||\tau_{\mathrm{ctrl}}||$")
+    ax.set_ylabel("N·m")
+    ax.set_xlabel("t (s)")
+    ax.set_title("Torque magnitudes (control should cancel a slow environmental bias)")
+    ax.legend(loc="best")
+
+    fig.suptitle(
+        f"Environmental torques  |  {_scenario_title(log)}  |  "
+        f"{log.controller}+{log.estimator}",
+        fontsize=12,
     )
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

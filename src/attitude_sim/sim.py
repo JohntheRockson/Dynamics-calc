@@ -26,17 +26,23 @@ from attitude_sim.estimation import (
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
 from attitude_sim.quaternions import (
-    axis_angle_to_quat,
     geodesic_angle,
     quat_normalize,
     quat_to_euler321,
 )
+from attitude_sim.scenarios import (
+    HOLD_ORBIT_INCLINATION_RAD,
+    HOLD_RESIDUAL_DIPOLE_A_M2,
+    SCENARIO_BLURBS,
+    SCENARIOS,
+    default_t_final,
+    resolve_controller,
+    resolve_use_env,
+    scenario_catalog_text,
+    scenario_state,
+)
 from attitude_sim.sensors import GyroModel, VectorSensor
 
-SCENARIOS = ("slew", "detumble")
-SLEW_AXIS = np.array([0.2, 0.5, 0.84])
-DETUMBLE_Q0_AXIS = np.array([0.4, 0.2, 0.9])
-DETUMBLE_OMEGA0 = np.array([0.55, -0.40, 0.30])
 DIPOLE_MODELS = ("tilted", "orbit_normal")
 # LEO-scale circular orbit used only when gravity-gradient / residual-dipole
 # flags are on. Defaults preserve the prior constant-τ_d-only plant.
@@ -59,9 +65,7 @@ class SimConfig:
     scenario: str = "slew"
     q0: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0]))
     omega0: np.ndarray = field(default_factory=lambda: np.zeros(3))
-    q_des: np.ndarray = field(
-        default_factory=lambda: axis_angle_to_quat(SLEW_AXIS, np.deg2rad(75.0))
-    )
+    q_des: np.ndarray = field(default_factory=lambda: scenario_state("slew")[2])
     torque_limit: float | None = 0.02
     gain_scale: float = 1.0
     actuator_tau_max: float | np.ndarray | None = None
@@ -74,6 +78,7 @@ class SimConfig:
     orbit_raan_deg: float = 0.0
     dipole_m: np.ndarray = field(default_factory=lambda: DEFAULT_DIPOLE_M.copy())
     dipole_model: str = "tilted"
+    mrp_plot: bool = False
     gyro_sigma_v: float = 5e-4
     gyro_sigma_u: float = 1e-6
     gyro_bias: np.ndarray = field(default_factory=lambda: np.array([0.002, -0.001, 0.0015]))
@@ -109,8 +114,11 @@ class SimLog:
     controller: str
     estimator: str
     scenario: str = "slew"
+    tau_env: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     plot_path: Path | None = None
     gif_path: Path | None = None
+    mrp_plot_path: Path | None = None
+    env_plot_path: Path | None = None
 
     @property
     def final_att_error_deg(self) -> float:
@@ -122,9 +130,9 @@ def make_scenario_config(
     *,
     dt: float = 0.01,
     t_final: float | None = None,
-    controller: str = "pid",
+    controller: str | None = None,
     estimator: str = "mekf",
-    angle_deg: float = 75.0,
+    angle_deg: float | None = None,
     tau_dist: np.ndarray | None = None,
     actuator_tau_max: float | np.ndarray | None = None,
     actuator_tau: float | None = None,
@@ -146,6 +154,10 @@ def make_scenario_config(
     plot: bool = True,
     gif: bool = True,
     out_dir: Path = Path("outputs"),
+    use_env: bool | None = None,
+    env_flag: bool = False,
+    no_env: bool = False,
+    mrp_plot: bool | None = None,
 ) -> SimConfig:
     """Named SimLab presets. Plant / controller / estimator cores are unchanged.
 
@@ -154,57 +166,47 @@ def make_scenario_config(
     ``Q_d``.  ``None`` keeps the ``SimConfig`` defaults.
 
     ``gravity_gradient`` / ``residual_dipole`` default off so the stock
-    demos stay on the constant-``τ_d`` plant.  Orbit / dipole knobs are
-    stored even when the models are off.
+    demos stay on the constant-``τ_d`` plant.  ``hold`` (or ``--env``) turns
+    both on with a demo-scale residual dipole.  ``--no-env`` turns them off.
+    Orbit / dipole knobs are stored even when the models are off.
     """
+    q0, omega0, q_des = scenario_state(scenario, angle_deg=angle_deg)
     name = scenario.lower()
-    if name not in SCENARIOS:
-        raise ValueError(f"unknown scenario {scenario!r}; expected one of {SCENARIOS}")
     dist = np.zeros(3) if tau_dist is None else np.asarray(tau_dist, dtype=float).reshape(3)
-    if name == "detumble":
-        cfg = SimConfig(
-            dt=dt,
-            t_final=30.0 if t_final is None else t_final,
-            controller=controller,
-            estimator=estimator,
-            scenario="detumble",
-            q0=axis_angle_to_quat(DETUMBLE_Q0_AXIS, np.deg2rad(40.0)),
-            omega0=DETUMBLE_OMEGA0.copy(),
-            q_des=np.array([1.0, 0.0, 0.0, 0.0]),
-            tau_dist=dist,
-            actuator_tau_max=actuator_tau_max,
-            actuator_tau=actuator_tau,
-            gravity_gradient=gravity_gradient,
-            residual_dipole=residual_dipole,
-            use_mag=use_mag,
-            use_sun=use_sun,
-            coarse_init=coarse_init,
-            seed=seed,
-            plot=plot,
-            gif=gif,
-            out_dir=out_dir,
-        )
-    else:
-        cfg = SimConfig(
-            dt=dt,
-            t_final=40.0 if t_final is None else t_final,
-            controller=controller,
-            estimator=estimator,
-            scenario="slew",
-            q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
-            tau_dist=dist,
-            actuator_tau_max=actuator_tau_max,
-            actuator_tau=actuator_tau,
-            gravity_gradient=gravity_gradient,
-            residual_dipole=residual_dipole,
-            use_mag=use_mag,
-            use_sun=use_sun,
-            coarse_init=coarse_init,
-            seed=seed,
-            plot=plot,
-            gif=gif,
-            out_dir=out_dir,
-        )
+    want_env = resolve_use_env(name, use_env=use_env, env_flag=env_flag, no_env=no_env)
+    gg = bool(gravity_gradient) or want_env
+    rd = bool(residual_dipole) or want_env
+    if no_env:
+        gg = False
+        rd = False
+    write_mrp = bool(mrp_plot) if mrp_plot is not None else name in {"hold", "eigenaxis"}
+    cfg = SimConfig(
+        dt=dt,
+        t_final=default_t_final(name) if t_final is None else t_final,
+        controller=resolve_controller(name, controller),
+        estimator=estimator,
+        scenario=name,
+        q0=q0,
+        omega0=omega0,
+        q_des=q_des,
+        tau_dist=dist,
+        actuator_tau_max=actuator_tau_max,
+        actuator_tau=actuator_tau,
+        gravity_gradient=gg,
+        residual_dipole=rd,
+        mrp_plot=write_mrp,
+        use_mag=use_mag,
+        use_sun=use_sun,
+        coarse_init=coarse_init,
+        seed=seed,
+        plot=plot,
+        gif=gif,
+        out_dir=out_dir,
+    )
+    if want_env and orbit_inclination_deg is None:
+        cfg.orbit_inclination_deg = float(np.rad2deg(HOLD_ORBIT_INCLINATION_RAD))
+    if want_env and dipole_m is None:
+        cfg.dipole_m = HOLD_RESIDUAL_DIPOLE_A_M2.copy()
     if orbit_radius is not None:
         cfg.orbit_radius = float(orbit_radius)
     if orbit_inclination_deg is not None:
@@ -284,9 +286,11 @@ def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
 
 
 def run_slew(cfg: SimConfig | None = None) -> SimLog:
-    """Closed-loop SimLab run (slew or detumble); optionally writes plot/GIF.
+    """Closed-loop SimLab run (named scenario); optionally writes plot/GIF.
 
-    ``run_sim`` is a public alias — this is not slew-only.
+    ``run_sim`` is a public alias — this is not slew-only.  Environmental
+    torques from ``make_sim_disturbances`` are added to the plant input after
+    the actuator; ``step_rigid_body`` is unchanged.
     """
     cfg = cfg if cfg is not None else SimConfig()
     if cfg.dt <= 0.0:
@@ -366,6 +370,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     q_hist = np.zeros((n, 4))
     w_hist = np.zeros((n, 3))
     tau_hist = np.zeros((n, 3))
+    tau_env_hist = np.zeros((n, 3))
     qh_hist = np.zeros((n, 4))
     wh_hist = np.zeros((n, 3))
 
@@ -385,13 +390,17 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         tau_cmd = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
         tau = actuator.apply(tau_cmd, cfg.dt)
         tau_hist[k] = tau
-        # τ[k] is held over [t[k], t[k+1]).  Do not take an extra unused
-        # plant step after the last logged sample.
+        if env is not None:
+            tau_env_hist[k] = np.asarray(
+                env.tau_body(q, omega, float(t[k])), dtype=float
+            ).reshape(3)
+        # τ[k] is held over [t[k], t[k+1]).  Environmental torque is ZOH at
+        # the left endpoint (same hold as the actuator).  Do not take an extra
+        # unused plant step after the last logged sample.
         if k + 1 < n:
-            tau_env = (
-                env.tau_body(q, omega, float(t[k])) if env is not None else np.zeros(3)
+            q, omega = step_rigid_body(
+                body, q, omega, tau + tau_dist + tau_env_hist[k], cfg.dt
             )
-            q, omega = step_rigid_body(body, q, omega, tau + tau_dist + tau_env, cfg.dt)
 
     euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
     att_error = np.array([geodesic_angle(qi, q_des) for qi in q_hist])
@@ -419,16 +428,26 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         controller=cfg.controller,
         estimator=cfg.estimator,
         scenario=cfg.scenario,
+        tau_env=tau_env_hist,
     )
 
     if cfg.plot or cfg.gif:
-        from attitude_sim.plots import plot_slew, write_attitude_gif
+        from attitude_sim.plots import (
+            plot_env_torque,
+            plot_mrp_error,
+            plot_slew,
+            write_attitude_gif,
+        )
 
         out = Path(cfg.out_dir)
         out.mkdir(parents=True, exist_ok=True)
         stem = cfg.artifact_stem
         if cfg.plot:
             log.plot_path = plot_slew(log, out / f"{stem}_summary.png")
+            if env is not None:
+                log.env_plot_path = plot_env_torque(log, out / f"{stem}_env_torque.png")
+            if cfg.mrp_plot:
+                log.mrp_plot_path = plot_mrp_error(log, out / f"{stem}_mrp.png")
         if cfg.gif:
             log.gif_path = write_attitude_gif(log, out / f"{stem}_attitude.gif")
     return log
@@ -438,20 +457,33 @@ run_sim = run_slew
 
 
 def build_parser() -> argparse.ArgumentParser:
+    scenario_help = "; ".join(f"{name} = {SCENARIO_BLURBS[name]}" for name in SCENARIOS)
     p = argparse.ArgumentParser(
         prog="python -m attitude_sim",
         description=(
             "Milestone 1 SimLab: closed-loop rigid-body attitude scenarios "
             "(dynamics + control + estimation)."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=scenario_catalog_text(),
     )
     p.add_argument(
         "--scenario",
         choices=SCENARIOS,
         default="slew",
-        help="slew = 75° rest-to-rest; detumble = dump body rate then recover identity",
+        help=scenario_help,
     )
-    p.add_argument("--controller", choices=("pid", "lqr"), default="pid", help="feedback law")
+    p.add_argument(
+        "--list-scenarios",
+        action="store_true",
+        help="print named scenarios and exit (no sim)",
+    )
+    p.add_argument(
+        "--controller",
+        choices=("pid", "lqr"),
+        default=None,
+        help="feedback law (default: pid, or lqr for --scenario eigenaxis)",
+    )
     p.add_argument(
         "--estimator",
         choices=("truth", "mekf", "mahony"),
@@ -462,14 +494,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--t-final",
         type=float,
         default=None,
-        help="run duration (s); default 40 slew / 30 detumble",
+        help="run duration (s); default 40 slew / 30 detumble / 30 hold / 20 eigenaxis",
     )
     p.add_argument("--dt", type=float, default=0.01, help="sample / RK4 step (s)")
     p.add_argument("--out-dir", type=Path, default=Path("outputs"), help="plot/GIF directory")
     p.add_argument("--no-plot", action="store_true", help="skip PNG summary")
     p.add_argument("--no-gif", action="store_true", help="skip attitude GIF")
+    p.add_argument(
+        "--mrp-plot",
+        action="store_true",
+        help="write {stem}_mrp.png (σ from logged q; on by default for hold/eigenaxis)",
+    )
     p.add_argument("--no-mag", action="store_true", help="disable magnetometer")
     p.add_argument("--no-sun", action="store_true", help="disable sun sensor")
+    p.add_argument(
+        "--env",
+        action="store_true",
+        help="enable GG + residual-dipole EnvironmentalTorques on any scenario (hold is on by default)",
+    )
+    p.add_argument(
+        "--no-env",
+        action="store_true",
+        help="disable EnvironmentalTorques (overrides hold / --env / --gravity-gradient / --residual-dipole)",
+    )
     p.add_argument(
         "--coarse-init",
         action="store_true",
@@ -482,8 +529,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--angle-deg",
         type=float,
-        default=75.0,
-        help="commanded principal rotation for --scenario slew (deg); ignored for detumble",
+        default=None,
+        help=(
+            "commanded principal rotation (deg) for slew (default 75) and "
+            "eigenaxis (default 30); ignored for detumble and hold"
+        ),
     )
     p.add_argument(
         "--tau-dist",
@@ -495,7 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "add gravity-gradient τ_gg = 3(μ/r³)(r̂_b × J r̂_b) on a circular orbit "
-            "(default: off; prior demos unchanged)"
+            "(default: off except --scenario hold / --env)"
         ),
     )
     p.add_argument(
@@ -503,7 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "add residual-dipole τ_m = m_b × B_b from a frozen Earth dipole "
-            "(default: off; prior demos unchanged)"
+            "(default: off except --scenario hold / --env)"
         ),
     )
     p.add_argument(
@@ -516,9 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--orbit-inc-deg",
         type=float,
-        default=0.0,
+        default=None,
         metavar="DEG",
-        help="orbit inclination [deg] for env models (default: 0, equatorial)",
+        help="orbit inclination [deg] for env models (default: 0, or 51.6 for hold)",
     )
     p.add_argument(
         "--orbit-raan-deg",
@@ -529,8 +579,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--dipole-m",
-        default="0.1,0,0",
-        help="residual body dipole [A·m²], comma-separated (used with --residual-dipole)",
+        default=None,
+        help="residual body dipole [A·m²], comma-separated (hold default is demo-scale)",
     )
     p.add_argument(
         "--dipole-model",
@@ -600,9 +650,14 @@ def _parse_vec3(text: str, name: str) -> np.ndarray:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.list_scenarios:
+        print(scenario_catalog_text())
+        return 0
     try:
         tau_dist = _parse_vec3(args.tau_dist, "--tau-dist")
-        dipole_m = _parse_vec3(args.dipole_m, "--dipole-m")
+        dipole_m = (
+            _parse_vec3(args.dipole_m, "--dipole-m") if args.dipole_m is not None else None
+        )
         actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
     except ValueError as exc:
         parser.error(str(exc))
@@ -616,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
         ("--orbit-inc-deg", args.orbit_inc_deg),
         ("--orbit-raan-deg", args.orbit_raan_deg),
     ):
-        if not np.isfinite(value):
+        if value is not None and not np.isfinite(value):
             parser.error(f"{flag} must be finite")
     for flag, value in (
         ("--gyro-sigma-v", args.gyro_sigma_v),
@@ -654,15 +709,24 @@ def main(argv: list[str] | None = None) -> int:
         plot=not args.no_plot,
         gif=not args.no_gif,
         out_dir=args.out_dir,
+        env_flag=args.env,
+        no_env=args.no_env,
+        mrp_plot=True if args.mrp_plot else None,
     )
     log = run_slew(cfg)
+    env_norm = float(np.linalg.norm(log.tau_env[-1])) if log.tau_env.size else 0.0
     print(
         f"{log.scenario} complete: controller={log.controller} estimator={log.estimator} "
         f"final_att_error={log.final_att_error_deg:.3f} deg  "
-        f"final_||omega||={np.linalg.norm(log.omega[-1]):.4f} rad/s"
+        f"final_||omega||={np.linalg.norm(log.omega[-1]):.4f} rad/s  "
+        f"final_||tau_env||={env_norm:.3e} N·m"
     )
     if log.plot_path is not None:
         print(f"plot: {log.plot_path}")
+    if log.env_plot_path is not None:
+        print(f"env:  {log.env_plot_path}")
+    if log.mrp_plot_path is not None:
+        print(f"mrp:  {log.mrp_plot_path}")
     if log.gif_path is not None:
         print(f"gif:  {log.gif_path}")
     return 0

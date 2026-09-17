@@ -41,6 +41,13 @@ def test_version_and_public_exports():
         "mrp_switch",
         "mrp_B",
         "mrp_derivative",
+        "SCENARIOS",
+        "make_scenario_config",
+        "make_hold_environmental_torques",
+        "plot_mrp_error",
+        "plot_env_torque",
+        "attitude_error_mrp",
+        "scenario_catalog_text",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
@@ -54,3 +61,7 @@ def test_version_and_public_exports():
     assert "shape_pid_command" in attitude_sim.__all__
     assert "inertial_torque" in attitude_sim.__all__
     assert "trapezoid_inertial_impulse" in attitude_sim.__all__
+    assert "SCENARIOS" in attitude_sim.__all__
+    assert "make_scenario_config" in attitude_sim.__all__
+    assert "hold" in attitude_sim.SCENARIOS
+    assert "eigenaxis" in attitude_sim.SCENARIOS

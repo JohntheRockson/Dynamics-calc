@@ -30,9 +30,12 @@ def test_simlab_demo_notebook_links_figures():
     """Walkthrough notebook exists and points at the committed recruiter figures."""
     assert NOTEBOOK.is_file(), f"missing demo notebook: {NOTEBOOK}"
     text = NOTEBOOK.read_text(encoding="utf-8")
-    for name in (SLEW_PNG, SLEW_GIF, *MC_PNGS):
+    for name in (SLEW_PNG, SLEW_GIF, *MC_PNGS, "hold_summary.png", "eigenaxis_summary.png", "hold_mrp.png"):
         assert name in text, f"{NOTEBOOK.name} should reference {name}"
     assert "--scenario" in text and "detumble" in text
+    assert "hold" in text and "eigenaxis" in text
+    assert "EnvironmentalTorques" in text
+    assert "mrp" in text.lower()
     assert "attitude_sim.monte_carlo" in text
 
 
@@ -52,7 +55,7 @@ def test_docs_figures_exist_or_regenerate_in_tmp(tmp_path: Path):
         gif = FIGURES / SLEW_GIF
         # Recruiter GIF is checked in, never regenerated here (Pillow / CI skip).
         assert gif.is_file() and gif.stat().st_size > 100
-        for scenario in ("slew", "detumble"):
+        for scenario in ("slew", "detumble", "hold", "eigenaxis"):
             rc = sim_main(
                 [
                     "--scenario",
@@ -67,6 +70,9 @@ def test_docs_figures_exist_or_regenerate_in_tmp(tmp_path: Path):
             assert rc == 0
             assert _ok_png(tmp_path / f"{scenario}_summary.png")
             assert not (tmp_path / f"{scenario}_attitude.gif").exists()
+        assert _ok_png(tmp_path / "hold_mrp.png")
+        assert _ok_png(tmp_path / "hold_env_torque.png")
+        assert _ok_png(tmp_path / "eigenaxis_mrp.png")
         return
 
     if not have_slew:

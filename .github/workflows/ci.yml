@@ -54,6 +54,8 @@ jobs:
         run: |
           python -m attitude_sim --scenario slew --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --scenario hold --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --scenario eigenaxis --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller lqr --estimator mahony --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
             --tau-dist 0.002,-0.001,0.0008 --t-final 0.2 --no-plot --no-gif
@@ -62,7 +64,8 @@ jobs:
           python -m attitude_sim --controller pid --estimator truth \
             --gravity-gradient --residual-dipole --actuator-tau-max 0.008 \
             --t-final 0.2 --no-plot --no-gif
-          # MC harness is slew-only; detumble is a SimLab scenario, not in the sweep.
+          python -m attitude_sim --list-scenarios
+          # MC harness is slew-only; detumble/hold/eigenaxis are SimLab scenarios, not in the sweep.
           python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
 
   packaging:
