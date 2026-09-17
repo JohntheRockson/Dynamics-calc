@@ -63,6 +63,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Protocol
 
 import numpy as np
 
@@ -461,13 +462,26 @@ class ResidualDipoleTorque:
         return magnetic_dipole_torque(self.m_body, self.B_body(q, state))
 
 
+class DisturbanceTorque(Protocol):
+    """Duck-typed body-torque model: ``τ_body(q, ω, t, *, orbit)``."""
+
+    def tau_body(
+        self,
+        q: np.ndarray,
+        omega: np.ndarray,
+        t: float | None = None,
+        *,
+        orbit: OrbitState | None = None,
+    ) -> np.ndarray: ...
+
+
 @dataclass
 class EnvironmentalTorques:
     """Sum of gravity-gradient and/or residual-dipole body torques."""
 
     gravity_gradient: GravityGradientTorque | None = None
     residual_dipole: ResidualDipoleTorque | None = None
-    extra: Sequence[object] = field(default_factory=tuple)
+    extra: Sequence[DisturbanceTorque] = field(default_factory=tuple)
 
     def tau_body(
         self,
