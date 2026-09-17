@@ -120,7 +120,9 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
 
 `--tau-dist` is a constant body-frame disturbance added to the plant only; the
 logged \(\tau\) is the torque applied to the plant (controller command after the
-actuator stage below).
+actuator stage below).  Optional environmental models (gravity-gradient,
+residual dipole) are also plant-only and default **off**; see the SimLab flags
+`--gravity-gradient` and `--residual-dipole` in the README.
 
 ## Actuator (reaction wheels)
 
