@@ -60,3 +60,5 @@ def test_version_and_public_exports():
     assert "shape_pid_command" in attitude_sim.__all__
     assert "inertial_torque" in attitude_sim.__all__
     assert "trapezoid_inertial_impulse" in attitude_sim.__all__
+    assert "sample_polhode" in attitude_sim.__all__
+    assert "SpinStability" in attitude_sim.__all__

@@ -148,6 +148,35 @@ def test_geometric_intersection_matches_omega0_and_stays_on_ellipsoids():
         sample_polhode_intersection(_TRIAXIAL, omega0, n=0)
 
 
+def test_rest_state_is_point_polhode():
+    omega0 = np.zeros(3)
+    assert kinetic_energy(_TRIAXIAL, omega0) == 0.0
+    assert polhode_regime(_TRIAXIAL, omega0) is PolhodeRegime.POINT
+    pts = sample_polhode_intersection(_TRIAXIAL, omega0, n=4)
+    np.testing.assert_allclose(pts, 0.0, atol=1e-15)
+
+
+def test_geometric_intersection_around_min_stays_on_ellipsoids():
+    omega0 = np.array([1.0, 0.2, 0.1])
+    assert polhode_regime(_TRIAXIAL, omega0) is PolhodeRegime.AROUND_MIN
+    pts = sample_polhode_intersection(_TRIAXIAL, omega0, n=72)
+    np.testing.assert_allclose(pts[0] - omega0, 0.0, atol=1e-8)
+    t0, h20 = energy_casimir(_TRIAXIAL, omega0)
+    for w in pts[::6]:
+        r_t, r_h = polhode_residuals(_TRIAXIAL, w, t0, h20)
+        assert abs(r_t) < INTERSECTION_ATOL
+        assert abs(r_h) < INTERSECTION_ATOL
+    assert np.all(pts[:, 0] > 0.0)
+
+
+def test_sample_polhode_rkmk4_conserves_casimirs():
+    omega0 = np.array([0.3, -0.8, 0.2])
+    traj = sample_polhode(_ASYM_J, omega0, t_final=1.0, dt=0.005, method="rkmk4")
+    t0, h20 = traj.T[0], traj.h2[0]
+    assert np.max(np.abs(traj.T - t0)) / abs(t0) < ENERGY_REL_TOL
+    assert np.max(np.abs(traj.h2 - h20)) / abs(h20) < H2_REL_TOL
+
+
 def test_geometric_intersection_principal_spin_is_a_point():
     omega0 = np.array([0.0, 0.0, 1.1])
     pts = sample_polhode_intersection(_TRIAXIAL, omega0, n=16)
@@ -161,8 +190,8 @@ def test_polhode_regime_min_max_separatrix():
     w_max = np.array([0.1, 0.2, 1.0])
     assert polhode_regime(_TRIAXIAL, w_min) is PolhodeRegime.AROUND_MIN
     assert polhode_regime(_TRIAXIAL, w_max) is PolhodeRegime.AROUND_MAX
-    # Separatrix: |h|² = 2 T I_mid.  For I=(1,2,3) this is ω1² = ω3²
-    # with ω2 = 0 on one branch of the figure-eight.
+    # Separatrix: |h|² = 2 T I_mid.  For I=(1,2,3) that is a² = 3 c²
+    # on the ω2 = 0 branch of the figure-eight.
     i_mid = 2.0
     c = 0.2
     # a² I1 (I2 − I1) = c² I3 (I3 − I2) ⇒ a² = 3 c² for I=(1,2,3).
