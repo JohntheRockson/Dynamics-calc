@@ -12,16 +12,31 @@ def test_parser_defaults_to_slew():
     assert args.scenario == "slew"
     assert args.controller == "pid"
     assert args.estimator == "mekf"
+    assert args.actuator_tau_max is None
+    assert args.actuator_tau is None
 
 
 def test_parser_detumble_and_flags():
     args = build_parser().parse_args(
-        ["--scenario", "detumble", "--controller", "lqr", "--no-plot", "--no-gif"]
+        [
+            "--scenario",
+            "detumble",
+            "--controller",
+            "lqr",
+            "--no-plot",
+            "--no-gif",
+            "--actuator-tau-max",
+            "0.02",
+            "--actuator-tau",
+            "0.05",
+        ]
     )
     assert args.scenario == "detumble"
     assert args.controller == "lqr"
     assert args.no_plot
     assert args.no_gif
+    assert args.actuator_tau_max == "0.02"
+    assert args.actuator_tau == 0.05
 
 
 def test_make_scenario_config_stems():
@@ -99,3 +114,12 @@ def test_main_rejects_bad_tau_dist():
 def test_main_rejects_non_positive_dt():
     with pytest.raises(SystemExit):
         main(["--dt", "0", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_main_rejects_bad_actuator_tau_max():
+    with pytest.raises(SystemExit):
+        main(["--actuator-tau-max", "1,2", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--actuator-tau-max", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--actuator-tau", "-0.1", "--t-final", "0.05", "--no-plot", "--no-gif"])

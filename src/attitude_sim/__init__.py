@@ -1,5 +1,6 @@
 """Rigid-body attitude dynamics, control, and estimation (Milestone 1)."""
 
+from attitude_sim.actuators import TorqueActuator, clip_torque, make_actuator
 from attitude_sim.controls import LQRAttitudeController, PIDAttitudeController, make_controller
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF, make_estimator
 from attitude_sim.plant import (
@@ -32,6 +33,9 @@ __all__ = [
     "MahonyFilter",
     "MultiplicativeEKF",
     "PIDAttitudeController",
+    "TorqueActuator",
+    "clip_torque",
+    "make_actuator",
     "RigidBody",
     "SimConfig",
     "SimLog",

@@ -103,4 +103,31 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
 ```
 
 `--tau-dist` is a constant body-frame disturbance added to the plant only; the
-logged \(\tau\) is the control command.
+logged \(\tau\) is the torque applied to the plant (controller command after the
+actuator stage below).
+
+## Actuator (reaction wheels)
+
+The controller Euclidean clamp \(|\tau|\le\tau_{\max}\) (optional
+`torque_limit`) is **not** a wheel model.  Closed-loop SimLab can additionally
+run a three-axis actuator after the PID/LQR command:
+
+\[
+u_i = \mathrm{clip}(\tau_{\mathrm{cmd},i},\,-\tau_{\max,i},\,\tau_{\max,i}),
+\qquad
+\dot\tau = (u-\tau)/T,
+\]
+
+then clip \(\tau\) again so the plant never sees \(|\tau_i|>\tau_{\max,i}\).
+\(T=0\) (or omitted) is instantaneous.  Default is **unlimited and no lag** —
+identity — so existing demos match prior behaviour.  Enable with
+
+```bash
+python -m attitude_sim --controller pid --estimator truth \
+    --actuator-tau-max 0.02 --actuator-tau 0.05 --no-gif
+```
+
+`--actuator-tau-max` is a scalar or `x,y,z` (N·m).  Per-axis clipping is the
+right geometry for independent wheels; it is *not* the Euclidean ball used
+inside the controllers.  Both can be active: the controller still saturates
+in \(|\tau|\), then the wheels clip each axis and (optionally) lag.

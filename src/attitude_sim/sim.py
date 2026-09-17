@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from attitude_sim.actuators import make_actuator, parse_tau_max
 from attitude_sim.controls import make_controller
 from attitude_sim.estimation import (
     ComplementaryFilter,
@@ -49,7 +50,9 @@ class SimConfig:
     q_des: np.ndarray = field(
         default_factory=lambda: axis_angle_to_quat(SLEW_AXIS, np.deg2rad(75.0))
     )
-    torque_limit: float = 0.02
+    torque_limit: float | None = 0.02
+    actuator_tau_max: float | np.ndarray | None = None
+    actuator_tau: float | None = None
     tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gyro_sigma_v: float = 5e-4
     gyro_sigma_u: float = 1e-6
@@ -102,6 +105,8 @@ def make_scenario_config(
     estimator: str = "mekf",
     angle_deg: float = 75.0,
     tau_dist: np.ndarray | None = None,
+    actuator_tau_max: float | np.ndarray | None = None,
+    actuator_tau: float | None = None,
     use_mag: bool = True,
     use_sun: bool = True,
     seed: int = 1,
@@ -125,6 +130,8 @@ def make_scenario_config(
             omega0=DETUMBLE_OMEGA0.copy(),
             q_des=np.array([1.0, 0.0, 0.0, 0.0]),
             tau_dist=dist,
+            actuator_tau_max=actuator_tau_max,
+            actuator_tau=actuator_tau,
             use_mag=use_mag,
             use_sun=use_sun,
             seed=seed,
@@ -140,6 +147,8 @@ def make_scenario_config(
         scenario="slew",
         q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
         tau_dist=dist,
+        actuator_tau_max=actuator_tau_max,
+        actuator_tau=actuator_tau,
         use_mag=use_mag,
         use_sun=use_sun,
         seed=seed,
@@ -184,6 +193,8 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     body = RigidBody(cfg.inertia)
     ctrl = make_controller(cfg.controller, cfg.inertia, torque_limit=cfg.torque_limit)
     ctrl.reset()
+    actuator = make_actuator(tau_max=cfg.actuator_tau_max, time_constant=cfg.actuator_tau)
+    actuator.reset()
 
     q = quat_normalize(cfg.q0)
     omega = np.asarray(cfg.omega0, dtype=float).reshape(3).copy()
@@ -246,7 +257,8 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
 
         qh_hist[k] = q_hat
         wh_hist[k] = omega_hat
-        tau = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
+        tau_cmd = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
+        tau = actuator.apply(tau_cmd, cfg.dt)
         tau_hist[k] = tau
         # τ[k] is held over [t[k], t[k+1]).  Do not take an extra unused
         # plant step after the last logged sample.
@@ -342,6 +354,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="0,0,0",
         help="constant body-frame disturbance torque [N·m], comma-separated (e.g. 0.002,0,0)",
     )
+    p.add_argument(
+        "--actuator-tau-max",
+        default=None,
+        help=(
+            "per-axis reaction-wheel torque limit [N·m]: scalar or x,y,z "
+            "(default: unlimited; controller Euclidean |τ| clamp is unchanged)"
+        ),
+    )
+    p.add_argument(
+        "--actuator-tau",
+        type=float,
+        default=None,
+        help="first-order actuator lag time constant [s] (default: none / instantaneous)",
+    )
     return p
 
 
@@ -360,10 +386,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         tau_dist = _parse_vec3(args.tau_dist, "--tau-dist")
+        actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
     except ValueError as exc:
         parser.error(str(exc))
     if args.dt <= 0.0:
         parser.error("--dt must be positive")
+    if args.actuator_tau is not None and args.actuator_tau < 0.0:
+        parser.error("--actuator-tau must be >= 0")
     cfg = make_scenario_config(
         args.scenario,
         dt=args.dt,
@@ -372,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
         estimator=args.estimator,
         angle_deg=args.angle_deg,
         tau_dist=tau_dist,
+        actuator_tau_max=actuator_tau_max,
+        actuator_tau=args.actuator_tau,
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         seed=args.seed,
