@@ -26,6 +26,7 @@ def test_version_and_public_exports():
         "make_actuator",
         "shape_pid_command",
         "triad_attitude",
+        "InnovationLog",
         "GravityGradientTorque",
         "ResidualDipoleTorque",
         "AerodynamicTorque",
@@ -51,6 +52,7 @@ def test_version_and_public_exports():
     assert "run_sim" in attitude_sim.__all__
     assert "TorqueActuator" in attitude_sim.__all__
     assert "triad_attitude" in attitude_sim.__all__
+    assert "InnovationLog" in attitude_sim.__all__
     assert "shape_pid_command" in attitude_sim.__all__
     assert "inertial_torque" in attitude_sim.__all__
     assert "trapezoid_inertial_impulse" in attitude_sim.__all__

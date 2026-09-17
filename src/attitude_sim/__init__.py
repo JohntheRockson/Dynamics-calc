@@ -26,6 +26,7 @@ from attitude_sim.disturbances import (
 )
 from attitude_sim.estimation import (
     ComplementaryFilter,
+    InnovationLog,
     MultiplicativeEKF,
     make_estimator,
     triad_attitude,
@@ -72,6 +73,7 @@ __all__ = [
     "ComplementaryFilter",
     "EnvironmentalTorques",
     "GravityGradientTorque",
+    "InnovationLog",
     "LQRAttitudeController",
     "MahonyFilter",
     "MultiplicativeEKF",

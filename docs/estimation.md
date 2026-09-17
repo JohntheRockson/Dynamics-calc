@@ -99,6 +99,7 @@ CLI / harness knobs (same values on truth gyro **and** MEKF):
 | `--gyro-sigma-u` | `gyro_sigma_u` | \(10^{-6}\) rad/s²/√Hz |
 | `--mag-sigma` | `mag_sigma` | \(3\times10^{-3}\) |
 | `--sun-sigma` | `sun_sigma` | \(2\times10^{-3}\) |
+| `--log-innovations PATH` | `SimConfig.log_innovations` (SimLab) | off (no CSV) |
 
 Monte Carlo applies its log-uniform `--noise-scale-*` **after** these
 bases, still through `make_sim_estimator`.  Omit the flags to keep the
@@ -130,7 +131,8 @@ v_b - \hat v_b \approx [\hat v_b \times]\,\delta\alpha,
 
 with rank-2 tangent-plane \(R = \sigma^2 (I - \hat v_b\hat v_b^{\top})\)
 plus a small nugget.  `vectors_from_sensors` forwards each sensor's
-`sigma` so mag and sun can have different \(R\).
+`sigma` so mag and sun can have different \(R\), and the sensor `name`
+so `InnovationLog` can tag NIS rows.
 
 ## Coarse attitude init (TRIAD)
 
@@ -159,7 +161,8 @@ For a consistent 6-state Gaussian filter, \(\varepsilon \sim \chi^2_6\):
 | Single-trial 99% | \(\approx [0.68,\,18.55]\) |
 | Mean of \(N=32\) trials, 99% | \(\bar\varepsilon \in [\chi^2_{192}(0.005)/32,\,\chi^2_{192}(0.995)/32] \approx [4.54,\,7.69]\) |
 
-Helpers: `mekf_error_state`, `nees`, `chi2_mean_nees_bounds`.
+Helpers: `mekf_error_state`, `nees`, `chi2_mean_nees_bounds`,
+`chi2_two_sided_bounds`.
 
 The unit-test suite (`test_mekf_nees_matched_synthetic_is_consistent`) is a
 **matched synthetic**, not SimLab:
@@ -189,6 +192,65 @@ the test only rejects non-finite or exploding NEES.  Do not treat that
 run as a \(\chi^2\) consistency proof, and do not rewrite the MEKF core
 to chase the open-loop bounds in closed loop.
 
+## MEKF NIS / innovation whiteness
+
+NEES scores the *state*.  NIS scores each *vector update* against the
+innovation covariance the filter actually uses in the Joseph gain.
+
+For a unit-vector observation the 3-D residual \(\nu = v_b - \hat v_b\)
+lives (to first order) in the plane orthogonal to \(\hat v_b\).  The
+filter \(R\) is already rank-2 plus a nugget (`MEKF_VECTOR_R_NUGGET`),
+so a 3-DOF \(\chi^2\) statistic is the wrong reference — the radial
+component is second-order and the nugget would dominate.  Reduce to the
+tangent plane with an orthonormal basis \(B = [e_1\; e_2]\)
+(`tangent_plane_basis`):
+
+\[
+\nu_2 = B^{\top}\nu,\qquad
+S = H P^- H^{\top} + R,\qquad
+S_2 = B^{\top} S B,\qquad
+\varepsilon_{\nu} = \nu_2^{\top} S_2^{-1}\nu_2 .
+\]
+
+\(P^-\) is the **pre-update** covariance (same \(S\) as the Kalman
+gain).  A consistent rank-2 update has \(\varepsilon_{\nu}\sim\chi^2_2\):
+
+| Quantity | Value |
+| --- | --- |
+| \(\mathbb{E}[\varepsilon_{\nu}]\) | \(2\) |
+| Single-trial 95% | \(\chi^2_{2,0.025}\approx 0.051\), \(\chi^2_{2,0.975}\approx 7.38\) |
+| Single-trial 99% | \(\approx [0.010,\,10.60]\) |
+| Mean of \(N=32\) trials, 99% | \(\bar\varepsilon_{\nu}\in[\chi^2_{64}(0.005)/32,\,\chi^2_{64}(0.995)/32]\approx[1.21,\,3.03]\) |
+| Mean of \(N=64\) last mag+sun samples, 99% | \(\approx[1.41,\,2.70]\) |
+
+Helpers: `nis` (same quadratic form as `nees`), `mekf_vector_HR` (the
+\(H,R\) pair shared with `update_vector`, kinematics unchanged),
+`mekf_vector_nis` / `mekf_vector_innovation_stats`,
+`chi2_mean_nis_bounds` (alias of `chi2_mean_nees_bounds`).
+
+**Whiteness.**  Whitened tangent innovations
+\(e = S_2^{-1/2}\nu_2\) should be approximately i.i.d. \(\mathcal{N}(0,I_2)\).
+Lag-1 sample correlation of each component of \(e\) has large-\(N\)
+standard error \(1/\sqrt{N-1}\); `lag1_whiteness_bound(n, α)` is
+\(z_{1-\alpha/2}/\sqrt{n-1}\) (\(\approx 1.96/\sqrt{n-1}\) at 95%).
+The matched unit test checks that the *ensemble mean* lag-1 of the mag
+sequence stays near 0.  Sequential mag-then-sun updates and
+linearization leave a little serial correlation, so this is not a
+Ljung–Box portmanteau.
+
+**Logging.**  `MultiplicativeEKF.enable_innovation_log()` (default off)
+records every vector update.  SimLab `--log-innovations PATH` /
+`SimConfig.log_innovations` writes the CSV; omitted keeps the current
+demo.  Mahony / truth have no \(P\) and skip with a warning.
+
+The matched NIS suite (`test_mekf_nis_matched_synthetic_is_consistent`)
+uses the same open-loop Farrenkopf + mag/sun assumptions as the NEES
+test.  A power check (`test_mekf_nis_detects_mismatched_r`) inflates
+NIS when the filter \(R\) is too small and deflates it when \(R\) is too
+large.  Closed-loop mean NIS
+(`test_mekf_nis_closed_loop_slew_is_finite_and_bounded`) is a smoke
+gate only, same caveat as closed-loop NEES.
+
 ## Mahony complementary filter
 
 Same sensors and error convention.  The **kinematics** rate includes the
@@ -208,16 +270,17 @@ vector innovation; the **controller** rate does not:
 
 Default gains \(k_p = 1.5\), \(k_i = 0.08\) (1/s).
 
-Mahony has no \(P\), so NEES does not apply.  Cheap smokes in
+Mahony has no \(P\), so NEES / NIS do not apply.  Cheap smokes in
 `tests/test_estimation.py` check unit-norm estimates, that \(k_p=k_i=0\)
 dead-reckons \(\omega_m-\hat b\), and that \(k_i\) moves the bias from a
-vector innovation.  There is still no Mahony \(\chi^2\) / NIS suite.
+vector innovation.  There is still no Mahony \(\chi^2\) suite.
 
 ## Running estimator tests
 
 From the repo root (after `pip install -e ".[dev]"`):
 
 ```bash
-pytest tests/test_estimation.py tests/test_sensors.py
-pytest                          # full suite, including closed-loop smoke and NEES
+pytest tests/test_estimation.py tests/test_innovation.py tests/test_sensors.py
+pytest                          # full suite, including closed-loop smoke and NEES/NIS
+python -m attitude_sim --log-innovations outputs/slew_nis.csv --t-final 0.2 --no-plot --no-gif
 ```
