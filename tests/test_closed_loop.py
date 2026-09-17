@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF
+from attitude_sim.quaternions import axis_angle_to_quat
 from attitude_sim.sim import SimConfig, make_scenario_config, make_sim_estimator, run_slew
 
 
@@ -35,6 +36,25 @@ def test_lqr_truth_slew_settles():
     log = run_slew(_cfg(controller="lqr", estimator="truth"))
     assert log.final_att_error_deg < 2.5
     assert np.linalg.norm(log.omega[-1]) < 0.03
+
+
+def test_lqr_small_eigenaxis_simlab_settles():
+    """SimLab wiring: small eigenaxis (linear region) settles under LQR."""
+    q0 = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), np.deg2rad(8.0))
+    log = run_slew(
+        _cfg(
+            controller="lqr",
+            estimator="truth",
+            q0=q0,
+            q_des=q_des,
+            t_final=10.0,
+            seed=11,
+        )
+    )
+    assert log.final_att_error_deg < 0.25
+    assert np.linalg.norm(log.omega[-1]) < 0.01
+    assert log.att_error[-1] < 0.05 * log.att_error[0]
 
 
 def test_pid_on_mekf_estimates_smoke():

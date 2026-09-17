@@ -1,7 +1,14 @@
 """Rigid-body attitude dynamics, control, and estimation (Milestone 1)."""
 
 from attitude_sim.actuators import TorqueActuator, clip_torque, make_actuator
-from attitude_sim.controls import LQRAttitudeController, PIDAttitudeController, make_controller
+from attitude_sim.controls import (
+    AttitudeLQR,
+    LQRAttitudeController,
+    PIDAttitudeController,
+    design_attitude_lqr,
+    make_controller,
+    solve_care,
+)
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF, make_estimator
 from attitude_sim.plant import (
     RigidBody,
@@ -29,6 +36,7 @@ from attitude_sim.sim import SimConfig, SimLog, run_sim, run_slew
 MahonyFilter = ComplementaryFilter
 
 __all__ = [
+    "AttitudeLQR",
     "ComplementaryFilter",
     "LQRAttitudeController",
     "MahonyFilter",
@@ -40,6 +48,7 @@ __all__ = [
     "TorqueActuator",
     "axis_angle_to_quat",
     "clip_torque",
+    "design_attitude_lqr",
     "geodesic_angle",
     "inertia_from_principal",
     "is_principal",
@@ -57,6 +66,7 @@ __all__ = [
     "rkmk4_step",
     "run_sim",
     "run_slew",
+    "solve_care",
     "step_rigid_body",
     "validate_inertia",
 ]

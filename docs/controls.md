@@ -82,8 +82,19 @@ R=(1/\tau_{\mathrm{ref}}^{2})I
 
 with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\),
 \(\omega_{\mathrm{ref}}=0.20\,\mathrm{rad/s}\),
-\(\tau_{\mathrm{ref}}=\tau_{\max}\).  \(K\) comes from the CARE
-(`scipy.linalg.solve_continuous_are`).  Passing `K=` skips the solve.
+\(\tau_{\mathrm{ref}}=\tau_{\max}\).  The continuous algebraic Riccati
+equation
+
+\[
+A^{\top}P+PA-PBR^{-1}B^{\top}P+Q=0
+\]
+
+is solved by `attitude_sim.controls.solve_care` (`scipy.linalg.solve_continuous_are`,
+with a numpy Hamiltonian eigen-path at `method="numpy"` / auto-fallback).
+Then \(K=R^{-1}B^{\top}P\).  `design_attitude_lqr(J, Q, R)` is the one-shot
+\((A,B)\to(K,P)\) helper used by `LQRAttitudeController` / `AttitudeLQR`.
+Passing `K=` skips the solve.  `gain_scale` multiplies the implemented \(K\)
+(Monte Carlo robustness hook; default 1).
 
 On this plant those weights give \(K_{\theta}\approx\tau_{\max}/\theta_{\mathrm{ref}}=0.08\)
 (linear region \(\sim 14°\), equivalent \(\omega_{n}\approx 1.1\,\mathrm{rad/s}\),

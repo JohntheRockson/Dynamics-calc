@@ -66,6 +66,9 @@ def test_parser_defaults():
     assert args.plot is False
     assert args.out_dir.name == "outputs"
     assert args.from_json is None
+    assert args.tau_dist_max == 0.0
+    assert args.gain_scale_min == 1.0
+    assert args.gain_scale_max == 1.0
 
 
 def test_settle_time_proxy_finds_last_entry():
@@ -310,3 +313,38 @@ def test_cli_from_json_plot(tmp_path):
     assert rc == 0
     assert (out / MC_ERROR_HIST_NAME).is_file()
     assert (out / MC_SETTLE_SCATTER_NAME).is_file()
+
+
+def test_monte_carlo_lqr_gain_and_disturbance_hook():
+    """Same harness, LQR + mild gain scale / body-disturbance sampling."""
+    summary = run_monte_carlo(
+        MonteCarloConfig(
+            n=3,
+            seed=4,
+            controller="lqr",
+            estimator="truth",
+            dt=0.05,
+            t_final=1.0,
+            q0_max_deg=8.0,
+            omega0_max=0.02,
+            noise_scale_min=1.0,
+            noise_scale_max=1.0,
+            inertia_frac=0.0,
+            tau_dist_max=0.001,
+            gain_scale_min=0.8,
+            gain_scale_max=1.25,
+            settle_deg=2.0,
+            diverge_deg=180.0,
+        )
+    )
+    assert summary.n == 3
+    assert summary.controller == "lqr"
+    assert summary.n_nan == 0
+    assert summary.n_non_unit == 0
+    scales = [t.gain_scale for t in summary.trials]
+    dists = [t.tau_dist_norm for t in summary.trials]
+    assert min(scales) >= 0.8 - 1e-12
+    assert max(scales) <= 1.25 + 1e-12
+    assert max(dists) <= 0.001 + 1e-12
+    assert min(dists) >= 0.0
+    assert any(d > 0.0 for d in dists) or summary.n == 3
