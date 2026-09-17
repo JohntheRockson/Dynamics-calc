@@ -72,6 +72,8 @@ def test_version_and_public_exports():
         "linearized_flex_state_space",
         "step_flex",
         "step_flex_attitude",
+        "ReactionWheelAssembly",
+        "make_reaction_wheels",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
@@ -102,3 +104,5 @@ def test_version_and_public_exports():
     assert "step_gyrostat" in attitude_sim.__all__
     assert "HingedAppendage" in attitude_sim.__all__
     assert "step_flex" in attitude_sim.__all__
+    assert "ReactionWheelAssembly" in attitude_sim.__all__
+    assert "make_reaction_wheels" in attitude_sim.__all__

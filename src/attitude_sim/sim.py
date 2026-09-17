@@ -33,6 +33,7 @@ from attitude_sim.quaternions import (
     quat_normalize,
     quat_to_euler321,
 )
+from attitude_sim.reaction_wheels import ReactionWheelAssembly
 from attitude_sim.scenarios import (
     HOLD_ORBIT_INCLINATION_RAD,
     HOLD_RESIDUAL_DIPOLE_A_M2,
@@ -86,6 +87,11 @@ class SimConfig:
     gain_scale: float = 1.0
     actuator_tau_max: float | np.ndarray | None = None
     actuator_tau: float | None = None
+    rw_inertia: float | np.ndarray | None = None
+    rw_h_max: float | np.ndarray | None = None
+    rw_visc: float = 0.0
+    rw_coulomb: float = 0.0
+    rw_gyroscopic: bool = True
     tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gravity_gradient: bool = False
     residual_dipole: bool = False
@@ -151,10 +157,38 @@ class SimLog:
     mean_nis: float | None = None
     mrp_plot_path: Path | None = None
     env_plot_path: Path | None = None
+    h_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    omega_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    rw_tau_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
+    rw_h_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
 
     @property
     def final_att_error_deg(self) -> float:
         return float(np.rad2deg(self.att_error[-1]))
+
+    @property
+    def peak_rate(self) -> float:
+        """Peak ``‖ω‖`` (rad/s) over the log."""
+        if self.omega.size == 0 or not np.all(np.isfinite(self.omega)):
+            return float("nan")
+        return float(np.max(np.linalg.norm(self.omega, axis=1)))
+
+    @property
+    def sat_fraction(self) -> float:
+        """Fraction of samples with any-axis torque or momentum saturation."""
+        n = int(self.t.size)
+        if n == 0:
+            return float("nan")
+        mask = np.zeros(n, dtype=bool)
+        if self.rw_tau_sat.size:
+            tau_sat = np.asarray(self.rw_tau_sat).reshape(n, 3)
+            mask |= np.any(tau_sat, axis=1)
+        if self.rw_h_sat.size:
+            h_sat = np.asarray(self.rw_h_sat).reshape(n, 3)
+            mask |= np.any(h_sat, axis=1)
+        if self.rw_tau_sat.size == 0 and self.rw_h_sat.size == 0:
+            return 0.0
+        return float(np.mean(mask))
 
 
 def make_scenario_config(
@@ -168,6 +202,11 @@ def make_scenario_config(
     tau_dist: np.ndarray | None = None,
     actuator_tau_max: float | np.ndarray | None = None,
     actuator_tau: float | None = None,
+    rw_inertia: float | np.ndarray | None = None,
+    rw_h_max: float | np.ndarray | None = None,
+    rw_visc: float = 0.0,
+    rw_coulomb: float = 0.0,
+    rw_gyroscopic: bool = True,
     gravity_gradient: bool = False,
     residual_dipole: bool = False,
     aerodynamic: bool = False,
@@ -239,6 +278,11 @@ def make_scenario_config(
         tau_dist=dist,
         actuator_tau_max=actuator_tau_max,
         actuator_tau=actuator_tau,
+        rw_inertia=rw_inertia,
+        rw_h_max=rw_h_max,
+        rw_visc=rw_visc,
+        rw_coulomb=rw_coulomb,
+        rw_gyroscopic=rw_gyroscopic,
         gravity_gradient=gg,
         residual_dipole=rd,
         aerodynamic=aerodynamic,
@@ -424,7 +468,15 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         **tune,
     )
     ctrl.reset()
-    actuator = make_actuator(tau_max=cfg.actuator_tau_max, time_constant=cfg.actuator_tau)
+    actuator = make_actuator(
+        tau_max=cfg.actuator_tau_max,
+        time_constant=cfg.actuator_tau,
+        wheel_inertia=cfg.rw_inertia,
+        h_max=cfg.rw_h_max,
+        visc_friction=cfg.rw_visc,
+        coulomb_friction=cfg.rw_coulomb,
+        gyroscopic=cfg.rw_gyroscopic,
+    )
     actuator.reset()
 
     q = quat_normalize(cfg.q0)
@@ -516,6 +568,13 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     tau_env_hist = np.zeros((n, 3))
     qh_hist = np.zeros((n, 4))
     wh_hist = np.zeros((n, 3))
+    rw: ReactionWheelAssembly | None = (
+        actuator if isinstance(actuator, ReactionWheelAssembly) else None
+    )
+    h_hist = np.zeros((n, 3)) if rw is not None else np.zeros((0, 3))
+    ww_hist = np.zeros((n, 3)) if rw is not None else np.zeros((0, 3))
+    tau_sat_hist = np.zeros((n, 3), dtype=bool) if rw is not None else np.zeros((0, 3), dtype=bool)
+    h_sat_hist = np.zeros((n, 3), dtype=bool) if rw is not None else np.zeros((0, 3), dtype=bool)
 
     for k in range(n):
         q_hist[k] = q
@@ -531,8 +590,13 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         qh_hist[k] = q_hat
         wh_hist[k] = omega_hat
         tau_cmd = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
-        tau = actuator.apply(tau_cmd, cfg.dt)
+        tau = actuator.apply(tau_cmd, cfg.dt, omega=omega)
         tau_hist[k] = tau
+        if rw is not None:
+            h_hist[k] = rw.momentum
+            ww_hist[k] = rw.wheel_speed
+            tau_sat_hist[k] = rw.torque_saturated
+            h_sat_hist[k] = rw.momentum_saturated
         if env is not None:
             tau_env_hist[k] = np.asarray(
                 env.tau_body(q, omega, float(t[k])), dtype=float
@@ -572,6 +636,10 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         estimator=cfg.estimator,
         scenario=cfg.scenario,
         tau_env=tau_env_hist,
+        h_wheel=h_hist,
+        omega_wheel=ww_hist,
+        rw_tau_sat=tau_sat_hist,
+        rw_h_sat=h_sat_hist,
     )
 
     if (
@@ -803,6 +871,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="first-order actuator lag time constant [s] (default: none / instantaneous)",
     )
     p.add_argument(
+        "--rw-h-max",
+        default=None,
+        help=(
+            "per-axis reaction-wheel momentum limit [N·m·s]: scalar or x,y,z "
+            "(enables the RW assembly; default: clip/lag actuator only)"
+        ),
+    )
+    p.add_argument(
+        "--rw-inertia",
+        default=None,
+        help=(
+            "per-axis wheel spin inertia I_w [kg·m²]: scalar or x,y,z "
+            "(default 2e-4 when --rw-h-max is set)"
+        ),
+    )
+    p.add_argument(
+        "--rw-visc",
+        type=float,
+        default=0.0,
+        help="viscous wheel friction b [N·m·s] (default: 0)",
+    )
+    p.add_argument(
+        "--rw-coulomb",
+        type=float,
+        default=0.0,
+        help="smoothed Coulomb wheel friction c [N·m] (default: 0)",
+    )
+    p.add_argument(
+        "--rw-no-gyro",
+        action="store_true",
+        help="drop the ω×h_w couple from the RW body torque (default: include it)",
+    )
+    p.add_argument(
         "--gyro-sigma-v",
         type=float,
         default=None,
@@ -870,12 +971,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         panel_r_cp = _parse_vec3(args.panel_rcp, "--panel-rcp")
         actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
+        rw_h_max = parse_tau_max(args.rw_h_max, "--rw-h-max")
+        rw_inertia = parse_tau_max(args.rw_inertia, "--rw-inertia")
     except ValueError as exc:
         parser.error(str(exc))
     if args.dt <= 0.0:
         parser.error("--dt must be positive")
     if args.actuator_tau is not None and args.actuator_tau < 0.0:
         parser.error("--actuator-tau must be >= 0")
+    if args.rw_visc < 0.0:
+        parser.error("--rw-visc must be >= 0")
+    if args.rw_coulomb < 0.0:
+        parser.error("--rw-coulomb must be >= 0")
     if args.orbit_radius <= 0.0:
         parser.error("--orbit-radius must be positive")
     if args.panel_area < 0.0:
@@ -908,6 +1015,11 @@ def main(argv: list[str] | None = None) -> int:
         tau_dist=tau_dist,
         actuator_tau_max=actuator_tau_max,
         actuator_tau=args.actuator_tau,
+        rw_inertia=rw_inertia,
+        rw_h_max=rw_h_max,
+        rw_visc=args.rw_visc,
+        rw_coulomb=args.rw_coulomb,
+        rw_gyroscopic=not args.rw_no_gyro,
         gravity_gradient=args.gravity_gradient,
         residual_dipole=args.residual_dipole,
         aerodynamic=args.aerodynamic,
@@ -946,6 +1058,12 @@ def main(argv: list[str] | None = None) -> int:
         f"final_||omega||={np.linalg.norm(log.omega[-1]):.4f} rad/s  "
         f"final_||tau_env||={env_norm:.3e} N·m"
     )
+    if log.h_wheel.size:
+        print(
+            f"  RW: peak_rate={log.peak_rate:.4f} rad/s  "
+            f"sat_fraction={log.sat_fraction:.3f}  "
+            f"peak_|h_w|={float(np.max(np.linalg.norm(log.h_wheel, axis=1))):.4f} N·m·s"
+        )
     if log.plot_path is not None:
         print(f"plot: {log.plot_path}")
     if log.env_plot_path is not None:

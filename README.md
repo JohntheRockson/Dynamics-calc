@@ -45,6 +45,8 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
     --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
 python -m attitude_sim --controller pid --estimator truth \
     --actuator-tau-max 0.02 --actuator-tau 0.05 --no-gif
+python -m attitude_sim --controller pid --estimator truth \
+    --actuator-tau-max 0.02 --rw-h-max 0.004 --rw-visc 1e-6 --no-gif
 python -m attitude_sim --coarse-init --no-gif
 python -m attitude_sim --gyro-sigma-v 1e-3 --gyro-sigma-u 2e-6 \
     --mag-sigma 0.01 --sun-sigma 0.005 --no-gif
@@ -127,7 +129,7 @@ Each trial randomizes, within bounds:
 - sensor noise **seed** (per trial) and a log-uniform **scale** on gyro ARW/RRW and mag/sun σ
 - optional principal-inertia perturbation (`--inertia-frac`, default ±5%; `0` disables)
 
-It does not rewrite the plant, controllers, or estimators. Failures are counted, not treated as a process error (the command still exits 0 after printing the table). `--help` lists the IC / noise / inertia knobs. Optional Controls knobs on the **same** harness (defaults off): `--tau-dist-max` samples a constant body disturbance, and `--gain-scale-min` / `--gain-scale-max` log-uniformly scale the implemented PID gains or LQR \(K\).
+It does not rewrite the plant, controllers, or estimators. Failures are counted, not treated as a process error (the command still exits 0 after printing the table). `--help` lists the IC / noise / inertia knobs. Optional Controls knobs on the **same** harness (defaults off): `--tau-dist-max` samples a constant body disturbance, and `--gain-scale-min` / `--gain-scale-max` log-uniformly scale the implemented PID gains or LQR \(K\). `--rw-sat-stress` (or `--rw-h-max` / `--actuator-tau-max`) turns on the reaction-wheel assembly so trials can saturate stored momentum under noisy sensors.
 
 Each trial applies the #38 cubesat helpers (`tune_pid_second_order` / `bryson_lqr_costs` via `cubesat_gain_report` and `cubesat_controller_kwargs`) to the **sampled** inertia so PID \(K_p,K_d,K_i\) and LQR \(Q,R\) match that plant. That is the same path `run_slew` uses; CLI flags are unchanged.
 
@@ -138,9 +140,11 @@ Each trial applies the #38 cubesat helpers (`tune_pid_second_order` / `bryson_lq
 | final geodesic attitude error (deg) | \(\delta\theta\) to the commanded slew attitude at `t_final` |
 | settle-time proxy (s) | first time after which error stays below `--settle-deg` (NaN if it never holds) |
 | peak \(\\|\tau\\|\) | max control-torque magnitude on the trial |
+| peak \(\\|\omega\\|\) | max body-rate magnitude on the trial |
+| RW sat fraction | fraction of samples with any-axis \(\|τ\|\) or \(\|h_w\|\) at a configured wheel limit (0 if the clip-only actuator is used) |
 | failures | `nan` / `non_unit_quat` / `diverged` (final error > `--diverge-deg` or \(\\|\omega\\|\) blow-up) |
 
-The printed table reports mean / median / p95 of **healthy** (non-failed) final errors, mean settle time over trials that actually settled, and peak-torque max/mean over finite trials.
+The printed table reports mean / median / p95 of **healthy** (non-failed) final errors, mean settle time over trials that actually settled, peak-torque max/mean over finite trials, peak body rate, and mean RW saturation fraction.
 
 CI only runs a tiny **N=5** smoke (`tests/test_monte_carlo.py`). A larger local sweep:
 
@@ -160,6 +164,10 @@ python -m attitude_sim.monte_carlo --n 50 --estimator truth --t-final 22
 # LQR gain / disturbance robustness (same harness)
 python -m attitude_sim.monte_carlo --n 50 --controller lqr --estimator truth \
     --gain-scale-min 0.8 --gain-scale-max 1.25 --tau-dist-max 0.002
+
+# RW saturation + noisy sensors (same harness; tight |τ| / |h| + τ_d fill)
+python -m attitude_sim.monte_carlo --rw-sat-stress --n 20 --seed 0 --estimator mekf \
+    --t-final 12 --csv outputs/mc_rw.csv --json outputs/mc_rw.json
 ```
 
 ### MC figures (PR #10)
@@ -205,9 +213,9 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **lint** on Python 3.12: `ruff check src tests` and `mypy src`. Ruff rules live in `[tool.ruff]`: E/F/W/I/UP/B/RUF. `E501` (line length), `E741` (name `I` for principal inertia), and RUF001–003 (unicode minus/times/sigma in scientific comments) are ignored so CI does not mass-reformat the tree. Ruff does not run `format`. Mypy is scoped to `src/attitude_sim` on **Python 3.12** (`ignore_missing_imports` only for matplotlib and scipy) so current numpy stubs parse; runtime/pytest still cover 3.10–3.12.
 - **pytest + coverage** on Python **3.10, 3.11, and 3.12**. Line coverage of the `attitude_sim` package must stay at or above **80%** (`pytest-cov`, `[tool.coverage.report] fail_under = 80`). The 3.12 job also uploads `coverage.xml` as an artifact. Measured **91%** on `main` after Monte Carlo #6, harden #7, actuator #8, and plant #9 (Python 3.12); the floor is a modest buffer, not a freeze of that number. `plots.py` (GIF renderer) is the largest uncovered slice. `__main__.py` is omitted from the denominator.
 - **packaging**: `python -m build`, install the wheel, `import attitude_sim`.
-- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, **hold**, **eigenaxis**, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, gravity-gradient + residual-dipole + wheel box, aero + SRP, MEKF `--log-innovations`, `--list-scenarios`, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; only slew is in the MC harness). Attitude GIF rendering is not a CI gate.
+- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, **hold**, **eigenaxis**, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, RW `--rw-h-max`, gravity-gradient + residual-dipole + wheel box, aero + SRP, MEKF `--log-innovations`, `--list-scenarios`, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; only slew is in the MC harness) and a 3-trial `--rw-sat-stress` smoke. Attitude GIF rendering is not a CI gate.
 
-Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, a discrete angular-momentum theorem \(\Delta h_I\approx\int R(q)\tau\,dt\), axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), a library hinged-appendage / 1-DOF flex plant (`tests/test_flex.py`: \(\theta=0\) reduces toward the rigid hub, free oscillation \(\approx\sqrt{k/I_{\mathrm{eff}}}\), energy decay with damping), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, named `hold` under `EnvironmentalTorques` (PID cancels \(\tau_{\mathrm{env}}\)) and named `eigenaxis` LQR slew (`tests/test_scenarios.py`), a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), opt-in gravity-gradient / residual-dipole / aero / SRP closed-loop wiring (default off except GG+dipole on hold / `--env`; logged \(\tau\) excludes \(\tau_{\mathrm{env}}\)), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), a disturbed+saturated slew smoke, gravity-gradient / residual-dipole / aero / SRP analytic zeros (`tests/test_disturbances.py`), a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC / MRP / env-torque plot-helper coverage (`tests/test_plot_helpers.py`), and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md). `--estimator truth` still skips gyro/vector sampling (including when env models are on).
+Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, a discrete angular-momentum theorem \(\Delta h_I\approx\int R(q)\tau\,dt\), axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), a library hinged-appendage / 1-DOF flex plant (`tests/test_flex.py`: \(\theta=0\) reduces toward the rigid hub, free oscillation \(\approx\sqrt{k/I_{\mathrm{eff}}}\), energy decay with damping), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, named `hold` under `EnvironmentalTorques` (PID cancels \(\tau_{\mathrm{env}}\)) and named `eigenaxis` LQR slew (`tests/test_scenarios.py`), a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), opt-in gravity-gradient / residual-dipole / aero / SRP closed-loop wiring (default off except GG+dipole on hold / `--env`; logged \(\tau\) excludes \(\tau_{\mathrm{env}}\)), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), reaction-wheel momentum storage / dump / saturation (`tests/test_reaction_wheels.py`), a disturbed+saturated slew smoke, gravity-gradient / residual-dipole / aero / SRP analytic zeros (`tests/test_disturbances.py`), a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC / MRP / env-torque plot-helper coverage (`tests/test_plot_helpers.py`), and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md). `--estimator truth` still skips gyro/vector sampling (including when env models are on).
 
 ## Equations (what the SimLab integrates)
 
@@ -363,6 +371,16 @@ m\leftarrow\mathrm{clip}(m,\,\pm m_{\max}),\qquad
 
 \(\tau\) is always orthogonal to \(B\).  Optional remanent \(m_{\mathrm{res}}\) is handed to the existing residual-dipole disturbance (`residual_dipole_handoff` → `ResidualDipoleTorque`) so commanded and leftover dipoles share \(\tau=m\times B\).
 
+**Reaction-wheel assembly** (optional; `--rw-h-max` / `--rw-inertia` / `--rw-visc`).  Additive `attitude_sim.reaction_wheels` sits on the same actuator path and stores wheel momentum \(h_w=I_w\Omega\).  Motor torque is the reaction of \(\tau_{\mathrm{cmd}}\) after \(|\tau|\) and \(|h|\) saturation, plus viscous / smoothed Coulomb friction
+
+\[
+I_w\dot\Omega=\tau_m+\tau_f+\tau_{\mathrm{dump}},\qquad
+\tau_f=-b\Omega-c\tanh(\Omega/\varepsilon),\qquad
+\tau=-\dot h_w-\omega\times h_w.
+\]
+
+The \(ω×h_w\) couple is included by default (`--rw-no-gyro` drops it).  \(\tau_{\mathrm{dump}}\) is a reserved magnetorquer hook — this repo does not add an MTQ model here.  Default construction without RW kwargs still returns the identity clip/lag `TorqueActuator`.  Does not rewrite `attitude_sim.gyrostat` (one-rotor dual-spin library).
+
 ## Architecture
 
 ```
@@ -370,7 +388,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
                  ↓
             controller (PID | LQR)  →  τ_cmd
                  ↓
-            actuator (wheels: per-axis clip, optional lag; MTQ library: m × B)  →  τ
+            actuator (wheels: per-axis clip, optional lag, optional RW \(h_w\); MTQ library: m × B)  →  τ
                  ↓
             + τ_d + τ_env (GG / dipole / aero / SRP; GG+dipole on hold / --env; else default off)
                  ↓
@@ -390,11 +408,13 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.flex` | Hub + one hinged rigid panel (small-angle \(\theta\), hinge \(k,c\)); coupled \(\omega\)/\(\theta\), rest linearization, RK4 — **not** a SimLab CLI flag |
 | `attitude_sim.scenarios` | Named closed-loop pack (`slew`, `detumble`, `hold`, `eigenaxis`) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch; `tune_pid_second_order` / `bryson_lqr_costs` |
-| `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
+| `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag; `make_actuator` selects the RW assembly when \(I_w\) / \(h_{\max}\) / friction is set |
+| `attitude_sim.reaction_wheels` | Three-axis RW: \(\tau_{\mathrm{cmd}}\to\dot h_w\) with \(\lvert\tau\rvert\) / \(\lvert h\rvert\) sat, friction, optional \(\omega\times h_w\); reserved MTQ \(\tau_{\mathrm{dump}}\) hook |
 | `attitude_sim.magnetic` | Magnetic torquer \(\tau=m\times B\), per-axis \(\|m\|\) sat, residual-dipole handoff — **not** a SimLab CLI flag |
-| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels, MTQ |
+| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels, MTQ, RW |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun/star models (FOV + eclipse gating) |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter; TRIAD skips gated vectors |
+
 | `attitude_sim.sim` | SimLab CLI + `run_sim` / `run_slew`; `--scenario` / `--list-scenarios` |
 | `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`; slew only) |
 | `attitude_sim.plots` | `{scenario}_summary.png`, `{stem}_mrp.png`, `{stem}_env_torque.png`, `{scenario}_attitude.gif`, MC `mc_*.png` |

@@ -21,6 +21,11 @@ def test_parser_defaults_to_slew():
     assert args.estimator == "mekf"
     assert args.actuator_tau_max is None
     assert args.actuator_tau is None
+    assert args.rw_h_max is None
+    assert args.rw_inertia is None
+    assert args.rw_visc == 0.0
+    assert args.rw_coulomb == 0.0
+    assert args.rw_no_gyro is False
     assert args.coarse_init is False
     assert args.angle_deg is None
     assert args.env is False
@@ -467,3 +472,7 @@ def test_main_rejects_bad_actuator_tau_max():
         main(["--actuator-tau-max", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
     with pytest.raises(SystemExit):
         main(["--actuator-tau", "-0.1", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--rw-h-max", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--rw-visc", "-1e-6", "--t-final", "0.05", "--no-plot", "--no-gif"])

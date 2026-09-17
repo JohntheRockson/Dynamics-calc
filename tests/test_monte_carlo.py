@@ -67,6 +67,9 @@ def test_parser_defaults():
     assert args.controller == "pid"
     assert args.estimator == "mekf"
     assert args.inertia_frac == 0.05
+    assert args.rw_sat_stress is False
+    assert args.rw_h_max is None
+    assert args.actuator_tau_max is None
     assert args.plot is False
     assert args.out_dir.name == "outputs"
     assert args.from_json is None
@@ -398,3 +401,33 @@ def test_monte_carlo_lqr_gain_and_disturbance_hook():
     assert max(dists) <= 0.001 + 1e-12
     assert min(dists) >= 0.0
     assert any(d > 0.0 for d in dists) or summary.n == 3
+
+
+def test_cli_rw_sat_stress_smoke(tmp_path):
+    json_path = tmp_path / "mc_rw.json"
+    rc = main(
+        [
+            "--rw-sat-stress",
+            "--n",
+            "2",
+            "--seed",
+            "3",
+            "--estimator",
+            "truth",
+            "--t-final",
+            "0.6",
+            "--dt",
+            "0.05",
+            "--inertia-frac",
+            "0.0",
+            "--diverge-deg",
+            "180",
+            "--json",
+            str(json_path),
+        ]
+    )
+    assert rc == 0
+    loaded = summary_from_json(json_path)
+    assert loaded.n == 2
+    assert loaded.sat_fraction_mean > 0.0
+    assert np.isfinite(loaded.peak_rate_max)
