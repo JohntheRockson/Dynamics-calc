@@ -289,10 +289,10 @@ Constant-speed (or commanded constant \(h_w\)) has \(\dot h_w=0\). A variable-sp
 
 **Fuel slosh / spherical pendulum** (`attitude_sim.slosh`; library plant, **not** a SimLab CLI flag). Rigid hub inertia \(J\) plus one slosh mass \(m\) on a rod of length \(\ell\) — the classical spherical-pendulum equivalent-mechanical tank model reduced to **planar** motion (one slosh mode, angle \(\theta\)). Body-fixed effective gravity \(g_{\mathrm{eff}}\) along the rest direction \(\hat u_0\) (tank / thrust acceleration). Optional hinge damping \(c\) and torsional spring \(k\). This is the pendulum form, not the default zero-g spring-mass model; fixed-hub small-angle frequency is \(\omega_n=\sqrt{g_{\mathrm{eff}}/\ell}\) (or \(\sqrt{k/(m\ell^2)}\) when \(g_{\mathrm{eff}}=0\) and \(k>0\)).
 
-Composite momentum \(H=J\omega+m\,r\times v\) with \(v=\omega\times r+\ell\dot\theta\,\hat u_\theta\) and \(r=r_h+\ell\hat u(\theta)\). Newton–Euler / Lagrange:
+Composite momentum \(H=J\omega+m\,r\times v\) with \(v=\omega\times r+\ell\dot\theta\,\hat u_\theta\) and \(r=r_h+\ell\hat u(\theta)\). Newton–Euler / Lagrange (body-fixed \(g_{\mathrm{eff}}\) is a \(\theta\)-potential, so it does **not** appear as an extra Euler torque):
 
 \[
-\dot H+\omega\times H=\tau+m\,r\times g_{\mathrm{eff}}\hat u_0,\qquad
+\dot H+\omega\times H=\tau,\qquad
 m\ell(r\times\hat u_\theta)\cdot\dot\omega+m\ell^2\ddot\theta=m\ell\,g_{\mathrm{eff}}\hat u_0\cdot\hat u_\theta-m\ell[\omega\times(\omega\times r)]\cdot\hat u_\theta-k\theta-c\dot\theta.
 \]
 

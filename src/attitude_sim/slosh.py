@@ -51,10 +51,10 @@ Body-frame composite angular momentum about ``O`` is
     H = J ω + m r × v,     v = ω × r + ℓ θ̇ û_θ
       = (J + J_p) ω + m ℓ θ̇ (r × û_θ)
 
-with the point-mass inertia ``J_p = m (|r|² I − r rᵀ)``.  Euler on the
-composite system (ideal rod forces do no torque about ``O``) is
+with the point-mass inertia ``J_p = m (|r|² I − r rᵀ)``.  Euler–Poincaré on the composite system (ideal rod forces do no
+torque about ``O``; body-fixed ``g⃗`` lives in ``V(θ)`` only) is
 
-    Ḣ + ω × H = τ + m r × g⃗
+    Ḣ + ω × H = τ
 
 and the pendulum Lagrange / virtual-work equation (project bob
 acceleration on ``û_θ``) is
@@ -396,9 +396,10 @@ class SloshPendulum:
             2.0 * float(r @ r_dot) * w - r_dot * float(r @ w) - r * float(r_dot @ w)
         )
         h = self.angular_momentum_body(w, th, td)
+        # Body-fixed g⃗ is already in V(θ); do not add r × mg on the
+        # Euler–Poincaré ω equation (that term would break T+V).
         euler_rhs = (
             tau_b
-            + m * np.cross(r, g_vec)
             - np.cross(w, h)
             - jp_dot_w
             + m * ell * td * td * np.cross(r, u)

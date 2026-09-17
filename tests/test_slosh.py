@@ -259,6 +259,20 @@ def test_zero_g_spring_frequency_is_documented_equivalent():
     assert abs(freq - wn) / wn < FREQ_REL_TOL
 
 
+def test_torque_free_zero_g_conserves_inertial_momentum():
+    slosh = _plant(inertia=_ASYM_J, g_eff=0.0, damping=0.0, stiffness=0.0)
+    q = quat_normalize([0.6, 0.2, -0.3, 0.5])
+    omega = np.array([0.12, -0.08, 0.05])
+    theta, theta_dot = 0.18, -0.04
+    h0 = slosh.angular_momentum_inertial(q, omega, theta, theta_dot)
+    for _ in range(1500):
+        q, omega, theta, theta_dot = step_slosh_attitude(
+            slosh, q, omega, theta, theta_dot, np.zeros(3), 0.002
+        )
+    h1 = slosh.angular_momentum_inertial(q, omega, theta, theta_dot)
+    np.testing.assert_allclose(h1, h0, atol=1e-10)
+
+
 def test_undamped_energy_conserved():
     slosh = _plant(inertia=_ASYM_J, damping=0.0)
     omega = np.array([0.15, -0.05, 0.08])
@@ -330,6 +344,31 @@ def test_as_rigid_body_dry_hub_matches_inertia():
     assert slosh.has_slosh
     np.testing.assert_allclose(slosh.g_vector, slosh.g_eff * slosh.rest_direction)
     np.testing.assert_allclose(slosh.plane_normal, [0.0, -1.0, 0.0], atol=1e-12)
+
+
+def test_public_helpers_and_finite_guards():
+    slosh = _plant()
+    omega = np.array([0.1, -0.05, 0.02])
+    tau = np.zeros(3)
+    tddot = slosh.theta_ddot(omega, tau, 0.2, 0.1)
+    _, _, tddot2 = slosh.derivatives(omega, tau, 0.2, 0.1)
+    assert tddot == pytest.approx(tddot2)
+    assert slosh.theta_ddot(omega, tau, 0.0, 0.0, frozen=True) == pytest.approx(0.0)
+    np.testing.assert_allclose(slosh.inertia_inv @ slosh.inertia, np.eye(3), atol=1e-12)
+    np.testing.assert_allclose(slosh.rest_direction, slosh.g_vector / slosh.g_eff)
+    with pytest.raises(ValueError, match="omega"):
+        slosh.omega_dot([np.nan, 0.0, 0.0], tau, 0.0, 0.0)
+    with pytest.raises(ValueError, match="tau"):
+        slosh.omega_dot(omega, [np.inf, 0.0, 0.0], 0.0, 0.0)
+    with pytest.raises(ValueError, match="hinge"):
+        SloshPendulum(_TRIAXIAL, hinge=[np.nan, 0.0, 0.0])
+    with pytest.raises(ValueError, match="finite"):
+        unit_axis([np.nan, 0.0, 0.0])
+    with pytest.raises(ValueError, match="theta"):
+        pack_slosh_state(omega, np.inf, 0.0)
+    dry = _plant(mass=0.0, stiffness=1.0, length=0.3)
+    with pytest.raises(ValueError, match="mass"):
+        dry.natural_frequency()
 
 
 def test_natural_frequency_helpers_reject_degenerate():
