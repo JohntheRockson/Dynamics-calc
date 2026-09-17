@@ -161,3 +161,48 @@ inside the controllers.  Both can be active: the controller still saturates
 in \(|\tau|\), then the wheels clip each axis and (optionally) lag.
 PID anti-windup can apply the same `clip_torque` box on the command (`tau_max`)
 so \(K_i\) sees per-axis saturation, not only the Euclidean ball.
+
+## Eigenaxis slew profile
+
+`attitude_sim.slew.rest_to_rest_eigenaxis` builds a rest-to-rest bang-coast-bang / trapezoidal
+angle history about the shortest-path eigenaxis of \(q_0\to q_f\), or about
+an explicit body axis from \(\theta_0\to\theta_f\).
+
+\[
+\theta(t)=\begin{cases}
+\theta_0+\tfrac12 s\,\alpha_{\max} t^{2} & 0\le t<t_{\mathrm{acc}}\\
+\theta_{\mathrm{acc}}+s\,\omega_{\mathrm{c}}(t-t_{\mathrm{acc}}) & t_{\mathrm{acc}}\le t<t_{\mathrm{acc}}+t_{\mathrm{coast}}\\
+\theta_{\mathrm{coast}}+s\bigl(\omega_{\mathrm{c}}\tau-\tfrac12\alpha_{\max}\tau^{2}\bigr) & \text{decel, }\tau=t-t_{\mathrm{acc}}-t_{\mathrm{coast}}\\
+\theta_f & t\ge t_f
+\end{cases}
+\]
+
+with \(s=\mathrm{sign}(\theta_f-\theta_0)\), \(\omega(0)=\omega(t_f)=0\), and
+\(\theta,\omega\) continuous (\(\alpha\) jumps at the switches).  If
+\(\omega_{\max}\) is omitted or larger than the bang-bang peak
+\(\sqrt{\alpha_{\max}|\Delta\theta|}\), the coast vanishes (triangular).
+\(\alpha_{\max}\) may be given directly or sized from \(J\) and \(\tau_{\max}\)
+so \(|J\alpha\hat e|\le\tau_{\max}\) (`alpha_max_from_torque`).
+
+Body-frame references:
+
+\[
+q_{\mathrm{des}}(t)=q_0\otimes\exp\bigl((\theta(t)-\theta_0)\hat e\bigr),\qquad
+\omega_{\mathrm{des}}=\dot\theta\,\hat e,\qquad
+\alpha_{\mathrm{des}}=\ddot\theta\,\hat e.
+\]
+
+`command_slew` feeds \((q_{\mathrm{des}},\,\omega_{\mathrm{des}})\) into the
+existing PID / LQR `command(..., omega_des=)` path.  Optional \(J\alpha_{\mathrm{des}}\)
+is an extra `alpha_des=` argument on both laws, added *before*
+`apply_torque_limits` (the shared Euclidean ball + per-axis `clip_torque`
+helper already on `main`).  PID anti-windup therefore sees the feedforward;
+LQR still has no integrator.
+
+```python
+from attitude_sim.controls import PIDAttitudeController
+from attitude_sim.slew import command_slew, rest_to_rest_eigenaxis
+
+prof = rest_to_rest_eigenaxis(q0, qf, omega_max=0.15, inertia=J, tau_max=0.02)
+tau = command_slew(pid, q, omega, prof.sample(t), dt)
+```
