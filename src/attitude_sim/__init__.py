@@ -9,7 +9,12 @@ from attitude_sim.controls import (
     make_controller,
     solve_care,
 )
-from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF, make_estimator
+from attitude_sim.estimation import (
+    ComplementaryFilter,
+    MultiplicativeEKF,
+    make_estimator,
+    triad_attitude,
+)
 from attitude_sim.plant import (
     RigidBody,
     inertia_from_principal,
@@ -68,6 +73,7 @@ __all__ = [
     "run_slew",
     "solve_care",
     "step_rigid_body",
+    "triad_attitude",
     "validate_inertia",
 ]
 

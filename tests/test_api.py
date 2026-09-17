@@ -24,6 +24,7 @@ def test_version_and_public_exports():
         "TorqueActuator",
         "clip_torque",
         "make_actuator",
+        "triad_attitude",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
@@ -33,3 +34,4 @@ def test_version_and_public_exports():
     assert "AttitudeLQR" in attitude_sim.__all__
     assert "run_sim" in attitude_sim.__all__
     assert "TorqueActuator" in attitude_sim.__all__
+    assert "triad_attitude" in attitude_sim.__all__

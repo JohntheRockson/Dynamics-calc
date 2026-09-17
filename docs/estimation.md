@@ -81,7 +81,8 @@ attitude–bias cross block: bias random walk integrates into angle.  The
 scaffold's first-order \(Q_d \approx G Q_c G^{\top} dt\) dropped both.
 
 Default \(P_0 \approx \mathrm{diag}(3\times10^{-3} I_3,\, 10^{-5} I_3)\):
-about \(3^\circ\) attitude 1σ (initialized on the true \(q\)) and
+about \(3^\circ\) attitude 1σ (initialized on the true \(q\), unless
+`--coarse-init` / `SimConfig.coarse_init` runs TRIAD) and
 \(\sim 3\,\mathrm{mrad/s}\) bias 1σ, consistent with the SimLab gyro bias
 of a few mrad/s.
 
@@ -94,8 +95,17 @@ retune only the sensor, not the estimator.
 
 Magnetometer and sun-sensor stubs (`magnetometer`, `sun_sensor`) return
 noisy unit vectors.  Inertial references are **constant** (no IGRF, no
-eclipse, no FOV).  Optional `bias_body` is a hard-iron / boresight offset
-applied before re-normalization.
+dipole, no albedo, no AgentCAD).  Optional `bias_body` is a hard-iron /
+boresight offset applied before re-normalization.
+
+Optional stub flags (not ephemerides):
+
+- `occulted=True` / sun factory `eclipse=True` drops that sample.
+  This is a boolean, not an umbra / Earth-occultation geometry model.
+- `fov_half_angle` (rad, default `None` = unlimited) is a cone about
+  `boresight_body` (default body +z).  Gating uses the *true* body-frame
+  direction.  `measure` returns `None` when unavailable;
+  `vectors_from_sensors` skips those samples.
 
 Sequential MEKF updates use
 
@@ -107,6 +117,54 @@ v_b - \hat v_b \approx [\hat v_b \times]\,\delta\alpha,
 with rank-2 tangent-plane \(R = \sigma^2 (I - \hat v_b\hat v_b^{\top})\)
 plus a small nugget.  `vectors_from_sensors` forwards each sensor's
 `sigma` so mag and sun can have different \(R\).
+
+## Coarse attitude init (TRIAD)
+
+Filters in the SimLab **default to the true** \(q_0\) (`SimConfig.coarse_init=False`,
+no `--coarse-init`).  That preserves the current demo.
+
+Optional Wahba TRIAD (`triad_attitude` / `--coarse-init`) builds
+orthonormal triads from two body/inertial pairs (mag then sun) and the
+rotation \(v_I = R(q)\,v_B\).  The first pair is the primary.  Parallel
+references raise; fewer than two *available* sensors falls back to true
+\(q_0\) with a warning.  TRIAD is a lost-in-space *coarse* align, not a
+Davenport q-method / QUEST solver.
+
+## MEKF NEES / consistency
+
+Error state \(x = [\delta\alpha,\,\delta b]\) with
+\(\delta q = \hat q^{\ast}\otimes q\) and \(\delta\alpha \approx 2\operatorname{sign}(\delta q_w)\,\delta q_{1:3}\),
+\(\delta b = b - \hat b\).  NEES is \(\varepsilon = x^{\top} P^{-1} x\).
+
+For a consistent 6-state Gaussian filter, \(\varepsilon \sim \chi^2_6\):
+
+| Quantity | Value |
+| --- | --- |
+| \(\mathbb{E}[\varepsilon]\) | \(6\) |
+| Single-trial 95% | \(\chi^2_{6,0.025}\approx 1.24\), \(\chi^2_{6,0.975}\approx 14.45\) |
+| Single-trial 99% | \(\approx [0.68,\,18.55]\) |
+| Mean of \(N=32\) trials, 99% | \(\bar\varepsilon \in [\chi^2_{192}(0.005)/32,\,\chi^2_{192}(0.995)/32] \approx [4.54,\,7.69]\) |
+
+Helpers: `mekf_error_state`, `nees`, `chi2_mean_nees_bounds`.
+
+The unit-test suite (`test_mekf_nees_matched_synthetic_is_consistent`) is a
+**matched synthetic**, not SimLab:
+
+- Constant-rate quaternion kinematics (no Euler torque / closed-loop).
+- Farrenkopf gyro with \(\sigma_v=5\times10^{-4}\,\mathrm{rad/s/\sqrt{Hz}}\),
+  \(\sigma_u=10^{-6}\,\mathrm{rad/s^2/\sqrt{Hz}}\), \(\sigma_n=0\), matching
+  \(Q_d\).
+- Mag \(\sigma=3\times10^{-3}\), sun \(\sigma=2\times10^{-3}\) Cartesian;
+  filter \(R\) is the rank-2 tangent plane plus nugget.  Default stubs
+  (no FOV, no eclipse).
+- Honest \(P_0=\mathrm{diag}(3\times10^{-3}I_3,\,10^{-5}I_3)\): initial
+  error drawn from \(P_0\).
+- Measurement at the end of each \(dt\) after truth and the filter both
+  propagate.
+
+A prior-only check (`test_mekf_nees_honest_prior_matches_chi2`) confirms
+the \(\chi^2_6\) sampling of \(x\sim\mathcal{N}(0,P_0)\) before any
+updates.
 
 ## Mahony complementary filter
 
@@ -133,5 +191,5 @@ From the repo root (after `pip install -e ".[dev]"`):
 
 ```bash
 pytest tests/test_estimation.py tests/test_sensors.py
-pytest                          # full suite, including closed-loop smoke
+pytest                          # full suite, including closed-loop smoke and NEES
 ```

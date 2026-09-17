@@ -26,6 +26,10 @@ covariance on the unit-sphere tangent plane.
 
 Truth is sampled from the plant ``(q, ω)`` pair returned by
 ``step_rigid_body``; this module does not integrate Euler's equation.
+
+Coarse attitude: ``triad_attitude`` / ``triad_q0_from_sensors`` (Wahba
+TRIAD).  Consistency: ``mekf_error_state``, ``nees``,
+``chi2_mean_nees_bounds`` (see ``docs/estimation.md``).
 """
 
 from __future__ import annotations
@@ -41,9 +45,15 @@ from attitude_sim.quaternions import (
     quat_multiply,
     quat_normalize,
     quat_to_rotation,
+    rotation_to_quat,
+    rotation_vector_error,
     skew,
 )
 from attitude_sim.sensors import VectorSensor
+
+# 6-state MEKF error x = [δα, δb]; consistent NEES is χ² with this many dof.
+MEKF_NEES_DOF = 6
+_TRIAD_PARALLEL_EPS = 1e-8
 
 VectorMeas = tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, float]
 
@@ -137,6 +147,108 @@ def _inject_body_error(q: np.ndarray, dtheta: np.ndarray) -> np.ndarray:
     angle = float(np.linalg.norm(dtheta))
     dq = axis_angle_to_quat(dtheta, angle)
     return quat_normalize(quat_multiply(q, dq))
+
+
+def triad_attitude(
+    v_b1: np.ndarray,
+    v_I1: np.ndarray,
+    v_b2: np.ndarray,
+    v_I2: np.ndarray,
+) -> np.ndarray:
+    """Wahba TRIAD: two body/inertial unit-vector pairs → scalar-first ``q``.
+
+    Builds orthonormal triads in each frame (first pair is the primary
+    observation) and the unique rotation ``v_I = R(q) v_B`` that maps the
+    body triad onto the inertial triad.  Vectors must be non-parallel.
+    """
+    b1 = _unit3(v_b1)
+    r1 = _unit3(v_I1)
+    b2 = _unit3(v_b2)
+    r2 = _unit3(v_I2)
+    tb = np.cross(b1, b2)
+    tr = np.cross(r1, r2)
+    nb = float(np.linalg.norm(tb))
+    nr = float(np.linalg.norm(tr))
+    if nb < _TRIAD_PARALLEL_EPS or nr < _TRIAD_PARALLEL_EPS:
+        raise ValueError("TRIAD reference vectors must be non-parallel")
+    tb = tb / nb
+    tr = tr / nr
+    body = np.column_stack((b1, tb, np.cross(b1, tb)))
+    inertial = np.column_stack((r1, tr, np.cross(r1, tr)))
+    return rotation_to_quat(inertial @ body.T)
+
+
+def triad_q0_from_sensors(q: np.ndarray, sensors: list[VectorSensor]) -> np.ndarray:
+    """Coarse ``q`` from the first two *available* mag/sun (or other) stubs.
+
+    Samples each sensor at the true attitude ``q`` (the only truth the
+    sensors ever see).  Occulted / out-of-FOV sensors are skipped.
+    Raises ``ValueError`` if fewer than two measurements are available.
+    """
+    pairs: list[tuple[np.ndarray, np.ndarray]] = []
+    for sensor in sensors:
+        v_b = sensor.measure(q)
+        if v_b is None:
+            continue
+        pairs.append((v_b, sensor.v_inertial))
+        if len(pairs) >= 2:
+            break
+    if len(pairs) < 2:
+        raise ValueError("TRIAD coarse init needs two available vector sensors")
+    (v_b1, v_I1), (v_b2, v_I2) = pairs
+    return triad_attitude(v_b1, v_I1, v_b2, v_I2)
+
+
+def mekf_error_state(
+    q_hat: np.ndarray,
+    bias_hat: np.ndarray,
+    q_true: np.ndarray,
+    bias_true: np.ndarray,
+) -> np.ndarray:
+    """MEKF error ``x = [δα, δb]`` for ``q = q̂ ⊗ δq(δα)``, ``δb = b − b̂``.
+
+    ``δα`` is the body-frame rotation vector
+    ``2 sign(δq_w) δq_{1:3}`` with ``δq = q̂* ⊗ q``.
+    """
+    dalpha = np.asarray(rotation_vector_error(q_true, q_hat), dtype=float).reshape(3)
+    db = np.asarray(bias_true, dtype=float).reshape(3) - np.asarray(bias_hat, dtype=float).reshape(3)
+    return np.concatenate([dalpha, db])
+
+
+def nees(x: np.ndarray, P: np.ndarray) -> float:
+    """Normalized estimation error squared ``xᵀ P⁻¹ x``."""
+    x = np.asarray(x, dtype=float).reshape(-1)
+    P = np.asarray(P, dtype=float)
+    if P.ndim != 2 or P.shape != (x.size, x.size):
+        raise ValueError(f"P shape {P.shape} does not match error length {x.size}")
+    return float(x @ np.linalg.solve(P, x))
+
+
+def chi2_mean_nees_bounds(
+    dof: int,
+    n_trials: int,
+    alpha: float = 0.01,
+) -> tuple[float, float]:
+    """Two-sided bounds on the mean of ``n_trials`` i.i.d. ``χ²_dof`` samples.
+
+    If ``ε_i ~ χ²_ν`` independently, then ``n ε̄ ~ χ²_{nν}``, so at
+    confidence ``1 − α``
+
+        ``ε̄ ∈ [ χ²_{nν}(α/2) / n ,  χ²_{nν}(1 − α/2) / n ]``.
+
+    A consistent 6-state MEKF has ``E[NEES] = 6``.  For ``N = 32`` and
+    ``α = 0.01`` the interval is about ``[4.54, 7.69]``.
+    """
+    from scipy.stats import chi2
+
+    if dof <= 0 or n_trials <= 0:
+        raise ValueError("dof and n_trials must be positive")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
+    df = int(dof) * int(n_trials)
+    lo = float(chi2.ppf(0.5 * alpha, df)) / n_trials
+    hi = float(chi2.ppf(1.0 - 0.5 * alpha, df)) / n_trials
+    return lo, hi
 
 
 @dataclass
@@ -319,5 +431,15 @@ def vectors_from_sensors(
     q: np.ndarray,
     sensors: list[VectorSensor],
 ) -> list[tuple[np.ndarray, np.ndarray, float]]:
-    """Sample each vector sensor and attach its Cartesian ``sigma`` for R."""
-    return [(s.measure(q), s.v_inertial, s.sigma) for s in sensors]
+    """Sample each *available* vector sensor and attach Cartesian ``sigma``.
+
+    Occulted / out-of-FOV stubs (``measure`` returns ``None``) are skipped
+    so the filter runs gyro-only on that sample.
+    """
+    out: list[tuple[np.ndarray, np.ndarray, float]] = []
+    for sensor in sensors:
+        v_b = sensor.measure(q)
+        if v_b is None:
+            continue
+        out.append((v_b, sensor.v_inertial, sensor.sigma))
+    return out
