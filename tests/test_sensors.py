@@ -122,3 +122,47 @@ def test_vector_sensor_hard_iron_bias_shifts_measurement():
 def test_zero_inertial_reference_rejected():
     with pytest.raises(ValueError, match="inertial reference"):
         VectorSensor(v_inertial=np.zeros(3))
+
+
+def test_sun_eclipse_flag_drops_measurement():
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    sun = sun_sensor(sigma=0.0, eclipse=True, seed=0)
+    assert sun.occulted
+    assert sun.measure(q) is None
+    assert not sun.available(q)
+
+
+def test_vector_sensor_fov_gate_uses_true_body_direction():
+    sun = sun_sensor(
+        v_inertial=np.array([1.0, 0.0, 0.0]),
+        sigma=0.0,
+        fov_half_angle=np.deg2rad(20.0),
+        boresight_body=np.array([0.0, 0.0, 1.0]),
+        seed=0,
+    )
+    q_id = np.array([1.0, 0.0, 0.0, 0.0])
+    # Identity: sun is +x_B, 90° from +z boresight → out of 20° FOV.
+    assert sun.measure(q_id) is None
+    # Rotate so body +z points at inertial +x (the sun).
+    q_in = axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), np.pi / 2)
+    v_b = sun.measure(q_in)
+    assert v_b is not None
+    np.testing.assert_allclose(v_b, [0.0, 0.0, 1.0], atol=1e-12)
+
+
+def test_vectors_from_sensors_skips_occulted_and_out_of_fov():
+    from attitude_sim.estimation import vectors_from_sensors
+
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    mag = magnetometer(sigma=0.0, seed=0)
+    sun = sun_sensor(sigma=0.0, eclipse=True, seed=1)
+    vecs = vectors_from_sensors(q, [mag, sun])
+    assert len(vecs) == 1
+    assert vecs[0][1] is mag.v_inertial or np.allclose(vecs[0][1], mag.v_inertial)
+
+
+def test_fov_half_angle_and_zero_boresight_rejected():
+    with pytest.raises(ValueError, match="fov_half_angle"):
+        VectorSensor(v_inertial=np.array([1.0, 0.0, 0.0]), fov_half_angle=-0.1)
+    with pytest.raises(ValueError, match="boresight"):
+        VectorSensor(v_inertial=np.array([1.0, 0.0, 0.0]), boresight_body=np.zeros(3))

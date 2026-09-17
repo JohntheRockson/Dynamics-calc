@@ -26,8 +26,17 @@ Both are unit-vector observations
     v_b = R(q)ᵀ v_I + b_body + η ,   then re-normalized.
 
 ``R(q)`` maps body → inertial (scalar-first ``q``).  The inertial
-references are treated as constant; there is no IGRF, eclipse, or FOV
-model.  ``b_body`` is an optional hard-iron / alignment offset.
+references are treated as constant; there is no IGRF, eclipse *geometry*,
+or AgentCAD.  ``b_body`` is an optional hard-iron / alignment offset.
+
+Optional stub realism (flags only, not ephemerides):
+
+- ``occulted=True`` (sun factory: ``eclipse=True``) drops the sample.
+- ``fov_half_angle`` (rad) is a cone about ``boresight_body`` (default +z).
+  ``None`` means no FOV gate (current demo).  Gating uses the *true*
+  body-frame direction, not the noisy measurement.
+``measure`` returns ``None`` when the sample is unavailable so estimators
+skip that vector on that step.
 """
 
 from __future__ import annotations
@@ -128,6 +137,11 @@ class VectorSensor:
     ``v_b = R(q)ᵀ v_I + b_body + η``, then re-normalized.  ``sigma`` is
     the per-axis Cartesian noise before normalization.  ``bias_body`` is
     an optional constant body-frame offset (hard-iron / boresight).
+
+    ``occulted`` is a boolean eclipse / occultation stub (no umbra
+    geometry).  ``fov_half_angle`` (rad, ``None`` = unlimited) gates the
+    true body-frame direction against ``boresight_body``.  Out-of-FOV or
+    occulted samples: ``measure`` returns ``None``.
     """
 
     v_inertial: np.ndarray
@@ -135,6 +149,9 @@ class VectorSensor:
     bias_body: np.ndarray = field(default_factory=lambda: np.zeros(3))
     seed: int | np.random.Generator | None = None
     name: str = "vector"
+    boresight_body: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 1.0]))
+    fov_half_angle: float | None = None
+    occulted: bool = False
 
     def __post_init__(self) -> None:
         v = np.asarray(self.v_inertial, dtype=float).reshape(3)
@@ -143,9 +160,32 @@ class VectorSensor:
             raise ValueError(f"{self.name} inertial reference must be non-zero")
         self.v_inertial = v / n
         self.bias_body = np.asarray(self.bias_body, dtype=float).reshape(3).copy()
+        b = np.asarray(self.boresight_body, dtype=float).reshape(3)
+        bn = float(np.linalg.norm(b))
+        if bn < 1e-15:
+            raise ValueError(f"{self.name} boresight must be non-zero")
+        self.boresight_body = b / bn
+        if self.fov_half_angle is not None and float(self.fov_half_angle) < 0.0:
+            raise ValueError("fov_half_angle must be >= 0")
         self._rng = _as_rng(self.seed)
 
-    def measure(self, q: np.ndarray) -> np.ndarray:
+    def available(self, q: np.ndarray) -> bool:
+        """True unless occulted or the true body vector is outside the FOV cone."""
+        if self.occulted:
+            return False
+        if self.fov_half_angle is None:
+            return True
+        R = quat_to_rotation(q)
+        v_b = R.T @ self.v_inertial
+        vn = float(np.linalg.norm(v_b))
+        if vn < 1e-15:
+            return False
+        cosine = float(np.dot(v_b / vn, self.boresight_body))
+        return cosine >= float(np.cos(self.fov_half_angle))
+
+    def measure(self, q: np.ndarray) -> np.ndarray | None:
+        if not self.available(q):
+            return None
         R = quat_to_rotation(q)
         v_b = R.T @ self.v_inertial + self.bias_body
         v_b = v_b + self.sigma * self._rng.standard_normal(3)
@@ -160,6 +200,9 @@ def magnetometer(
     sigma: float = 3e-3,
     bias_body: np.ndarray | None = None,
     seed: int | np.random.Generator | None = None,
+    fov_half_angle: float | None = None,
+    boresight_body: np.ndarray | None = None,
+    occulted: bool = False,
 ) -> VectorSensor:
     """Constant-field magnetometer stub (no IGRF / dipole model)."""
     if v_inertial is None:
@@ -170,6 +213,11 @@ def magnetometer(
         bias_body=np.zeros(3) if bias_body is None else bias_body,
         seed=seed,
         name="mag",
+        boresight_body=(
+            np.array([0.0, 0.0, 1.0]) if boresight_body is None else boresight_body
+        ),
+        fov_half_angle=fov_half_angle,
+        occulted=occulted,
     )
 
 
@@ -178,8 +226,15 @@ def sun_sensor(
     sigma: float = 2e-3,
     bias_body: np.ndarray | None = None,
     seed: int | np.random.Generator | None = None,
+    eclipse: bool = False,
+    fov_half_angle: float | None = None,
+    boresight_body: np.ndarray | None = None,
 ) -> VectorSensor:
-    """Sun-vector stub (constant inertial direction; no eclipse / FOV)."""
+    """Sun-vector stub (constant inertial direction; eclipse/FOV are flags).
+
+    ``eclipse=True`` drops the sample (no umbra / Earth-ephemeris model).
+    ``fov_half_angle`` is an optional half-cone about ``boresight_body``.
+    """
     if v_inertial is None:
         v_inertial = np.array([1.0, 0.05, 0.02])
     return VectorSensor(
@@ -188,4 +243,9 @@ def sun_sensor(
         bias_body=np.zeros(3) if bias_body is None else bias_body,
         seed=seed,
         name="sun",
+        boresight_body=(
+            np.array([0.0, 0.0, 1.0]) if boresight_body is None else boresight_body
+        ),
+        fov_half_angle=fov_half_angle,
+        occulted=eclipse,
     )

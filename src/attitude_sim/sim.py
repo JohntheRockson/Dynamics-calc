@@ -15,6 +15,7 @@ from attitude_sim.estimation import (
     ComplementaryFilter,
     MultiplicativeEKF,
     make_estimator,
+    triad_q0_from_sensors,
     vectors_from_sensors,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
@@ -62,6 +63,7 @@ class SimConfig:
     sun_sigma: float = 2e-3
     use_mag: bool = True
     use_sun: bool = True
+    coarse_init: bool = False
     seed: int = 1
     plot: bool = True
     gif: bool = True
@@ -110,6 +112,7 @@ def make_scenario_config(
     actuator_tau: float | None = None,
     use_mag: bool = True,
     use_sun: bool = True,
+    coarse_init: bool = False,
     seed: int = 1,
     plot: bool = True,
     gif: bool = True,
@@ -135,6 +138,7 @@ def make_scenario_config(
             actuator_tau=actuator_tau,
             use_mag=use_mag,
             use_sun=use_sun,
+            coarse_init=coarse_init,
             seed=seed,
             plot=plot,
             gif=gif,
@@ -152,6 +156,7 @@ def make_scenario_config(
         actuator_tau=actuator_tau,
         use_mag=use_mag,
         use_sun=use_sun,
+        coarse_init=coarse_init,
         seed=seed,
         plot=plot,
         gif=gif,
@@ -207,12 +212,13 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     q_des = quat_normalize(cfg.q_des)
     tau_dist = np.asarray(cfg.tau_dist, dtype=float).reshape(3)
 
-    estimator = make_sim_estimator(cfg, q)
     # Full-state feedback does not consume measurements. Skip gyro / vector
-    # construction and sampling so the truth path stays cheap.
+    # construction and sampling so the truth path stays cheap. Coarse TRIAD
+    # init only applies when an estimator will run.
     gyro: GyroModel | None = None
     sensors: list[VectorSensor] = []
-    if estimator is not None:
+    q_est0 = q
+    if cfg.estimator.lower() != "truth":
         gyro = GyroModel(
             sigma_v=cfg.gyro_sigma_v,
             sigma_u=cfg.gyro_sigma_u,
@@ -237,13 +243,24 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
                     name="sun",
                 )
             )
-        if not sensors:
-            warnings.warn(
-                f"estimator {cfg.estimator!r} is running with no vector sensors "
-                "(gyro-only); full attitude is not observable from rate alone",
-                UserWarning,
-                stacklevel=2,
-            )
+        if cfg.coarse_init:
+            try:
+                q_est0 = triad_q0_from_sensors(q, sensors)
+            except ValueError as exc:
+                warnings.warn(
+                    f"coarse TRIAD init skipped ({exc}); estimator starts at true q0",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                q_est0 = q
+    estimator = make_sim_estimator(cfg, q_est0)
+    if estimator is not None and not sensors:
+        warnings.warn(
+            f"estimator {cfg.estimator!r} is running with no vector sensors "
+            "(gyro-only); full attitude is not observable from rate alone",
+            UserWarning,
+            stacklevel=2,
+        )
 
     n = int(np.round(cfg.t_final / cfg.dt)) + 1
     t = np.arange(n, dtype=float) * cfg.dt
@@ -351,6 +368,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-gif", action="store_true", help="skip attitude GIF")
     p.add_argument("--no-mag", action="store_true", help="disable magnetometer")
     p.add_argument("--no-sun", action="store_true", help="disable sun sensor")
+    p.add_argument(
+        "--coarse-init",
+        action="store_true",
+        help=(
+            "TRIAD coarse attitude from mag+sun at t=0 so MEKF/Mahony need not "
+            "start at true q0 (default: start at true q0, current demo)"
+        ),
+    )
     p.add_argument("--seed", type=int, default=1, help="RNG seed for sensors")
     p.add_argument(
         "--angle-deg",
@@ -414,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         actuator_tau=args.actuator_tau,
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
+        coarse_init=args.coarse_init,
         seed=args.seed,
         plot=not args.no_plot,
         gif=not args.no_gif,

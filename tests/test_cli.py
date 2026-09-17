@@ -14,6 +14,7 @@ def test_parser_defaults_to_slew():
     assert args.estimator == "mekf"
     assert args.actuator_tau_max is None
     assert args.actuator_tau is None
+    assert args.coarse_init is False
 
 
 def test_parser_detumble_and_flags():
@@ -29,6 +30,7 @@ def test_parser_detumble_and_flags():
             "0.02",
             "--actuator-tau",
             "0.05",
+            "--coarse-init",
         ]
     )
     assert args.scenario == "detumble"
@@ -37,6 +39,7 @@ def test_parser_detumble_and_flags():
     assert args.no_gif
     assert args.actuator_tau_max == "0.02"
     assert args.actuator_tau == 0.05
+    assert args.coarse_init
 
 
 def test_make_scenario_config_stems():
@@ -45,6 +48,9 @@ def test_make_scenario_config_stems():
     assert slew.artifact_stem == "slew"
     assert det.artifact_stem == "detumble"
     assert abs(det.omega0).max() > 0.2
+    assert slew.coarse_init is False
+    coarse = make_scenario_config("slew", plot=False, gif=False, coarse_init=True)
+    assert coarse.coarse_init is True
 
 
 def test_make_scenario_config_unknown():
@@ -102,6 +108,10 @@ def test_main_tau_dist_and_lqr_mahony_smoke():
         )
         == 0
     )
+
+
+def test_main_coarse_init_smoke():
+    assert main(["--coarse-init", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
 
 
 def test_main_rejects_bad_tau_dist():

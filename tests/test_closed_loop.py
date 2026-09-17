@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF
-from attitude_sim.quaternions import axis_angle_to_quat
+from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
 from attitude_sim.sim import SimConfig, make_scenario_config, make_sim_estimator, run_slew
 
 
@@ -224,3 +224,37 @@ def test_truth_path_skips_sensor_sampling(monkeypatch):
     run_slew(_cfg(estimator="mekf", t_final=0.05))
     assert gyro_calls["n"] > 0
     assert vec_calls["n"] > 0
+
+
+def test_default_estimator_starts_at_true_q0():
+    q0 = axis_angle_to_quat(np.array([0.2, 0.5, 0.8]), 0.7)
+    log = run_slew(_cfg(q0=q0, estimator="mekf", t_final=0.03, coarse_init=False))
+    assert log.est_att_error is not None
+    assert np.rad2deg(log.est_att_error[0]) < 2.0
+
+
+def test_coarse_init_does_not_start_at_true_q0_and_stays_unit():
+    q0 = axis_angle_to_quat(np.array([0.2, 0.5, 0.8]), 0.7)
+    log_true = run_slew(_cfg(q0=q0, estimator="mekf", t_final=0.03, coarse_init=False, seed=4))
+    log_triad = run_slew(_cfg(q0=q0, estimator="mekf", t_final=0.03, coarse_init=True, seed=4))
+    np.testing.assert_allclose(log_true.q[0], log_triad.q[0])
+    assert geodesic_angle(log_true.q_hat[0], log_triad.q_hat[0]) > np.deg2rad(0.05)
+    assert log_triad.est_att_error is not None
+    assert np.rad2deg(log_triad.est_att_error[0]) < 15.0
+    np.testing.assert_allclose(np.linalg.norm(log_triad.q_hat, axis=1), 1.0, atol=1e-12)
+
+
+def test_coarse_init_without_two_sensors_warns_and_keeps_true_q0():
+    q0 = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.5)
+    with pytest.warns(UserWarning, match="coarse TRIAD init skipped"):
+        log = run_slew(
+            _cfg(
+                q0=q0,
+                estimator="mekf",
+                t_final=0.03,
+                coarse_init=True,
+                use_sun=False,
+            )
+        )
+    assert log.est_att_error is not None
+    assert np.rad2deg(log.est_att_error[0]) < 2.0

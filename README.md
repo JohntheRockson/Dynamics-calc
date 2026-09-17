@@ -38,6 +38,7 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
     --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
 python -m attitude_sim --controller pid --estimator truth \
     --actuator-tau-max 0.02 --actuator-tau 0.05 --no-gif
+python -m attitude_sim --coarse-init --no-gif
 python -m attitude_sim --help
 ```
 
@@ -224,13 +225,15 @@ Default \(Q,R\) are Bryson placeholders (\(1/\theta_{\mathrm{ref}}^{2}\), \(1/\o
 
 See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
 
-**Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\).
+**Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\). Inertial references stay constant (no IGRF). Optional stub flags: sun `eclipse` / `occulted`, and a FOV half-angle cone about `boresight_body` (`measure` returns `None` when unavailable).
 
-**Estimation** (`--estimator`; see [docs/estimation.md](docs/estimation.md) for the noise / process-noise story):
+**Estimation** (`--estimator`; see [docs/estimation.md](docs/estimation.md) for the noise / process-noise / NEES story):
 
-- `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates. SimLab forwards `SimConfig.gyro_sigma_v` / `gyro_sigma_u` into that \(Q_d\) so the filter process noise matches the truth gyro.
+- `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates. SimLab forwards `SimConfig.gyro_sigma_v` / `gyro_sigma_u` into that \(Q_d\) so the filter process noise matches the truth gyro. Consistency: ensemble NEES should be \(\chi^2_6\) under matched noise (unit tests document the bounds).
 - `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\). Also exported as `attitude_sim.MahonyFilter`.
 - `truth` — full-state feedback (no estimator), for plant/controller checkout. SimLab skips gyro and vector-sensor sampling on this path.
+
+Default SimLab still initializes MEKF/Mahony at the true \(q_0\). `--coarse-init` (or `SimConfig.coarse_init=True`) runs Wahba TRIAD on mag+sun at \(t=0\) so the filter need not start at truth; fewer than two available vectors falls back to \(q_0\).
 
 Gyro-only (`--no-mag --no-sun` with `mekf` / `mahony`) is allowed but warns: full attitude is not observable from rate alone.
 

@@ -4,17 +4,25 @@ import numpy as np
 import pytest
 
 from attitude_sim.estimation import (
+    MEKF_NEES_DOF,
     ComplementaryFilter,
     MultiplicativeEKF,
+    _inject_body_error,
+    chi2_mean_nees_bounds,
     farrenkopf_Qd,
     make_estimator,
+    mekf_error_state,
     mekf_stm,
+    nees,
+    triad_attitude,
+    triad_q0_from_sensors,
     vectors_from_sensors,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
 from attitude_sim.quaternions import (
     axis_angle_to_quat,
     geodesic_angle,
+    quat_integrate_const_omega,
     quat_multiply,
     quat_normalize,
     quat_to_rotation,
@@ -236,3 +244,152 @@ def test_farrenkopf_and_stm_reject_non_positive_dt():
         farrenkopf_Qd(1e-3, 1e-6, 0.0)
     with pytest.raises(ValueError, match="dt must be positive"):
         mekf_stm(np.zeros(3), -0.01)
+
+
+def test_triad_recovers_true_attitude_noise_free():
+    q_true = axis_angle_to_quat(np.array([0.3, -0.2, 0.8]), 0.9)
+    mag = magnetometer(sigma=0.0, seed=0)
+    sun = sun_sensor(sigma=0.0, seed=1)
+    v_b_m = mag.measure(q_true)
+    v_b_s = sun.measure(q_true)
+    q_hat = triad_attitude(v_b_m, mag.v_inertial, v_b_s, sun.v_inertial)
+    assert geodesic_angle(q_hat, q_true) < 1e-10
+    assert abs(np.linalg.norm(q_hat) - 1.0) < 1e-12
+    # Scalar-first, body → inertial: TRIAD R maps body mag to inertial mag.
+    R = quat_to_rotation(q_hat)
+    np.testing.assert_allclose(R @ v_b_m, mag.v_inertial, atol=1e-12)
+
+
+def test_triad_rejects_parallel_references():
+    v = np.array([1.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match="non-parallel"):
+        triad_attitude(v, v, v, v)
+
+
+def test_triad_q0_from_noisy_sensors_is_coarse():
+    q_true = axis_angle_to_quat(np.array([0.1, 0.7, 0.2]), 1.1)
+    mag = magnetometer(sigma=3e-3, seed=21)
+    sun = sun_sensor(sigma=2e-3, seed=22)
+    q_hat = triad_q0_from_sensors(q_true, [mag, sun])
+    err = geodesic_angle(q_hat, q_true)
+    assert err > 0.0
+    assert err < np.deg2rad(5.0)
+
+
+def test_triad_q0_needs_two_available_sensors():
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    mag = magnetometer(sigma=0.0, seed=0)
+    sun = sun_sensor(sigma=0.0, eclipse=True, seed=1)
+    with pytest.raises(ValueError, match="two available"):
+        triad_q0_from_sensors(q, [mag, sun])
+    with pytest.raises(ValueError, match="two available"):
+        triad_q0_from_sensors(q, [mag])
+
+
+def test_mekf_error_state_matches_right_multiply_inject():
+    q_true = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.4)
+    dalpha = np.array([0.04, -0.02, 0.03])
+    dbias = np.array([0.001, -0.002, 0.0005])
+    q_hat = _inject_body_error(q_true, -dalpha)
+    bias_true = np.array([0.002, 0.0, -0.001])
+    x = mekf_error_state(q_hat, bias_true - dbias, q_true, bias_true)
+    np.testing.assert_allclose(x[:3], dalpha, atol=2e-5)
+    np.testing.assert_allclose(x[3:], dbias, atol=1e-15)
+
+
+def test_chi2_mean_nees_bounds_six_state():
+    lo, hi = chi2_mean_nees_bounds(MEKF_NEES_DOF, 32, alpha=0.01)
+    # Documented 99% interval for mean of 32 i.i.d. χ²_6 samples.
+    assert lo == pytest.approx(4.540, abs=0.01)
+    assert hi == pytest.approx(7.694, abs=0.01)
+    with pytest.raises(ValueError):
+        chi2_mean_nees_bounds(6, 0)
+    with pytest.raises(ValueError):
+        chi2_mean_nees_bounds(6, 10, alpha=0.0)
+
+
+def test_nees_rejects_shape_mismatch():
+    with pytest.raises(ValueError, match="P shape"):
+        nees(np.zeros(6), np.eye(3))
+
+
+def test_mekf_nees_honest_prior_matches_chi2():
+    """x ~ N(0, P0) ⇒ NEES = xᵀ P0⁻¹ x ~ χ²_6.  Mean of N draws in 99% bounds."""
+    n = 32
+    rng = np.random.default_rng(0)
+    P0 = np.diag([3e-3, 3e-3, 3e-3, 1e-5, 1e-5, 1e-5])
+    values = [
+        nees(rng.multivariate_normal(np.zeros(6), P0), P0) for _ in range(n)
+    ]
+    mean = float(np.mean(values))
+    lo, hi = chi2_mean_nees_bounds(MEKF_NEES_DOF, n, alpha=0.01)
+    assert lo < mean < hi, f"prior ANEES={mean:.3f} not in 99% χ² bounds [{lo:.3f}, {hi:.3f}]"
+
+
+def _mekf_matched_nees_trial(seed: int, n_steps: int = 200, dt: float = 0.02) -> float:
+    """One synthetic MEKF trial with matched Farrenkopf gyro + mag/sun stubs.
+
+    Truth is constant-rate quaternion kinematics (no plant torque).  Gyro
+    ARW/RRW densities match ``sigma_v`` / ``sigma_u`` in ``farrenkopf_Qd``.
+    Vector stubs use the same Cartesian ``sigma`` the filter puts on the
+    rank-2 tangent-plane ``R``.  Initial error is drawn from ``P0``
+    (honest prior).  Measurement is taken at the end of each ``dt`` after
+    truth and the filter both propagate.
+    """
+    rng = np.random.default_rng(seed)
+    q_true = axis_angle_to_quat(rng.normal(size=3), 0.4)
+    omega = np.array([0.03, -0.02, 0.025])
+    bias0 = np.array([0.002, -0.001, 0.0015])
+    sigma_v, sigma_u = 5e-4, 1e-6
+    P0 = np.diag([3e-3, 3e-3, 3e-3, 1e-5, 1e-5, 1e-5])
+    x0 = rng.multivariate_normal(np.zeros(6), P0)
+    q_hat = _inject_body_error(q_true, -x0[:3])
+    filt = MultiplicativeEKF(
+        q=q_hat,
+        bias=bias0 - x0[3:],
+        P=P0.copy(),
+        sigma_v=sigma_v,
+        sigma_u=sigma_u,
+    )
+    gyro = GyroModel(sigma_v=sigma_v, sigma_u=sigma_u, bias=bias0.copy(), seed=rng)
+    mag = magnetometer(sigma=3e-3, seed=rng)
+    sun = sun_sensor(sigma=2e-3, seed=rng)
+
+    for _ in range(n_steps):
+        omega_m = gyro.measure(omega, dt)
+        q_true = quat_integrate_const_omega(q_true, omega, dt)
+        vecs = vectors_from_sensors(q_true, [mag, sun])
+        filt.step(omega_m, dt, vecs)
+        omega_m = gyro.measure(omega, dt)
+        q_true = quat_integrate_const_omega(q_true, omega, dt)
+        vecs = vectors_from_sensors(q_true, [mag, sun])
+        filt.step(omega_m, dt, vecs)
+    x = mekf_error_state(filt.q, filt.bias, q_true, gyro.bias)
+    return nees(x, filt.P)
+
+
+def test_mekf_nees_matched_synthetic_is_consistent():
+    """Ensemble ANEES after filtering stays inside 99% χ²_6 mean bounds.
+
+    Noise assumptions (see docs/estimation.md):
+    - Farrenkopf gyro ``ω_m = ω + b + η_v``, ``ḃ = η_u`` with
+      ``σ_v = 5e-4`` rad/s/√Hz, ``σ_u = 1e-6`` rad/s²/√Hz, ``σ_n = 0``.
+    - Mag ``σ = 3e-3``, sun ``σ = 2e-3`` Cartesian; filter ``R`` is the
+      matching rank-2 tangent-plane plus nugget.  No IGRF / FOV / eclipse.
+    - Honest ``P0 = diag(3e-3 I, 1e-5 I)``.  ``N = 32`` i.i.d. trials.
+    Expected: ``E[NEES] = 6``; 99% bounds on the mean ≈ ``[4.54, 7.69]``.
+    Single-trial 99% χ²_6 interval is about ``[0.68, 18.55]``.
+    """
+    n = 32
+    values = np.array([_mekf_matched_nees_trial(seed=1000 + i) for i in range(n)])
+    assert np.all(np.isfinite(values))
+    mean = float(values.mean())
+    lo, hi = chi2_mean_nees_bounds(MEKF_NEES_DOF, n, alpha=0.01)
+    single_lo, single_hi = 0.6757, 18.5476  # χ²_6 99%
+    # A few trials may sit in the tails; the *mean* is the consistency gate.
+    assert values.min() > 0.0
+    assert values.max() < 5.0 * single_hi
+    assert lo < mean < hi, (
+        f"matched ANEES={mean:.3f} not in 99% χ²_{MEKF_NEES_DOF} mean bounds "
+        f"[{lo:.3f}, {hi:.3f}] (N={n}; single-trial 99% [{single_lo}, {single_hi}])"
+    )
