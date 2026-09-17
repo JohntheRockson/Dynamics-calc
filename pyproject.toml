@@ -22,6 +22,7 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "ruff>=0.6",
+    "mypy>=1.10",
 ]
 
 [project.scripts]
@@ -69,9 +70,25 @@ ignore = [
     "RUF003",
 ]
 
-# Line coverage of the attitude_sim package. Measured 89% on main after
-# Monte Carlo #6 and 91% after rebasing onto harden #7 (Python 3.12,
-# pytest-cov, 2026-09-17). Floor is 80% so the GIF path in plots.py and
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B018"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["attitude_sim"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["matplotlib.*", "mpl_toolkits.*", "scipy.*"]
+ignore_missing_imports = true
+
+# Line coverage of the attitude_sim package. Measured 91% after #6/#7/#8
+# (Python 3.12, pytest-cov). Floor is 80% so the GIF path in plots.py and
 # a little new code can land without a coverage-only refactor. Raise
 # later; do not lower without a note.
 [tool.coverage.run]

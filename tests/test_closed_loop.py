@@ -174,3 +174,33 @@ def test_gyro_only_estimator_warns():
         warnings.simplefilter("always")
         run_slew(_cfg(estimator="truth", use_mag=False, use_sun=False, t_final=0.05))
     assert not any("vector sensors" in str(w.message) for w in rec)
+
+
+def test_truth_path_skips_sensor_sampling(monkeypatch):
+    from attitude_sim.sensors import GyroModel, VectorSensor
+
+    gyro_calls = {"n": 0}
+    vec_calls = {"n": 0}
+    orig_gyro = GyroModel.measure
+    orig_vec = VectorSensor.measure
+
+    def gyro_measure(self, omega, dt):
+        gyro_calls["n"] += 1
+        return orig_gyro(self, omega, dt)
+
+    def vec_measure(self, q):
+        vec_calls["n"] += 1
+        return orig_vec(self, q)
+
+    monkeypatch.setattr(GyroModel, "measure", gyro_measure)
+    monkeypatch.setattr(VectorSensor, "measure", vec_measure)
+
+    log = run_slew(_cfg(estimator="truth", t_final=0.05))
+    assert gyro_calls["n"] == 0
+    assert vec_calls["n"] == 0
+    np.testing.assert_allclose(log.q_hat, log.q)
+    np.testing.assert_allclose(log.omega_hat, log.omega)
+
+    run_slew(_cfg(estimator="mekf", t_final=0.05))
+    assert gyro_calls["n"] > 0
+    assert vec_calls["n"] > 0
