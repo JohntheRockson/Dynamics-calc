@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "attitude-sim"
+version = "0.1.0"
+description = "6DOF rigid-body attitude dynamics, control, and estimation simulator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Dynamics-calc contributors" }]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "matplotlib>=3.7",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+attitude-sim = "attitude_sim.sim:main"
+
+[project.urls]
+Homepage = "https://github.com/JohntheRockson/Dynamics-calc"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
