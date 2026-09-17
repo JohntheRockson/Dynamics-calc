@@ -49,6 +49,7 @@ def test_axis_angle_matches_tan_quarter_angle():
     np.testing.assert_allclose(sigma, [0.0, 0.0, np.tan(angle / 4.0)], atol=1e-15)
     q = axis_angle_to_quat(axis, angle)
     np.testing.assert_allclose(quat_to_mrp(q), sigma, atol=1e-12)
+    np.testing.assert_allclose(axis_angle_to_mrp(np.zeros(3), 1.0), 0.0)
 
 
 @pytest.mark.parametrize("angle", [0.0, 0.3, np.pi / 2, np.pi - 1e-3, -1.2])
