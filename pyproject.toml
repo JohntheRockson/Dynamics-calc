@@ -60,7 +60,7 @@ ignore = ["E501", "E741"]
 "tests/**/*.py" = ["B018"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 mypy_path = "src"
 packages = ["attitude_sim"]
 warn_unused_ignores = true
