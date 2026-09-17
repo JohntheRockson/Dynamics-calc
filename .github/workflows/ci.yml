@@ -27,4 +27,4 @@ jobs:
         run: |
           python -m attitude_sim --scenario slew --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0
+          python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
