@@ -28,8 +28,14 @@ def test_parser_defaults_to_slew():
     assert args.sun_sigma is None
     assert args.gravity_gradient is False
     assert args.residual_dipole is False
+    assert args.aerodynamic is False
+    assert args.srp is False
     assert args.dipole_model == "tilted"
     assert args.orbit_radius == 7.0e6
+    assert args.panel_area == 0.4
+    assert args.aero_cd == 2.2
+    assert args.srp_cr == 1.0
+    assert args.srp_eclipse == "off"
 
 
 def test_parser_detumble_and_flags():
@@ -72,21 +78,37 @@ def test_make_scenario_config_stems():
         gif=False,
         gravity_gradient=True,
         residual_dipole=True,
+        aerodynamic=True,
+        srp=True,
         orbit_radius=6.8e6,
         orbit_inclination_deg=51.6,
         dipole_m=np.array([0.2, 0.0, 0.0]),
         dipole_model="orbit_normal",
+        panel_area=1.2,
+        panel_r_cp=np.array([0.08, 0.0, 0.03]),
+        aero_cd=2.0,
+        srp_cr=1.5,
+        srp_eclipse="cylindrical",
     )
     assert env.gravity_gradient is True
     assert env.residual_dipole is True
+    assert env.aerodynamic is True
+    assert env.srp is True
     assert env.orbit_radius == 6.8e6
     assert env.orbit_inclination_deg == 51.6
     assert env.dipole_model == "orbit_normal"
     np.testing.assert_allclose(env.dipole_m, [0.2, 0.0, 0.0])
+    assert env.panel_area == 1.2
+    np.testing.assert_allclose(env.panel_r_cp, [0.08, 0.0, 0.03])
+    assert env.aero_cd == 2.0
+    assert env.srp_cr == 1.5
+    assert env.srp_eclipse == "cylindrical"
     models = make_sim_disturbances(env)
     assert models is not None
     assert models.gravity_gradient is not None
     assert models.residual_dipole is not None
+    assert models.aerodynamic is not None
+    assert models.srp is not None
 
 
 def test_make_scenario_config_unknown():
@@ -242,6 +264,38 @@ def test_main_env_disturbance_flags_smoke():
     )
 
 
+def test_main_aero_srp_flags_smoke():
+    assert (
+        main(
+            [
+                "--controller",
+                "pid",
+                "--estimator",
+                "truth",
+                "--aerodynamic",
+                "--srp",
+                "--panel-area",
+                "0.8",
+                "--panel-rcp",
+                "0.04,0,0.02",
+                "--aero-cd",
+                "2.2",
+                "--srp-cr",
+                "1.3",
+                "--srp-eclipse",
+                "cylindrical",
+                "--orbit-radius",
+                "6.778e6",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
 def test_main_env_plus_actuator_sat_smoke():
     assert (
         main(
@@ -271,6 +325,16 @@ def test_main_rejects_bad_env_flags():
         main(["--orbit-radius", "0", "--gravity-gradient", "--t-final", "0.05", "--no-plot", "--no-gif"])
     with pytest.raises(SystemExit):
         main(["--dipole-model", "igrf", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--panel-rcp", "0.1,0.2", "--aerodynamic", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--panel-area", "-1", "--aerodynamic", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--aero-cd", "-0.1", "--aerodynamic", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--srp-cr", "-1", "--srp", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--srp-eclipse", "penumbra", "--srp", "--t-final", "0.05", "--no-plot", "--no-gif"])
 
 
 def test_main_rejects_bad_actuator_tau_max():

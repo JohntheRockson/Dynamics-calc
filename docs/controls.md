@@ -125,13 +125,16 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
 
 `--tau-dist` is a constant body-frame disturbance added to the plant only; the
 logged \(\tau\) is the torque applied to the plant (controller command after the
-actuator stage below).  Opt-in `--gravity-gradient` / `--residual-dipole` add
-the `attitude_sim.disturbances` models the same way (ZOH at each sample,
-default **off** so stock demos match).  They can share the wheel box:
+actuator stage below).  Opt-in `--gravity-gradient` / `--residual-dipole` /
+`--aerodynamic` / `--srp` add the `attitude_sim.disturbances` models the same
+way (ZOH at each sample, default **off** so stock demos match).  They can share
+the wheel box:
 
 ```bash
 python -m attitude_sim --controller pid --estimator truth \
     --gravity-gradient --residual-dipole --actuator-tau-max 0.008 --no-gif
+python -m attitude_sim --controller pid --estimator truth \
+    --aerodynamic --srp --no-gif
 ```
 
 ## Actuator (reaction wheels)
