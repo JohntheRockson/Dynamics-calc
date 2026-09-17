@@ -22,7 +22,7 @@ Or `pip install -r requirements.txt` (runtime deps only) and keep `src/` on `PYT
 
 sensors → estimator → controller → actuator → plant (RK4)
 
-and writes a summary PNG plus a short attitude GIF. Four named scenarios. A lightweight notebook that runs the CLIs and embeds the committed figures (slew + Monte Carlo from PR #10, plus hold / eigenaxis pack plots) is [`notebooks/simlab_demo.ipynb`](notebooks/simlab_demo.ipynb).
+and writes a summary PNG plus a short attitude GIF. Five named scenarios. A lightweight notebook that runs the CLIs and embeds the committed figures (slew + Monte Carlo from PR #10, hold / eigenaxis pack plots, plus the torque-free polhode / Casimir pair) is [`notebooks/simlab_demo.ipynb`](notebooks/simlab_demo.ipynb).
 
 | `--scenario` | What it is | Default duration | Default controller |
 | --- | --- | --- | --- |
@@ -30,14 +30,16 @@ and writes a summary PNG plus a short attitude GIF. Four named scenarios. A ligh
 | `detumble` | Tumbling initial rate, dump \(\omega\) and recover identity attitude | 30 s | PID |
 | `hold` | Identity hold under `EnvironmentalTorques` (gravity-gradient + demo-scale residual dipole) | 30 s | PID |
 | `eigenaxis` | Rest-to-rest principal-axis (body \(z\)) slew; `--angle-deg` default 30 | 20 s | **LQR** |
+| `polhode` | Torque-free Euler demo via plant `sample_herpolhode` (energy–Casimir / polhode plots) | 15 s | none (open-loop) |
 
-`python -m attitude_sim --list-scenarios` prints the same catalog. Monte Carlo remains **slew-only**.
+`python -m attitude_sim --list-scenarios` prints the same catalog. Monte Carlo **defaults to slew**; `--scenario hold|eigenaxis` and `--env` are opt-in on the same harness. Detumble and `polhode` stay single-run SimLab checkouts.
 
 ```bash
 python -m attitude_sim
 python -m attitude_sim --scenario detumble
 python -m attitude_sim --scenario hold
 python -m attitude_sim --scenario eigenaxis
+python -m attitude_sim --scenario polhode
 python -m attitude_sim --list-scenarios
 python -m attitude_sim --controller lqr --estimator mekf --t-final 40
 python -m attitude_sim --controller pid --estimator truth --no-gif
@@ -59,7 +61,7 @@ python -m attitude_sim --scenario slew --env --mrp-plot --no-gif
 python -m attitude_sim --help
 ```
 
-`--angle-deg` sets the commanded principal rotation for `--scenario slew` (default 75°) and `--scenario eigenaxis` (default 30°). It is ignored for `detumble` and `hold`. `--tau-dist` is a constant body-frame disturbance added to the plant only. `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` are **off by default** so prior demos match; `--scenario hold` and `--env` turn GG + residual dipole on. Models are evaluated ZOH after the actuator (`step_rigid_body` unchanged). `--no-env` turns GG/dipole off. `--mrp-plot` writes `{stem}_mrp.png` from logged \(q\) (on by default for `hold` / `eigenaxis`); this is a post-process MRP chart, not a plant-state change.
+`--angle-deg` sets the commanded principal rotation for `--scenario slew` (default 75°) and `--scenario eigenaxis` (default 30°). It is ignored for `detumble`, `hold`, and `polhode`. `--tau-dist` is a constant body-frame disturbance added to the plant only. `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` are **off by default** so prior demos match; `--scenario hold` and `--env` turn GG + residual dipole on. Models are evaluated ZOH after the actuator (`step_rigid_body` unchanged). `--no-env` turns GG/dipole off. `--scenario polhode` forces env / \(\tau_d\) off (torque-free). `--mrp-plot` writes `{stem}_mrp.png` from logged \(q\) (on by default for `hold` / `eigenaxis`); this is a post-process MRP chart, not a plant-state change. `--polhode-plot` writes `{stem}_polhode.png` and `{stem}_casimir.png` from logged \(\omega\) by calling the plant `energy_casimir` / `sample_polhode_intersection` helpers (on by default for `--scenario polhode`; opt-in on any other run).
 
 | Flag | CLI behavior |
 | --- | --- |
@@ -68,6 +70,7 @@ python -m attitude_sim --help
 | `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` | Opt-in environmental models from `attitude_sim.disturbances`. Default **off** except GG+dipole on `--scenario hold` / `--env`. Orbit knobs: `--orbit-radius` (m, default `7e6`), `--orbit-inc-deg`, `--orbit-raan-deg`. Dipole: `--dipole-m` (`A·m²`; hold uses a demo-scale default) and `--dipole-model` `tilted` / `orbit_normal`. Panel: `--panel-area` (m², default `0.4`), `--panel-rcp` (m, default `0.05,0,0.02`), `--aero-cd` (default `2.2`), `--srp-cr` (default `1`), `--srp-eclipse` `off` / `on` / `cylindrical`. Sampled ZOH at \(t_k\) and added with \(\tau_d\). Logged \(\tau\) still excludes them; `{stem}_env_torque.png` shows \(\tau_{\mathrm{env}}\). |
 | `--env` / `--no-env` | Convenience aliases: enable/disable GG + residual dipole. `hold` enables them by default. |
 | `--mrp-plot` | Extra `{stem}_mrp.png`: shadow-switched \(\sigma(q_e)\) reconstructed from logged quaternions. Default on for `hold` / `eigenaxis`. |
+| `--polhode-plot` | Extra `{stem}_polhode.png` + `{stem}_casimir.png` from logged \(\omega\) (plant energy–Casimir helpers). Default on for `--scenario polhode`. |
 | `--no-mag --no-sun` | Gyro-only. Allowed; `mekf` / `mahony` emit a `UserWarning` because full attitude is not observable from rate. `truth` does not sample sensors and does not warn. |
 | `--gyro-sigma-v` / `--gyro-sigma-u` | Truth-gyro ARW/RRW densities (rad/s/√Hz, rad/s²/√Hz). SimLab copies the same values into the MEKF Farrenkopf \(Q_d\) (`make_sim_estimator`). MC has the same flags as the *base* before `--noise-scale-*`. |
 | `--mag-sigma` / `--sun-sigma` | Vector-stub Cartesian σ; filter \(R\) follows via `vectors_from_sensors`. |
@@ -97,6 +100,7 @@ Detumble summary (optional; not committed). Hold / eigenaxis recruiter PNGs **ar
 python -m attitude_sim --scenario detumble --out-dir outputs --no-gif
 python -m attitude_sim --scenario hold --out-dir docs/figures --no-gif
 python -m attitude_sim --scenario eigenaxis --out-dir docs/figures --no-gif
+python -m attitude_sim --scenario polhode --out-dir docs/figures --no-gif
 ```
 
 **Figure: hold under environmental torques** (`docs/figures/hold_summary.png`). PID + truth, 30 s identity hold. Demo-scale residual dipole \(\sim 1\,\mathrm{mN\cdot m}\); the integrator cancels \(\tau_{\mathrm{env}}\).
@@ -115,11 +119,19 @@ python -m attitude_sim --scenario eigenaxis --out-dir docs/figures --no-gif
 
 ![Eigenaxis MRP attitude error](docs/figures/eigenaxis_mrp.png)
 
+**Figure: torque-free polhode** (`docs/figures/polhode_polhode.png`). Body \(\omega(t)\) on the energy–Casimir intersection (plant `sample_herpolhode` + `sample_polhode_intersection`), plus the inertial herpolhode.
+
+![Torque-free polhode / herpolhode](docs/figures/polhode_polhode.png)
+
+**Figure: energy–Casimir invariants** (`docs/figures/polhode_casimir.png`). \(T\) and \(|h|^2\) vs \(t\), with residuals against the first sample (RK4 truncation on a torque-free trajectory).
+
+![Energy–Casimir first integrals](docs/figures/polhode_casimir.png)
+
 CI does **not** smoke the attitude GIF (Pillow is slow). Agg-backend PNGs are covered in pytest (`tests/test_monte_carlo.py`, `tests/test_docs_figures.py`, `tests/test_plot_helpers.py`).
 
 ## Monte Carlo robustness sweep
 
-`python -m attitude_sim.monte_carlo` runs **N** closed-loop **slews** through the same `run_slew` path as the SimLab CLI. Detumble / hold / eigenaxis (`--scenario …`) are single-run SimLab checkouts and are **out of Monte Carlo scope**.
+`python -m attitude_sim.monte_carlo` runs **N** closed-loop trials through the same `run_slew` path as the SimLab CLI. The default scenario is still **slew**. Opt-in `--scenario hold` / `--scenario eigenaxis` reuse the named pack (hold brings demo-scale env unless `--no-env`; eigenaxis defaults to LQR and 30°). `--env` / `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` turn those `SimConfig` flags on for every trial. Detumble and `--scenario polhode` stay single-run SimLab checkouts (open-loop / rate-dump, not this harness).
 
 Each trial randomizes, within bounds:
 
@@ -158,6 +170,11 @@ python -m attitude_sim.monte_carlo --n 50 --estimator truth --t-final 22
 # LQR gain / disturbance robustness (same harness)
 python -m attitude_sim.monte_carlo --n 50 --controller lqr --estimator truth \
     --gain-scale-min 0.8 --gain-scale-max 1.25 --tau-dist-max 0.002
+
+# named-scenario / env-on expansions (keep N small in CI)
+python -m attitude_sim.monte_carlo --n 20 --scenario eigenaxis --estimator truth
+python -m attitude_sim.monte_carlo --n 20 --scenario hold --estimator truth
+python -m attitude_sim.monte_carlo --n 20 --scenario slew --env --estimator truth
 ```
 
 ### MC figures (PR #10)
@@ -203,9 +220,9 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **lint** on Python 3.12: `ruff check src tests` and `mypy src`. Ruff rules live in `[tool.ruff]`: E/F/W/I/UP/B/RUF. `E501` (line length), `E741` (name `I` for principal inertia), and RUF001–003 (unicode minus/times/sigma in scientific comments) are ignored so CI does not mass-reformat the tree. Ruff does not run `format`. Mypy is scoped to `src/attitude_sim` on **Python 3.12** (`ignore_missing_imports` only for matplotlib and scipy) so current numpy stubs parse; runtime/pytest still cover 3.10–3.12.
 - **pytest + coverage** on Python **3.10, 3.11, and 3.12**. Line coverage of the `attitude_sim` package must stay at or above **80%** (`pytest-cov`, `[tool.coverage.report] fail_under = 80`). The 3.12 job also uploads `coverage.xml` as an artifact. Measured **91%** on `main` after Monte Carlo #6, harden #7, actuator #8, and plant #9 (Python 3.12); the floor is a modest buffer, not a freeze of that number. `plots.py` (GIF renderer) is the largest uncovered slice. `__main__.py` is omitted from the denominator.
 - **packaging**: `python -m build`, install the wheel, `import attitude_sim`.
-- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, **hold**, **eigenaxis**, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, gravity-gradient + residual-dipole + wheel box, aero + SRP, MEKF `--log-innovations`, `--list-scenarios`, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; only slew is in the MC harness). Attitude GIF rendering is not a CI gate.
+- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, **hold**, **eigenaxis**, **polhode**, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, gravity-gradient + residual-dipole + wheel box, aero + SRP, MEKF `--log-innovations`, `--list-scenarios`, plus tiny Monte Carlo entries (`--n 5` slew default; `--n 3` eigenaxis / hold / slew `--env`; short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling). Attitude GIF rendering is not a CI gate.
 
-Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, a discrete angular-momentum theorem \(\Delta h_I\approx\int R(q)\tau\,dt\), axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), a library hinged-appendage / 1-DOF flex plant (`tests/test_flex.py`: \(\theta=0\) reduces toward the rigid hub, free oscillation \(\approx\sqrt{k/I_{\mathrm{eff}}}\), energy decay with damping), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, named `hold` under `EnvironmentalTorques` (PID cancels \(\tau_{\mathrm{env}}\)) and named `eigenaxis` LQR slew (`tests/test_scenarios.py`), a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), opt-in gravity-gradient / residual-dipole / aero / SRP closed-loop wiring (default off except GG+dipole on hold / `--env`; logged \(\tau\) excludes \(\tau_{\mathrm{env}}\)), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), a disturbed+saturated slew smoke, gravity-gradient / residual-dipole / aero / SRP analytic zeros (`tests/test_disturbances.py`), a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC / MRP / env-torque plot-helper coverage (`tests/test_plot_helpers.py`), and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md). `--estimator truth` still skips gyro/vector sampling (including when env models are on).
+Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, a discrete angular-momentum theorem \(\Delta h_I\approx\int R(q)\tau\,dt\), axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), a library hinged-appendage / 1-DOF flex plant (`tests/test_flex.py`: \(\theta=0\) reduces toward the rigid hub, free oscillation \(\approx\sqrt{k/I_{\mathrm{eff}}}\), energy decay with damping), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, named `hold` under `EnvironmentalTorques` (PID cancels \(\tau_{\mathrm{env}}\)), named `eigenaxis` LQR slew, and named `polhode` torque-free energy–Casimir demo (`tests/test_scenarios.py`), a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), opt-in gravity-gradient / residual-dipole / aero / SRP closed-loop wiring (default off except GG+dipole on hold / `--env`; logged \(\tau\) excludes \(\tau_{\mathrm{env}}\)), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), a disturbed+saturated slew smoke, gravity-gradient / residual-dipole / aero / SRP analytic zeros (`tests/test_disturbances.py`), a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC / MRP / env-torque plot-helper coverage (`tests/test_plot_helpers.py`), and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md). `--estimator truth` still skips gyro/vector sampling (including when env models are on).
 
 ## Equations (what the SimLab integrates)
 
@@ -237,7 +254,7 @@ J \dot{\omega} = \tau - \omega \times (J\omega),\qquad
 
 Principal moments of \(J\) are required to satisfy the physical triangle inequalities \(I_i+I_j\ge I_k\).
 
-**Torque-free polhode / energy–Casimir** (`attitude_sim.polhode`; library helpers, not a SimLab CLI flag). When \(\tau=0\), Euler's equation conserves rotational kinetic energy and the Lie–Poisson Casimir \(|h|^2\), and the inertial vector \(h_I\) is fixed:
+**Torque-free polhode / energy–Casimir** (`attitude_sim.polhode`; SimLab `--scenario polhode` or `--polhode-plot` post-process). When \(\tau=0\), Euler's equation conserves rotational kinetic energy and the Lie–Poisson Casimir \(|h|^2\), and the inertial vector \(h_I\) is fixed:
 
 \[
 T=\tfrac12\omega\cdot(J\omega),\qquad
@@ -252,7 +269,7 @@ Body-frame \(\omega(t)\) therefore stays on the intersection of the inertia elli
 \lambda^2=-\frac{(I_k-I_i)(I_k-I_j)}{I_i I_j}\,\Omega^2
 \]
 
-(\(\lambda^2<0\) oscillatory / stable, \(\lambda^2>0\) hyperbolic / unstable). See `attitude_sim.polhode` and `tests/test_polhode.py`.
+(\(\lambda^2<0\) oscillatory / stable, \(\lambda^2>0\) hyperbolic / unstable). See `attitude_sim.polhode` and `tests/test_polhode.py`. SimLab `--scenario polhode` calls `sample_herpolhode` (no controller) and writes `{stem}_polhode.png` / `{stem}_casimir.png`. `--polhode-plot` applies the same helpers to any logged \(\omega\).
 
 **Environmental torques** (`attitude_sim.disturbances`; opt-in SimLab flags, default **off** except `--scenario hold` / `--env`, independent of the constant `--tau-dist` bias). Orbit frame: \(\hat r\) zenith (Earth→s/c), \(\hat h\) orbit normal \(r\times v\), nadir \(-\hat r\). Body vectors are \(v_b=R(q)^{\top}v_I\). Gravity-gradient (circular or given orbit state)
 
@@ -365,20 +382,20 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.mrp` | Modified Rodrigues Parameters: quat/DCM conversions, shadow-set switch, \(\dot\sigma=\tfrac14 B(\sigma)\omega\) |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers, Euler equation, RK4 (default); optional RKMK4 via `step_rigid_body(..., method="rkmk4")` — **not** a SimLab CLI flag |
-| `attitude_sim.polhode` | Torque-free energy / Casimir, polhode & herpolhode sampling, tennis-racket stability — **not** a SimLab CLI flag |
+| `attitude_sim.polhode` | Torque-free energy / Casimir, polhode & herpolhode sampling, tennis-racket stability — SimLab `--scenario polhode` / `--polhode-plot` |
 | `attitude_sim.disturbances` | Gravity-gradient, residual-dipole, aero, and SRP `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` (GG/dipole default off except `--scenario hold` / `--env`) |
 | `attitude_sim.gyrostat` | Dual-spin / one-rotor gyrostat: \(J\dot\omega+\omega\times(J\omega+h_w)=\tau\) (constant or commanded \(h_w\)); optional RK4 of \(\omega\) / \(\Omega\) — **not** a SimLab CLI flag |
 | `attitude_sim.flex` | Hub + one hinged rigid panel (small-angle \(\theta\), hinge \(k,c\)); coupled \(\omega\)/\(\theta\), rest linearization, RK4 — **not** a SimLab CLI flag |
-| `attitude_sim.scenarios` | Named closed-loop pack (`slew`, `detumble`, `hold`, `eigenaxis`) |
+| `attitude_sim.scenarios` | Named pack (`slew`, `detumble`, `hold`, `eigenaxis`, `polhode`) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch; `tune_pid_second_order` / `bryson_lqr_costs` |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
 | `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
 | `attitude_sim.sim` | SimLab CLI + `run_sim` / `run_slew`; `--scenario` / `--list-scenarios` |
-| `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`; slew only) |
-| `attitude_sim.plots` | `{scenario}_summary.png`, `{stem}_mrp.png`, `{stem}_env_torque.png`, `{scenario}_attitude.gif`, MC `mc_*.png` |
-| `notebooks/simlab_demo.ipynb` | Walkthrough: slew, detumble, hold, eigenaxis CLIs; links `docs/figures/` |
+| `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`; default slew, opt-in hold / eigenaxis / `--env`) |
+| `attitude_sim.plots` | `{scenario}_summary.png`, `{stem}_mrp.png`, `{stem}_env_torque.png`, `{stem}_polhode.png`, `{stem}_casimir.png`, `{scenario}_attitude.gif`, MC `mc_*.png` |
+| `notebooks/simlab_demo.ipynb` | Walkthrough: slew, detumble, hold, eigenaxis, polhode CLIs; links `docs/figures/` |
 
 Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2}\). Sample is 10 ms.
 
@@ -391,5 +408,6 @@ Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06
 | `pid` or `lqr` | `truth` | Body-torque hold: `--angle-deg 0 --tau-dist …` |
 | `pid` | `truth` | `--scenario hold`: PID cancels demo-scale `EnvironmentalTorques` |
 | `lqr` | `truth` or `mekf` | `--scenario eigenaxis`: principal-axis slew (default LQR) |
+| none | `truth` | `--scenario polhode`: torque-free plant helper, energy–Casimir plots |
 | `pid` or `lqr` | `mekf` | Control on Kalman estimates (default) |
 | `pid` or `lqr` | `mahony` | Control on complementary-filter estimates |
