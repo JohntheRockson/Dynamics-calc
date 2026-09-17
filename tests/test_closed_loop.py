@@ -289,6 +289,23 @@ def test_make_sim_disturbances_rejects_bad_orbit_and_model():
         make_sim_disturbances(SimConfig(aerodynamic=True, panel_area=-0.1))
 
 
+def test_make_sim_disturbances_srp_eclipse_on_zeroes_torque():
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    omega = np.zeros(3)
+    sunlit = make_sim_disturbances(SimConfig(srp=True, srp_eclipse="off"))
+    eclipsed = make_sim_disturbances(SimConfig(srp=True, srp_eclipse="on"))
+    assert sunlit is not None and eclipsed is not None
+    tau_sun = sunlit.tau_body(q, omega, 0.0)
+    tau_ecl = eclipsed.tau_body(q, omega, 0.0)
+    assert np.linalg.norm(tau_sun) > 0.0
+    np.testing.assert_allclose(tau_ecl, 0.0)
+    aero_only = make_sim_disturbances(SimConfig(aerodynamic=True))
+    assert aero_only is not None
+    assert aero_only.aerodynamic is not None
+    assert aero_only.srp is None
+    assert aero_only.gravity_gradient is None
+
+
 def test_env_disturbances_default_off_matches_prior_closed_loop():
     kwargs = dict(controller="pid", estimator="truth", t_final=1.5, seed=5)
     log_prior = run_slew(_cfg(**kwargs))
