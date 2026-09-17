@@ -144,10 +144,14 @@ plus a small nugget.  `vectors_from_sensors` forwards each sensor's
 `sigma` so mag and sun can have different \(R\), and the sensor `name`
 so `InnovationLog` can tag NIS rows.
 
-## Coarse attitude init (TRIAD)
+## Coarse attitude init (TRIAD / QUEST / Davenport)
 
 Filters in the SimLab **default to the true** \(q_0\) (`SimConfig.coarse_init=False`,
-no `--coarse-init`).  That preserves the current demo.
+no `--coarse-init`).  That preserves the current demo.  `--coarse-init-method`
+is `triad` unless QUEST / Davenport is requested; the method flag does
+nothing until `--coarse-init` is set.
+
+### TRIAD
 
 Optional Wahba TRIAD (`triad_attitude` / `--coarse-init`) builds
 orthonormal triads from two body/inertial pairs (first two *available*
@@ -156,8 +160,96 @@ pair is the primary.  Parallel references raise.  Occulted / out-of-FOV
 vectors are dropped; `try_triad_q0_from_sensors` returns `None` when
 fewer than two remain (SimLab warns and keeps true \(q_0\)).  A remaining
 in-FOV star + mag pair still yields TRIAD when the sun is eclipsed.
-TRIAD is a lost-in-space *coarse* align, not a Davenport q-method /
-QUEST solver.
+TRIAD is a two-vector lost-in-space *coarse* align.  It is Wahba-optimal
+only in the limit \(a_2/a_1\to 0\) (the second pair fixes twist, not a
+least-squares compromise).
+
+### Wahba / Davenport q-method
+
+With \(n\ge 2\) unit-vector pairs \((b_i, r_i)\) and weights \(a_i>0\),
+Wahba's problem (this repo's body→inertial convention) is
+
+\[
+\min_{R\in\mathrm{SO}(3)}
+\frac12\sum_i a_i \lVert r_i - R b_i\rVert^2
+\quad\Leftrightarrow\quad
+\max_R\; g(R)=\sum_i a_i r_i^{\top} R b_i
+=\mathrm{tr}(R B^{\top}),
+\]
+
+\[
+B = \sum_i a_i r_i b_i^{\top}.
+\]
+
+(Classic Shuster/Wertz write \(b=A r\), so their profile is \(B^{\top}\)
+and \(A=R^{\top}\).)  Davenport's q-method parameterizes \(R=R(q)\) and
+maximizes \(q^{\top} K q\) with the symmetric \(4\times 4\)
+
+\[
+\sigma=\mathrm{tr}(B),\quad
+S=B+B^{\top},\quad
+z=\sum_i a_i (b_i\times r_i)
+=\begin{bmatrix}B_{32}-B_{23}\\ B_{13}-B_{31}\\ B_{21}-B_{12}\end{bmatrix}.
+\]
+
+\[
+K=\begin{bmatrix}\sigma & z^{\top}\\ z & S-\sigma I\end{bmatrix}.
+\]
+
+The optimal scalar-first quaternion is the eigenvector for
+\(\lambda_{\max}(K)\), canonicalized to \(q_w\ge 0\) (same double-cover
+as `rotation_to_quat`).  This path handles the \(180^\circ\)
+(\(q_w=0\)) case.  Helpers: `attitude_profile_matrix`, `davenport_K`,
+`davenport_q_method`.
+
+### QUEST
+
+QUEST (Shuster–Oh) avoids a full eigen-decomposition.  The
+characteristic polynomial of \(K\) reduces to
+
+\[
+\kappa=\mathrm{tr}(\mathrm{adj}(S))=\tfrac12\bigl((\mathrm{tr} S)^2-\mathrm{tr}(S^2)\bigr),
+\quad
+\Delta=\det(S),
+\]
+
+\[
+a=\sigma^2-\kappa,\quad
+b=\sigma^2+z^{\top} z,\quad
+c=\Delta+z^{\top} S z,\quad
+d=z^{\top} S^2 z,
+\]
+
+\[
+f(\lambda)=\lambda^4-(a+b)\lambda^2-c\lambda+(ab+c\sigma-d),\qquad
+f'(\lambda)=4\lambda^3-2(a+b)\lambda-c.
+\]
+
+Newton starts at \(\lambda_0=\sum a_i\) (the consistent-observation
+upper bound) and typically converges in one or two steps.  The
+Rodrigues reconstruction is
+
+\[
+\alpha=\lambda^2-\sigma^2+\kappa,\quad
+\beta=\lambda-\sigma,\quad
+\gamma=\alpha(\lambda+\sigma)-\Delta,\quad
+x=(\alpha I+\beta S+S^2)z,
+\]
+
+\[
+q=\frac{1}{\sqrt{\gamma^2+\lVert x\rVert^2}}\begin{bmatrix}\gamma\\ x\end{bmatrix}.
+\]
+
+When \(\lVert(\gamma,x)\rVert\) vanishes (the classic QUEST singularity:
+\(180^\circ\) with \(z\approx 0\)), `quest_attitude` falls back to
+Davenport.  Parallel / rank-1 observation sets raise, same as TRIAD.
+
+SimLab: `--coarse-init --coarse-init-method {triad,quest,davenport}`.
+QUEST / Davenport consume **every available** vector stub, weighted
+\(1/\sigma^2\) (noise-free \(\sigma=0\) → weight \(1\)).  TRIAD still
+uses only the first two available pairs.  Fewer than two available
+sensors falls back to true \(q_0\) with a warning (FOV / eclipse gating
+included).  No IGRF, no ephemeris, no lost-in-space catalogue.
 
 ## MEKF NEES / consistency
 
@@ -293,7 +385,8 @@ vector innovation.  There is still no Mahony \(\chi^2\) suite.
 From the repo root (after `pip install -e ".[dev]"`):
 
 ```bash
-pytest tests/test_estimation.py tests/test_innovation.py tests/test_sensors.py
+pytest tests/test_estimation.py tests/test_innovation.py tests/test_sensors.py tests/test_quest.py
 pytest                          # full suite, including closed-loop smoke and NEES/NIS
 python -m attitude_sim --log-innovations outputs/slew_nis.csv --t-final 0.2 --no-plot --no-gif
+python -m attitude_sim --coarse-init --coarse-init-method quest --t-final 0.2 --no-plot --no-gif
 ```

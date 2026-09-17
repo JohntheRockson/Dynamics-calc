@@ -36,6 +36,8 @@ def test_version_and_public_exports():
         "momentum_dump_torque",
         "shape_pid_command",
         "triad_attitude",
+        "quest_attitude",
+        "davenport_q_method",
         "InnovationLog",
         "GravityGradientTorque",
         "ResidualDipoleTorque",
@@ -86,6 +88,8 @@ def test_version_and_public_exports():
     assert "TorqueActuator" in attitude_sim.__all__
     assert "momentum_dump_torque" in attitude_sim.__all__
     assert "triad_attitude" in attitude_sim.__all__
+    assert "quest_attitude" in attitude_sim.__all__
+    assert "davenport_q_method" in attitude_sim.__all__
     assert "InnovationLog" in attitude_sim.__all__
     assert "shape_pid_command" in attitude_sim.__all__
     assert "tune_pid_second_order" in attitude_sim.__all__

@@ -283,6 +283,43 @@ def test_coarse_init_sun_eclipse_falls_back_without_star():
     assert np.rad2deg(log.est_att_error[0]) < 2.0
 
 
+def test_quest_coarse_init_does_not_start_at_true_q0():
+    q0 = axis_angle_to_quat(np.array([0.2, 0.5, 0.8]), 0.7)
+    log_true = run_slew(_cfg(q0=q0, estimator="mekf", t_final=0.03, coarse_init=False, seed=5))
+    log_quest = run_slew(
+        _cfg(
+            q0=q0,
+            estimator="mekf",
+            t_final=0.03,
+            coarse_init=True,
+            coarse_init_method="quest",
+            seed=5,
+        )
+    )
+    np.testing.assert_allclose(log_true.q[0], log_quest.q[0])
+    assert geodesic_angle(log_true.q_hat[0], log_quest.q_hat[0]) > np.deg2rad(0.05)
+    assert log_quest.est_att_error is not None
+    assert np.rad2deg(log_quest.est_att_error[0]) < 15.0
+    np.testing.assert_allclose(np.linalg.norm(log_quest.q_hat, axis=1), 1.0, atol=1e-12)
+
+
+def test_davenport_coarse_init_without_two_sensors_warns():
+    q0 = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.5)
+    with pytest.warns(UserWarning, match="coarse DAVENPORT init skipped"):
+        log = run_slew(
+            _cfg(
+                q0=q0,
+                estimator="mekf",
+                t_final=0.03,
+                coarse_init=True,
+                coarse_init_method="davenport",
+                use_sun=False,
+            )
+        )
+    assert log.est_att_error is not None
+    assert np.rad2deg(log.est_att_error[0]) < 2.0
+
+
 def test_make_sim_disturbances_default_off():
     env = make_sim_disturbances(SimConfig())
     assert env is None

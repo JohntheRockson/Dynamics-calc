@@ -29,6 +29,7 @@ def test_parser_defaults_to_slew():
     assert args.actuator_h_dump is None
     assert args.actuator_dump_gain == 1.0
     assert args.coarse_init is False
+    assert args.coarse_init_method == "triad"
     assert args.angle_deg is None
     assert args.env is False
     assert args.no_env is False
@@ -67,6 +68,8 @@ def test_parser_detumble_and_flags():
             "--actuator-tau",
             "0.05",
             "--coarse-init",
+            "--coarse-init-method",
+            "quest",
         ]
     )
     assert args.scenario == "detumble"
@@ -76,6 +79,7 @@ def test_parser_detumble_and_flags():
     assert args.actuator_tau_max == "0.02"
     assert args.actuator_tau == 0.05
     assert args.coarse_init
+    assert args.coarse_init_method == "quest"
 
 
 def test_parser_hold_eigenaxis_and_env_flags():
@@ -100,6 +104,7 @@ def test_make_scenario_config_stems():
     assert eigen.artifact_stem == "eigenaxis"
     assert abs(det.omega0).max() > 0.2
     assert slew.coarse_init is False
+    assert slew.coarse_init_method == "triad"
     assert slew.controller == "pid"
     assert eigen.controller == "lqr"
     assert hold.gravity_gradient is True
@@ -109,6 +114,15 @@ def test_make_scenario_config_stems():
     assert make_sim_disturbances(eigen) is None
     coarse = make_scenario_config("slew", plot=False, gif=False, coarse_init=True)
     assert coarse.coarse_init is True
+    assert coarse.coarse_init_method == "triad"
+    quest = make_scenario_config(
+        "slew", plot=False, gif=False, coarse_init=True, coarse_init_method="quest"
+    )
+    assert quest.coarse_init_method == "quest"
+    dav = make_scenario_config(
+        "slew", plot=False, gif=False, coarse_init=True, coarse_init_method="q-method"
+    )
+    assert dav.coarse_init_method == "davenport"
     env = make_scenario_config(
         "slew",
         plot=False,
@@ -213,6 +227,57 @@ def test_main_tau_dist_and_lqr_mahony_smoke():
 
 def test_main_coarse_init_smoke():
     assert main(["--coarse-init", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
+
+
+def test_main_quest_and_davenport_coarse_init_smoke():
+    assert (
+        main(
+            [
+                "--coarse-init",
+                "--coarse-init-method",
+                "quest",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "--coarse-init",
+                "--coarse-init-method",
+                "davenport",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
+def test_main_rejects_unknown_coarse_init_method():
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--coarse-init",
+                "--coarse-init-method",
+                "svd",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+
+
+def test_make_scenario_config_rejects_unknown_coarse_init_method():
+    with pytest.raises(ValueError, match="unknown coarse-init method"):
+        make_scenario_config("slew", plot=False, gif=False, coarse_init_method="svd")
 
 
 def test_main_env_and_mrp_cli_smoke(tmp_path):

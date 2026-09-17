@@ -28,10 +28,12 @@ Truth is sampled from the plant ``(q, ω)`` pair returned by
 ``step_rigid_body``; this module does not integrate Euler's equation.
 
 Coarse attitude: ``triad_attitude`` / ``triad_q0_from_sensors`` /
-``try_triad_q0_from_sensors`` (Wahba TRIAD).  Occulted / out-of-FOV
-vector stubs are skipped; fewer than two available measurements
-degrades gracefully (``try_*`` returns ``None``).  Consistency:
-``mekf_error_state``, ``nees``,
+``try_triad_q0_from_sensors`` (Wahba TRIAD) and ``quest_attitude`` /
+``davenport_q_method`` (optimal Wahba for two or more vectors).
+Occulted / out-of-FOV vector stubs are skipped; fewer than two
+available measurements degrades gracefully (``try_*`` returns ``None``;
+``coarse_q0_from_sensors`` raises).  Consistency: ``mekf_error_state``,
+``nees``,
 ``chi2_mean_nees_bounds`` (state / NEES) and ``nis``,
 ``mekf_vector_nis``, ``InnovationLog``, ``chi2_mean_nis_bounds``
 (measurement / rank-2 NIS).  See ``docs/estimation.md``.
@@ -65,6 +67,21 @@ VECTOR_NIS_DOF = 2
 # Small diagonal added to the rank-2 R so S is numerically SPD in 3-D.
 MEKF_VECTOR_R_NUGGET = 1e-12
 _TRIAD_PARALLEL_EPS = 1e-8
+# SVD floor for "do these unit vectors span ≥ 2 directions?"
+_WAHBA_SPAN_EPS = 1e-8
+# QUEST Newton: one step is typical; a few more cover noisy / 3-vector cases.
+_QUEST_NEWTON_MAXITER = 12
+_QUEST_NEWTON_TOL = 1e-14
+# Rodrigues residual below this → fall back to Davenport (180° / z≈0).
+_QUEST_RODRIGUES_EPS = 1e-12
+
+COARSE_INIT_METHODS = ("triad", "quest", "davenport")
+_COARSE_INIT_ALIASES = {
+    "q-method": "davenport",
+    "qmethod": "davenport",
+    "q_method": "davenport",
+    "davenport-q": "davenport",
+}
 
 VectorMeas = (
     tuple[np.ndarray, np.ndarray]
@@ -232,6 +249,260 @@ def try_triad_q0_from_sensors(
         return triad_q0_from_sensors(q, sensors)
     except ValueError:
         return None
+
+
+def normalize_coarse_init_method(method: str) -> str:
+    """Map a coarse-init name to ``triad`` / ``quest`` / ``davenport``."""
+    key = str(method).strip().lower()
+    key = _COARSE_INIT_ALIASES.get(key, key)
+    if key not in COARSE_INIT_METHODS:
+        raise ValueError(
+            f"unknown coarse-init method {method!r}; use one of {COARSE_INIT_METHODS}"
+        )
+    return key
+
+
+def _wahba_weights(
+    n: int, weights: Sequence[float] | np.ndarray | None
+) -> np.ndarray:
+    if weights is None:
+        return np.ones(n, dtype=float)
+    a = np.asarray(weights, dtype=float).reshape(-1)
+    if a.size != n:
+        raise ValueError("weights length must match the number of vector pairs")
+    if np.any(~np.isfinite(a)) or np.any(a <= 0.0):
+        raise ValueError("Wahba weights must be finite and strictly positive")
+    return a
+
+
+def _as_unit_vector_list(
+    vectors: Sequence[np.ndarray], *, name: str
+) -> list[np.ndarray]:
+    if len(vectors) == 0:
+        raise ValueError(f"{name} vector list is empty")
+    return [_unit3(v) for v in vectors]
+
+
+def _vector_list_rank(vectors: Sequence[np.ndarray]) -> int:
+    stacked = np.column_stack([np.asarray(v, dtype=float).reshape(3) for v in vectors])
+    singular = np.linalg.svd(stacked, compute_uv=False)
+    return int(np.sum(singular > _WAHBA_SPAN_EPS))
+
+
+def _require_wahba_span(
+    body: Sequence[np.ndarray], inertial: Sequence[np.ndarray]
+) -> None:
+    if len(body) != len(inertial):
+        raise ValueError("body and inertial vector lists must have the same length")
+    if len(body) < 2:
+        raise ValueError("Wahba solvers need at least two vector observations")
+    if _vector_list_rank(body) < 2 or _vector_list_rank(inertial) < 2:
+        raise ValueError(
+            "QUEST/Davenport reference vectors must be non-parallel "
+            "(span at least two directions)"
+        )
+
+
+def attitude_profile_matrix(
+    body_vectors: Sequence[np.ndarray],
+    inertial_vectors: Sequence[np.ndarray],
+    weights: Sequence[float] | np.ndarray | None = None,
+) -> np.ndarray:
+    """Wahba profile ``B = Σ a_i r_i b_iᵀ`` for ``v_I = R(q) v_B``.
+
+    Classic Shuster/Wertz use ``b = A r`` (inertial → body), so their
+    profile is this ``B`` transposed and their attitude is ``A = Rᵀ``.
+    """
+    body = _as_unit_vector_list(body_vectors, name="body")
+    inertial = _as_unit_vector_list(inertial_vectors, name="inertial")
+    _require_wahba_span(body, inertial)
+    a = _wahba_weights(len(body), weights)
+    B = np.zeros((3, 3))
+    for ai, r_i, b_i in zip(a, inertial, body, strict=True):
+        B = B + ai * np.outer(r_i, b_i)
+    return B
+
+
+def _davenport_params(B: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """``(σ, S, z)`` with ``σ = tr(B)``, ``S = B+Bᵀ``, ``z`` the dual of ``B−Bᵀ``."""
+    B = np.asarray(B, dtype=float).reshape(3, 3)
+    sigma = float(np.trace(B))
+    S = B + B.T
+    # Dual of B−Bᵀ for v_I = R v_B is Σ a_i (b_i × r_i), which is
+    # −vecl(B−Bᵀ) when B = Σ r bᵀ.  The opposite sign yields q*.
+    z = np.array(
+        [B[2, 1] - B[1, 2], B[0, 2] - B[2, 0], B[1, 0] - B[0, 1]],
+        dtype=float,
+    )
+    return sigma, S, z
+
+
+def davenport_K(B: np.ndarray) -> np.ndarray:
+    """4×4 Davenport matrix whose dominant eigenvector is the optimal ``q``.
+
+    Scalar-first layout::
+
+        K = [[ σ,  zᵀ ],
+             [ z,  S − σ I ]]
+    """
+    sigma, S, z = _davenport_params(B)
+    K = np.zeros((4, 4))
+    K[0, 0] = sigma
+    K[0, 1:] = z
+    K[1:, 0] = z
+    K[1:, 1:] = S - sigma * np.eye(3)
+    return 0.5 * (K + K.T)
+
+
+def _canonical_quat_from_vec4(q: np.ndarray) -> np.ndarray:
+    q = quat_normalize(np.asarray(q, dtype=float).reshape(4))
+    if q[0] < 0.0:
+        q = -q
+    return q
+
+
+def davenport_q_method(
+    body_vectors: Sequence[np.ndarray],
+    inertial_vectors: Sequence[np.ndarray],
+    weights: Sequence[float] | np.ndarray | None = None,
+) -> np.ndarray:
+    """Davenport q-method: eigenvector of ``K`` with largest eigenvalue.
+
+    Solves Wahba's problem for ``v_I = R(q) v_B`` with two or more
+    unit-vector pairs.  Handles the 180° (``q_w = 0``) case that the
+    QUEST Rodrigues formula can miss.  Returns a scalar-first unit
+    quaternion with ``q_w ≥ 0``.
+    """
+    B = attitude_profile_matrix(body_vectors, inertial_vectors, weights)
+    K = davenport_K(B)
+    evals, evecs = np.linalg.eigh(K)
+    q = _canonical_quat_from_vec4(evecs[:, int(np.argmax(evals))])
+    return q
+
+
+def _quest_lambda0(weights: np.ndarray) -> float:
+    return float(np.sum(weights))
+
+
+def _quest_coeffs(
+    B: np.ndarray,
+) -> tuple[float, float, float, float, float, float, float, np.ndarray, np.ndarray]:
+    """QUEST coefficients ``(σ, κ, Δ, a, b, c, d, S, z)``."""
+    sigma, S, z = _davenport_params(B)
+    # tr(adj(S)) = ½[(tr S)² − tr(S²)] for 3×3 S.
+    trS = float(np.trace(S))
+    kappa = 0.5 * (trS * trS - float(np.trace(S @ S)))
+    delta = float(np.linalg.det(S))
+    a = sigma * sigma - kappa
+    b = sigma * sigma + float(z @ z)
+    Sz = S @ z
+    c = delta + float(z @ Sz)
+    d = float(z @ (S @ Sz))
+    return sigma, kappa, delta, a, b, c, d, S, z
+
+
+def _quest_char_poly(lam: float, a: float, b: float, c: float, d: float, sigma: float) -> tuple[float, float]:
+    """``f(λ) = λ⁴ − (a+b)λ² − c λ + (ab + cσ − d)`` and ``f'(λ)``."""
+    ab = a + b
+    f = lam**4 - ab * lam**2 - c * lam + (a * b + c * sigma - d)
+    df = 4.0 * lam**3 - 2.0 * ab * lam - c
+    return f, df
+
+
+def _quest_newton_lambda(B: np.ndarray, lambda0: float) -> float:
+    sigma, _kappa, _delta, a, b, c, d, _S, _z = _quest_coeffs(B)
+    lam = float(lambda0)
+    for _ in range(_QUEST_NEWTON_MAXITER):
+        f, df = _quest_char_poly(lam, a, b, c, d, sigma)
+        if abs(df) < 1e-18:
+            break
+        step = f / df
+        lam = lam - step
+        if abs(step) < _QUEST_NEWTON_TOL:
+            break
+    if not np.isfinite(lam):
+        raise ValueError("QUEST Newton iteration failed")
+    return float(lam)
+
+
+def _quest_rodrigues(B: np.ndarray, lam: float) -> np.ndarray | None:
+    """Shuster QUEST quaternion, or ``None`` if the Rodrigues formula is singular."""
+    sigma, kappa, delta, _a, _b, _c, _d, S, z = _quest_coeffs(B)
+    alpha = lam * lam - sigma * sigma + kappa
+    beta = lam - sigma
+    gamma = alpha * (lam + sigma) - delta
+    x = (alpha * np.eye(3) + beta * S + S @ S) @ z
+    n = float(np.hypot(gamma, float(np.linalg.norm(x))))
+    if n < _QUEST_RODRIGUES_EPS:
+        return None
+    return _canonical_quat_from_vec4(np.concatenate(([gamma], x)))
+
+
+def quest_attitude(
+    body_vectors: Sequence[np.ndarray],
+    inertial_vectors: Sequence[np.ndarray],
+    weights: Sequence[float] | np.ndarray | None = None,
+    *,
+    fallback: bool = True,
+) -> np.ndarray:
+    """QUEST (Shuster–Oh): Newton ``λ_max`` + Rodrigues quaternion.
+
+    Same Wahba problem as :func:`davenport_q_method`.  When the Rodrigues
+    vector vanishes (classic 180° / ``z ≈ 0`` singularity) this falls
+    back to Davenport unless ``fallback=False``.
+    """
+    body = _as_unit_vector_list(body_vectors, name="body")
+    inertial = _as_unit_vector_list(inertial_vectors, name="inertial")
+    a = _wahba_weights(len(body), weights)
+    B = attitude_profile_matrix(body, inertial, a)
+    lam = _quest_newton_lambda(B, _quest_lambda0(a))
+    q = _quest_rodrigues(B, lam)
+    if q is None:
+        if not fallback:
+            raise ValueError("QUEST Rodrigues formula is singular")
+        return davenport_q_method(body, inertial, a)
+    return q
+
+
+def _wahba_q0_from_sensors(
+    q: np.ndarray,
+    sensors: list[VectorSensor],
+    solver: str,
+) -> np.ndarray:
+    """Coarse ``q`` from every *available* vector stub (weighted ``1/σ²``)."""
+    meas = vectors_from_sensors(q, sensors)
+    if len(meas) < 2:
+        raise ValueError(f"{solver} coarse init needs two available vector sensors")
+    body = [item[0] for item in meas]
+    inertial = [item[1] for item in meas]
+    weights = [1.0 if item[2] <= 0.0 else 1.0 / (item[2] * item[2]) for item in meas]
+    if solver == "davenport":
+        return davenport_q_method(body, inertial, weights)
+    return quest_attitude(body, inertial, weights)
+
+
+def quest_q0_from_sensors(q: np.ndarray, sensors: list[VectorSensor]) -> np.ndarray:
+    """QUEST coarse ``q`` from all available mag/sun (or other) stubs."""
+    return _wahba_q0_from_sensors(q, sensors, "QUEST")
+
+
+def davenport_q0_from_sensors(q: np.ndarray, sensors: list[VectorSensor]) -> np.ndarray:
+    """Davenport q-method coarse ``q`` from all available vector stubs."""
+    return _wahba_q0_from_sensors(q, sensors, "Davenport")
+
+
+def coarse_q0_from_sensors(
+    q: np.ndarray,
+    sensors: list[VectorSensor],
+    method: str = "triad",
+) -> np.ndarray:
+    """Dispatch TRIAD / QUEST / Davenport coarse init from sensor stubs."""
+    key = normalize_coarse_init_method(method)
+    if key == "triad":
+        return triad_q0_from_sensors(q, sensors)
+    if key == "quest":
+        return quest_q0_from_sensors(q, sensors)
+    return davenport_q0_from_sensors(q, sensors)
 
 
 def mekf_error_state(

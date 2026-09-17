@@ -50,6 +50,7 @@ python -m attitude_sim --controller pid --estimator truth \
 python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
     --tau-dist 0.002,-0.001,0.0008 --actuator-h-dump 0.01 --no-gif
 python -m attitude_sim --coarse-init --no-gif
+python -m attitude_sim --coarse-init --coarse-init-method quest --no-gif
 python -m attitude_sim --gyro-sigma-v 1e-3 --gyro-sigma-u 2e-6 \
     --mag-sigma 0.01 --sun-sigma 0.005 --no-gif
 python -m attitude_sim --controller pid --estimator truth \
@@ -355,7 +356,7 @@ See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument and 
 - `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\). Also exported as `attitude_sim.MahonyFilter`.
 - `truth` — full-state feedback (no estimator), for plant/controller checkout. SimLab skips gyro and vector-sensor sampling on this path.
 
-Default SimLab still initializes MEKF/Mahony at the true \(q_0\). `--coarse-init` (or `SimConfig.coarse_init=True`) runs Wahba TRIAD on mag+sun at \(t=0\) so the filter need not start at truth; fewer than two available vectors falls back to \(q_0\).
+Default SimLab still initializes MEKF/Mahony at the true \(q_0\). `--coarse-init` (or `SimConfig.coarse_init=True`) runs a lost-in-space coarse align on mag+sun at \(t=0\) so the filter need not start at truth; `--coarse-init-method {triad,quest,davenport}` selects Wahba TRIAD (default, two-vector) or QUEST / Davenport q-method (all available vectors, weights \(1/\sigma^2\)). Fewer than two available vectors falls back to \(q_0\). Omit both flags to keep the true-\(q_0\) demo.
 
 Gyro-only (`--no-mag --no-sun` with `mekf` / `mahony`) is allowed but warns: full attitude is not observable from rate alone.
 
@@ -415,7 +416,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.magnetic` | Magnetic torquer \(\tau=m\times B\), per-axis \(\|m\|\) sat, residual-dipole handoff — **not** a SimLab CLI flag |
 | `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels, MTQ, RW, dump |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun/star models (FOV + eclipse gating) |
-| `attitude_sim.estimation` | MEKF and Mahony complementary filter; TRIAD skips gated vectors |
+| `attitude_sim.estimation` | MEKF and Mahony complementary filter; TRIAD / QUEST / Davenport coarse init; gated vectors skipped |
 
 | `attitude_sim.sim` | SimLab CLI + `run_sim` / `run_slew`; `--scenario` / `--list-scenarios` |
 | `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`; slew only) |
