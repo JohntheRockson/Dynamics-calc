@@ -1,26 +1,41 @@
-"""Analytic checks for gravity-gradient and residual-dipole torques."""
+"""Analytic checks for gravity-gradient, residual-dipole, aero, and SRP torques."""
 
 import numpy as np
 import pytest
 
 from attitude_sim.disturbances import (
+    ATM_H_REF,
+    ATM_RHO_REF,
+    ATM_SCALE_HEIGHT,
     EARTH_MAG_MOMENT,
     MU_EARTH,
+    P_SRP_1AU,
+    R_EARTH,
+    AerodynamicTorque,
     CircularOrbit,
     EnvironmentalTorques,
+    ExponentialAtmosphere,
     GravityGradientTorque,
     OrbitState,
     ResidualDipoleTorque,
+    SolarRadiationPressureTorque,
+    aerodynamic_force,
+    aerodynamic_torque,
     body_to_inertial,
     dipole_field_eci,
     earth_dipole_field_eci,
     earth_dipole_moment_eci,
+    exponential_density,
     gravity_gradient_torque,
+    in_cylindrical_umbra,
     inertial_to_body,
     magnetic_dipole_torque,
     magnetic_field_body,
     magnetic_field_eci,
     orbit_normal_dipole_field_eci,
+    relative_velocity_eci,
+    srp_force,
+    srp_torque,
 )
 from attitude_sim.quaternions import axis_angle_to_quat, quat_normalize
 
@@ -259,3 +274,191 @@ def test_inertial_body_roundtrip():
     v_I = np.array([3.0, -1.0, 4.0])
     v_b = inertial_to_body(q, v_I)
     np.testing.assert_allclose(body_to_inertial(q, v_b), v_I, atol=1e-12)
+
+
+def test_exponential_density_at_reference_and_decreases_with_altitude():
+    rho0 = exponential_density(R_EARTH + ATM_H_REF)
+    np.testing.assert_allclose(rho0, ATM_RHO_REF)
+    atm = ExponentialAtmosphere()
+    np.testing.assert_allclose(atm.density(R_EARTH + ATM_H_REF), ATM_RHO_REF)
+    rho_high = atm.density(R_EARTH + ATM_H_REF + ATM_SCALE_HEIGHT)
+    np.testing.assert_allclose(rho_high, ATM_RHO_REF / np.e, rtol=1e-12)
+    assert rho_high < rho0
+    with pytest.raises(ValueError, match="scale_height"):
+        ExponentialAtmosphere(scale_height=0.0)
+    with pytest.raises(ValueError, match="rho_ref"):
+        exponential_density(R_EARTH + ATM_H_REF, rho_ref=-1.0)
+
+
+def test_aero_force_opposes_ram_velocity():
+    v = np.array([0.0, 7500.0, 0.0])
+    rho, cd, area = 3e-12, 2.2, 0.4
+    F = aerodynamic_force(rho, v, cd, area)
+    expected = -0.5 * rho * 7500.0**2 * cd * area * np.array([0.0, 1.0, 0.0])
+    np.testing.assert_allclose(F, expected)
+    assert float(np.dot(F, v)) < 0.0
+    np.testing.assert_allclose(aerodynamic_force(rho, np.zeros(3), cd, area), 0.0)
+    np.testing.assert_allclose(aerodynamic_force(0.0, v, cd, area), 0.0)
+
+
+def test_aero_torque_zero_when_cp_along_force():
+    v = np.array([7000.0, 0.0, 0.0])
+    rho, cd, area = 2.5e-12, 2.2, 1.0
+    F = aerodynamic_force(rho, v, cd, area)
+    # r_cp parallel to F (anti-ram) and the origin.
+    for r_cp in (np.zeros(3), F, -3.0 * F, np.array([-0.2, 0.0, 0.0])):
+        tau = aerodynamic_torque(r_cp, rho, v, cd, area)
+        np.testing.assert_allclose(tau, 0.0, atol=1e-18)
+    # Offset cp perpendicular to ram → torque about z.
+    r_cp = np.array([0.0, 0.0, 0.15])
+    tau = aerodynamic_torque(r_cp, rho, v, cd, area)
+    np.testing.assert_allclose(tau, np.cross(r_cp, F))
+    np.testing.assert_allclose(tau, [0.0, 0.15 * F[0], 0.0])
+    assert abs(float(np.dot(tau, F))) < 1e-18
+    assert abs(float(np.dot(tau, r_cp))) < 1e-18
+
+
+def test_aero_project_area_zero_on_leeward_face():
+    v = np.array([0.0, 0.0, 8000.0])
+    n_lee = np.array([0.0, 0.0, -1.0])
+    F = aerodynamic_force(1e-11, v, 2.2, 0.5, n_lee, project_area=True)
+    np.testing.assert_allclose(F, 0.0)
+    n_ram = np.array([0.0, 0.0, 1.0])
+    F_ram = aerodynamic_force(1e-11, v, 2.2, 0.5, n_ram, project_area=True)
+    assert float(np.linalg.norm(F_ram)) > 0.0
+
+
+def test_aero_tau_body_ram_matches_primitive():
+    state = _equatorial_state(0.0)  # v = (0, n R, 0)
+    r_cp = np.array([0.05, 0.0, 0.02])
+    area, cd = 0.3, 2.2
+    aero = AerodynamicTorque(r_cp, area, cd=cd)
+    tau = aero.tau_body(_Q_ID, _W0, orbit=state)
+    rho = ExponentialAtmosphere().density(state.radius)
+    expected = aerodynamic_torque(r_cp, rho, state.v_eci, cd, area)
+    np.testing.assert_allclose(tau, expected, rtol=1e-12)
+    # Independent of ω (surface velocity neglected).
+    tau_w = aero.tau_body(_Q_ID, np.array([1.0, -0.5, 0.2]), orbit=state)
+    np.testing.assert_allclose(tau, tau_w)
+    # Co-rotating atmosphere changes v_rel = v − ω_E × r.
+    aero_rot = AerodynamicTorque(r_cp, area, cd=cd, co_rotating=True)
+    tau_rot = aero_rot.tau_body(_Q_ID, _W0, orbit=state)
+    v_rel = relative_velocity_eci(state, co_rotating=True)
+    expected_rot = aerodynamic_torque(r_cp, rho, v_rel, cd, area)
+    np.testing.assert_allclose(tau_rot, expected_rot, rtol=1e-12)
+    rel = float(np.linalg.norm(tau_rot - tau) / np.linalg.norm(tau))
+    assert rel > 0.05
+
+
+def test_srp_force_cannonball_and_backface_zero():
+    u_sun = np.array([1.0, 0.0, 0.0])
+    area, cr = 0.8, 1.5
+    F = srp_force(area, cr, u_sun)
+    np.testing.assert_allclose(F, P_SRP_1AU * cr * area * u_sun)
+    n_back = np.array([-1.0, 0.0, 0.0])
+    np.testing.assert_allclose(srp_force(area, cr, u_sun, n_back), 0.0)
+    n_face = np.array([1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0), 0.0])
+    cos_theta = 1.0 / np.sqrt(2.0)
+    F_panel = srp_force(area, cr, u_sun, n_face)
+    np.testing.assert_allclose(F_panel, P_SRP_1AU * cr * area * cos_theta * u_sun)
+
+
+def test_srp_torque_zero_when_cp_along_force_or_eclipse():
+    u_sun = np.array([0.0, 1.0, 0.0])
+    area, cr = 1.0, 1.0
+    F = srp_force(area, cr, u_sun)
+    for r_cp in (np.zeros(3), F, np.array([0.0, 0.4, 0.0])):
+        np.testing.assert_allclose(srp_torque(r_cp, area, cr, u_sun), 0.0, atol=1e-18)
+    r_cp = np.array([0.1, 0.0, 0.0])
+    tau = srp_torque(r_cp, area, cr, u_sun)
+    np.testing.assert_allclose(tau, np.cross(r_cp, F))
+    np.testing.assert_allclose(srp_torque(r_cp, area, cr, u_sun, eclipse=True), 0.0)
+    np.testing.assert_allclose(srp_force(area, cr, u_sun, eclipse=True), 0.0)
+
+
+def test_cylindrical_umbra_on_off():
+    r_sunward = np.array([_R, 0.0, 0.0])
+    sun = np.array([1.0, 0.0, 0.0])
+    assert not in_cylindrical_umbra(r_sunward, sun)
+    # Anti-sun of Earth, on the sun line → umbra.
+    assert in_cylindrical_umbra(r_sunward, -sun)
+    # Anti-sun but outside the Earth cylinder.
+    r_miss = np.array([_R, 2.0 * R_EARTH, 0.0])
+    assert not in_cylindrical_umbra(r_miss, -sun)
+
+
+def test_srp_tau_body_eclipse_flag_and_cylindrical():
+    r_cp = np.array([0.0, 0.0, 0.12])
+    area, cr = 0.5, 1.8
+    sun = np.array([1.0, 0.0, 0.0])
+    srp = SolarRadiationPressureTorque(r_cp, area, cr=cr, sun_eci=sun)
+    tau = srp.tau_body(_Q_ID, _W0)
+    expected = srp_torque(r_cp, area, cr, sun, p_srp=P_SRP_1AU)
+    np.testing.assert_allclose(tau, expected)
+    srp_on = SolarRadiationPressureTorque(
+        r_cp, area, cr=cr, sun_eci=sun, eclipse=True
+    )
+    np.testing.assert_allclose(srp_on.tau_body(_Q_ID, np.array([0.2, 0.0, 0.0])), 0.0)
+    srp_umbra = SolarRadiationPressureTorque(
+        r_cp, area, cr=cr, sun_eci=sun, eclipse="on"
+    )
+    np.testing.assert_allclose(srp_umbra.tau_body(_Q_ID, _W0), 0.0)
+    # Equatorial +x: sun along +x is sunlit; sun along −x is cylindrical umbra.
+    state = _equatorial_state(0.0)
+    srp_cyl_sunlit = SolarRadiationPressureTorque(
+        r_cp, area, cr=cr, sun_eci=sun, eclipse="cylindrical"
+    )
+    assert not srp_cyl_sunlit.in_umbra(state)
+    tau_sunlit = srp_cyl_sunlit.tau_body(_Q_ID, _W0, orbit=state)
+    np.testing.assert_allclose(tau_sunlit, expected)
+    srp_cyl_shadow = SolarRadiationPressureTorque(
+        r_cp, area, cr=cr, sun_eci=-sun, eclipse="cylindrical"
+    )
+    assert srp_cyl_shadow.in_umbra(state)
+    np.testing.assert_allclose(srp_cyl_shadow.tau_body(_Q_ID, _W0, orbit=state), 0.0)
+    with pytest.raises(ValueError, match="eclipse"):
+        SolarRadiationPressureTorque(r_cp, area, eclipse="penumbra")
+
+
+def test_environmental_sum_includes_aero_and_srp_without_breaking_gg_dipole():
+    J = np.diag([0.05, 0.06, 0.07])
+    circ = CircularOrbit(radius=_R, inclination=np.deg2rad(30.0))
+    q = quat_normalize([0.6, 0.1, -0.2, 0.7])
+    omega = np.array([0.01, -0.02, 0.03])
+    t = 25.0
+    gg = GravityGradientTorque(J, orbit=circ)
+    mag = ResidualDipoleTorque([0.08, -0.01, 0.02], orbit=circ, model="tilted")
+    aero = AerodynamicTorque([0.04, -0.01, 0.02], 0.25, cd=2.2, orbit=circ)
+    srp = SolarRadiationPressureTorque(
+        [0.0, 0.05, 0.0], 0.4, cr=1.2, orbit=circ, eclipse=False
+    )
+    env = EnvironmentalTorques(
+        gravity_gradient=gg, residual_dipole=mag, aerodynamic=aero, srp=srp
+    )
+    tau = env.tau_body(q, omega, t)
+    parts = (
+        gg.tau_body(q, omega, t)
+        + mag.tau_body(q, omega, t)
+        + aero.tau_body(q, omega, t)
+        + srp.tau_body(q, omega, t)
+    )
+    np.testing.assert_allclose(tau, parts)
+    # GG + dipole only still matches (aero/SRP left None).
+    env_old = EnvironmentalTorques(gravity_gradient=gg, residual_dipole=mag)
+    np.testing.assert_allclose(
+        env_old.tau_body(q, omega, t),
+        gg.tau_body(q, omega, t) + mag.tau_body(q, omega, t),
+    )
+    # Eclipse stub zeroes only SRP in the sum.
+    srp_off = SolarRadiationPressureTorque(
+        [0.0, 0.05, 0.0], 0.4, cr=1.2, orbit=circ, eclipse=True
+    )
+    env_ecl = EnvironmentalTorques(
+        gravity_gradient=gg, residual_dipole=mag, aerodynamic=aero, srp=srp_off
+    )
+    np.testing.assert_allclose(
+        env_ecl.tau_body(q, omega, t),
+        gg.tau_body(q, omega, t)
+        + mag.tau_body(q, omega, t)
+        + aero.tau_body(q, omega, t),
+    )

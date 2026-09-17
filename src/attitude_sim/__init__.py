@@ -11,14 +11,18 @@ from attitude_sim.controls import (
     solve_care,
 )
 from attitude_sim.disturbances import (
+    AerodynamicTorque,
     CircularOrbit,
     EnvironmentalTorques,
     GravityGradientTorque,
     OrbitState,
     ResidualDipoleTorque,
+    SolarRadiationPressureTorque,
+    aerodynamic_torque,
     gravity_gradient_torque,
     magnetic_dipole_torque,
     magnetic_field_body,
+    srp_torque,
 )
 from attitude_sim.estimation import (
     ComplementaryFilter,
@@ -60,6 +64,7 @@ from attitude_sim.sim import SimConfig, SimLog, run_sim, run_slew
 MahonyFilter = ComplementaryFilter
 
 __all__ = [
+    "AerodynamicTorque",
     "AttitudeLQR",
     "CircularOrbit",
     "ComplementaryFilter",
@@ -74,7 +79,9 @@ __all__ = [
     "RigidBody",
     "SimConfig",
     "SimLog",
+    "SolarRadiationPressureTorque",
     "TorqueActuator",
+    "aerodynamic_torque",
     "axis_angle_to_quat",
     "clip_torque",
     "design_attitude_lqr",
@@ -106,6 +113,7 @@ __all__ = [
     "run_slew",
     "shape_pid_command",
     "solve_care",
+    "srp_torque",
     "step_rigid_body",
     "triad_attitude",
     "validate_inertia",
