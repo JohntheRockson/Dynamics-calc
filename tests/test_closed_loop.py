@@ -298,7 +298,8 @@ def test_residual_dipole_and_tau_dist_both_enter_plant():
     assert mag_only.tau_env is not None
     assert both.tau_env is not None
     assert float(np.max(np.linalg.norm(mag_only.tau_env, axis=1))) > 0.0
-    np.testing.assert_allclose(both.tau_env, mag_only.tau_env)
+    # τ_env depends on q; only the first sample (shared q0) must match.
+    np.testing.assert_allclose(both.tau_env[0], mag_only.tau_env[0], atol=1e-15)
     assert not np.allclose(none.omega, dist_only.omega)
     assert not np.allclose(none.omega, mag_only.omega)
     assert not np.allclose(both.omega, dist_only.omega)
