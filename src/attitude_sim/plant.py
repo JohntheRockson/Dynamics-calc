@@ -41,7 +41,24 @@ and the inertial-frame angular momentum
 
 ``|h_b| = |J ω|`` is the same conserved magnitude in the body frame.
 Classical RK4 is not symplectic, so these invariants hold only up to
-truncation error; ``tests/test_plant.py`` records explicit tolerances.
+truncation error.  ``tests/test_plant.py`` records tight tolerances at a
+small fixed ``dt``; ``tests/test_plant_perturbations.py`` records looser
+bounds under mild principal-inertia mismatch and varied ``dt``.
+
+Principal-axis perturbations
+----------------------------
+Monte Carlo-style mismatch scales the principal moments while keeping the
+same principal-axis DCM:
+
+    J' = R diag((1+εᵢ) Iᵢ) Rᵀ,     εᵢ ∈ (−frac, frac).
+
+:func:`scale_principal_inertia` is the deterministic reconstruction (SPD
+and triangle inequalities are re-validated).  :func:`perturb_principal_inertia`
+samples independent ``εᵢ`` with a uniform-scale fallback.  SimLab's
+``monte_carlo.perturb_inertia`` is the runtime sampler; these helpers are
+the plant-owned reconstruction (same ``R diag(s ⊙ I) Rᵀ``) used by
+torque-free I-mismatch tests.  Work–energy / spherical closed-form
+checks live in ``tests/test_plant.py``.
 
 RK4 step
 --------
@@ -95,9 +112,13 @@ def principal_moments_and_axes(inertia: np.ndarray) -> tuple[np.ndarray, np.ndar
 
     and ``det(axes) = +1``.  ``inertia`` is symmetrized before the
     eigendecomposition; it is not otherwise validated (use
-    :func:`validate_inertia` for SPD / triangle checks).
+    :func:`validate_inertia` for SPD / triangle checks).  Entries must
+    be finite so Monte Carlo-style principal scaling cannot ``eigh`` a
+    NaN tensor.
     """
     J = np.asarray(inertia, dtype=float).reshape(3, 3)
+    if not np.all(np.isfinite(J)):
+        raise ValueError("inertia must be finite")
     J = 0.5 * (J + J.T)
     moments, axes = np.linalg.eigh(J)
     if np.linalg.det(axes) < 0.0:
@@ -148,8 +169,10 @@ def validate_inertia(inertia: np.ndarray, *, require_physical: bool = True) -> n
     Checks
     ------
     * shape ``(3, 3)``
+    * finite entries (no NaN / Inf)
     * symmetry (off-diagonal mismatch ≤ 1e-12, then average)
-    * positive definite (all eigenvalues of the symmetric part > 0)
+    * positive definite (all principal moments / eigenvalues of the
+      symmetric part strictly positive)
     * if ``require_physical``, principal moments satisfy the rigid-body
       triangle inequalities
 
@@ -161,6 +184,8 @@ def validate_inertia(inertia: np.ndarray, *, require_physical: bool = True) -> n
     J = np.asarray(inertia, dtype=float)
     if J.shape != (3, 3):
         raise ValueError("inertia must be a 3x3 matrix")
+    if not np.all(np.isfinite(J)):
+        raise ValueError("inertia must be finite")
     if float(np.max(np.abs(J - J.T))) > _SYMM_TOL:
         raise ValueError("inertia must be symmetric")
     J = 0.5 * (J + J.T)
@@ -175,6 +200,83 @@ def validate_inertia(inertia: np.ndarray, *, require_physical: bool = True) -> n
                 "(physical rigid-body inertia)"
             )
     return J
+
+
+def scale_principal_inertia(inertia: np.ndarray, scale: np.ndarray | float) -> np.ndarray:
+    """Return ``J`` with principal moments multiplied by ``scale``.
+
+    Principal axes are unchanged:
+
+        J' = R diag(s ⊙ I) Rᵀ
+
+    ``scale`` is a positive scalar or length-3 vector of strictly positive
+    finite factors.  The result is re-validated (SPD, triangle inequalities).
+    """
+    J = validate_inertia(inertia)
+    s = np.asarray(scale, dtype=float)
+    if s.shape == ():
+        s = np.full(3, float(s))
+    else:
+        s = s.reshape(3)
+    if not np.all(np.isfinite(s)):
+        raise ValueError("principal-moment scale must be finite")
+    if np.any(s <= 0.0):
+        raise ValueError("principal-moment scale must be positive")
+    moments, axes = principal_moments_and_axes(J)
+    return inertia_from_principal(moments * s, axes)
+
+
+def random_principal_scale(rng: np.random.Generator, frac: float) -> np.ndarray:
+    """Independent factors ``1 + U(-frac, frac)`` for principal-moment scaling.
+
+    ``0 ≤ frac < 1`` so every draw is strictly positive.  ``frac == 0``
+    returns ones.  This does not assemble an inertia; pair it with
+    :func:`scale_principal_inertia`.  Closed-loop Monte Carlo sampling
+    lives in SimLab; plant tests use this helper for mild mismatch.
+    """
+    frac = float(frac)
+    if not np.isfinite(frac) or frac < 0.0 or frac >= 1.0:
+        raise ValueError("frac must satisfy 0 <= frac < 1")
+    if frac == 0.0:
+        return np.ones(3)
+    return 1.0 + rng.uniform(-frac, frac, size=3)
+
+
+def perturb_principal_inertia(
+    inertia: np.ndarray,
+    frac: float,
+    rng: np.random.Generator,
+    *,
+    max_tries: int = 16,
+) -> np.ndarray:
+    """Scale principal moments by independent ``1+U(-frac, frac)`` draws.
+
+    Independent per-axis scales are retried if triangle inequalities fail;
+    the last fallback is a uniform scale of all three moments (always a
+    physical inertia when ``0 ≤ frac < 1`` and the original ``J`` was
+    physical).  ``frac <= 0`` returns a copy of the validated inertia.
+
+    Runtime closed-loop Monte Carlo is owned by SimLab; this reconstruction
+    is plant-owned so unit tests share one SPD perturbation path.
+    """
+    J = validate_inertia(inertia)
+    frac = float(frac)
+    if not np.isfinite(frac) or frac < 0.0 or frac >= 1.0:
+        raise ValueError("frac must satisfy 0 <= frac < 1")
+    if frac == 0.0:
+        return J.copy()
+    tries = int(max_tries)
+    if tries < 1:
+        raise ValueError("max_tries must be >= 1")
+    for _ in range(tries):
+        try:
+            return scale_principal_inertia(J, random_principal_scale(rng, frac))
+        except ValueError as exc:
+            if "principal moments" not in str(exc):
+                raise
+            continue
+    s = 1.0 + float(rng.uniform(-frac, frac))
+    return scale_principal_inertia(J, s)
 
 
 def rk4_step(
@@ -194,10 +296,10 @@ def rk4_step(
         y⁺ = y + (h/6) (k₁ + 2 k₂ + 2 k₃ + k₄)
 
     Stage states are copied so ``fun`` cannot alias-mutate the input ``y``.
-    ``dt`` must be positive.
+    ``dt`` must be finite and strictly positive.
     """
     dt = float(dt)
-    if dt <= 0.0:
+    if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError("dt must be positive")
     y = np.array(y, dtype=float, copy=True)
     half = 0.5 * dt
@@ -285,7 +387,8 @@ def step_rigid_body(
     """Advance the plant one RK4 step with zero-order-hold torque.
 
     After the Euclidean RK4 update the quaternion is renormalized so that
-    subsequent kinematics stay on S^3.
+    subsequent kinematics stay on S^3 (``||q|| = 1`` is an integrator
+    invariant, independent of ``J`` and of the held ``τ``).
     """
     tau = np.asarray(tau, dtype=float).reshape(3)
 
