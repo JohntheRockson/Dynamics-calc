@@ -11,6 +11,7 @@ from attitude_sim.controls import (
     LQRAttitudeController,
     PIDAttitudeController,
     apply_pid_torque_limits,
+    apply_torque_limits,
     bryson_lqr_weights,
     care_residual,
     design_attitude_lqr,
@@ -223,6 +224,55 @@ def test_lqr_settles_small_eigenaxis_vs_pid():
     assert err_lqr[-1] < 5.0 * err_pd[-1] + 1e-6
     assert err_lqr[-1] < err_pid[-1]
     assert err_pid[-1] < 0.5 * err_pid[0]
+
+
+def test_lqr_settles_small_eigenaxis_under_tight_tau_max():
+    """Tight per-axis wheels: LQR still settles a small eigenaxis without blow-up."""
+    J = _inertia()
+    axis = np.array([0.2, 0.5, 0.84])
+    angle = np.deg2rad(8.0)
+    tau_max = 0.002
+    dt = 0.01
+    t_final = 16.0
+    lqr = LQRAttitudeController(J, tau_max=tau_max)
+    body = RigidBody(J)
+    # Same box as clip_torque; identity lag so plant sees the clipped command.
+    act = make_actuator(tau_max=tau_max)
+    act.reset()
+    lqr.reset()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(axis, angle)
+    omega = np.zeros(3)
+    errors = []
+    taus = []
+    raw = LQRAttitudeController(J, torque_limit=None, tau_max=None, gyroscopic_cancel=False)
+    boxed = LQRAttitudeController(J, torque_limit=None, tau_max=tau_max, gyroscopic_cancel=False)
+    tau_raw = raw.command(q, omega, q_des, dt=dt)
+    tau_boxed = boxed.command(q, omega, q_des, dt=dt)
+    assert np.max(np.abs(tau_raw)) > tau_max
+    np.testing.assert_allclose(tau_boxed, apply_torque_limits(tau_raw, None, tau_max))
+    np.testing.assert_allclose(tau_boxed, clip_torque(tau_raw, tau_max))
+    np.testing.assert_allclose(tau_boxed, apply_pid_torque_limits(tau_raw, None, tau_max))
+
+    for _ in range(int(np.round(t_final / dt))):
+        tau_cmd = lqr.command(q, omega, q_des, dt=dt)
+        tau = act.apply(tau_cmd, dt)
+        np.testing.assert_allclose(tau, clip_torque(tau_cmd, tau_max))
+        q, omega = step_rigid_body(body, q, omega, tau, dt)
+        assert np.all(np.isfinite(omega))
+        assert np.all(np.isfinite(q))
+        errors.append(geodesic_angle(q, q_des))
+        taus.append(tau)
+    taus = np.asarray(taus)
+    errors = np.asarray(errors)
+    assert np.all(np.abs(taus) <= tau_max * (1.0 + 1e-9))
+    assert np.max(np.abs(taus)) > 0.5 * tau_max
+    assert np.all(np.isfinite(errors))
+    assert np.rad2deg(errors[-1]) < 0.5
+    assert np.linalg.norm(omega) < 0.02
+    assert errors[-1] < 0.1 * errors[0]
+    with pytest.raises(ValueError, match="non-negative"):
+        LQRAttitudeController(J, tau_max=-0.01)
 
 
 def test_controllers_are_double_cover_invariant():

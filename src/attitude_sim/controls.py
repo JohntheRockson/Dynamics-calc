@@ -254,20 +254,26 @@ def design_attitude_lqr(
     return K, P, A, B
 
 
-def apply_pid_torque_limits(
+def apply_torque_limits(
     tau: np.ndarray,
     torque_limit: float | None = None,
     tau_max: float | np.ndarray | None = None,
 ) -> np.ndarray:
     """Euclidean ``|τ|`` clamp, then per-axis ``clip_torque`` (wheel limits).
 
-    ``torque_limit`` is the controller ball (same geometry as LQR).  ``tau_max``
-    is the reaction-wheel box from ``attitude_sim.actuators.clip_torque`` —
-    scalar or length-3.  Either may be ``None``.  Both sets are convex, so
-    applying ball then box is a projection onto their intersection.
+    Shared by PID and LQR.  ``torque_limit`` is the controller ball;
+    ``tau_max`` is the reaction-wheel box from
+    ``attitude_sim.actuators.clip_torque`` (scalar or length-3).  Either
+    may be ``None``.  Both sets are convex, so applying ball then box is
+    a projection onto their intersection.  Instantaneous ``make_actuator``
+    with the same ``tau_max`` is the same box.
     """
     out = _saturate(np.asarray(tau, dtype=float).reshape(3), torque_limit)
     return clip_torque(out, tau_max)
+
+
+# PID-era name; both laws use ``apply_torque_limits``.
+apply_pid_torque_limits = apply_torque_limits
 
 
 def shape_pid_command(
@@ -406,7 +412,7 @@ class PIDAttitudeController:
         self._tau_prev = None
 
     def _limit_torque(self, tau: np.ndarray) -> np.ndarray:
-        return apply_pid_torque_limits(tau, self.torque_limit, self.tau_max)
+        return apply_torque_limits(tau, self.torque_limit, self.tau_max)
 
     def command(
         self,
@@ -477,8 +483,11 @@ class LQRAttitudeController:
     so ``A = [[0, I], [0, 0]]``, ``B = [[0], [J⁻¹]]``.  Default ``Q``, ``R``
     are Bryson placeholders; ``solve_care`` / ``design_attitude_lqr``
     produce ``K`` once unless a 3×6 ``K`` is supplied.  The online law
-    is ``τ = −K [δθ; ω]`` with optional gyroscopic cancellation and
-    torque saturation.  ``gain_scale`` multiplies the implemented ``K``
+    is ``τ = −K [δθ; ω]`` with optional gyroscopic cancellation.  Optional
+    ``torque_limit`` is the Euclidean ball; optional ``tau_max`` is the
+    per-axis wheel box via ``clip_torque`` / ``make_actuator`` — the same
+    ``apply_torque_limits`` helper as PID (LQR has no integrator, so no
+    anti-windup).  ``gain_scale`` multiplies the implemented ``K``
     (robustness hook; 1 is the CARE gain).
     """
 
@@ -487,6 +496,7 @@ class LQRAttitudeController:
     q_rate: float = 1.0 / (LQR_OMEGA_REF**2)
     r_torque: float = 1.0 / (LQR_TAU_REF**2)
     torque_limit: float | None = DEFAULT_TORQUE_LIMIT
+    tau_max: float | np.ndarray | None = None
     gyroscopic_cancel: bool = True
     gain_scale: float = 1.0
     care_method: str = "auto"
@@ -525,9 +535,14 @@ class LQRAttitudeController:
                 raise ValueError(f"LQR gain K must be 3x6; got {self.K.shape}")
         if scale != 1.0:
             self.K = scale * self.K
+        if self.tau_max is not None:
+            clip_torque(np.zeros(3), self.tau_max)
 
     def reset(self) -> None:
         return None
+
+    def _limit_torque(self, tau: np.ndarray) -> np.ndarray:
+        return apply_torque_limits(tau, self.torque_limit, self.tau_max)
 
     def command(
         self,
@@ -545,7 +560,7 @@ class LQRAttitudeController:
         tau = -np.asarray(self.K) @ x
         if self.gyroscopic_cancel:
             tau = tau + np.cross(omega, self.inertia @ omega)
-        return _saturate(tau, self.torque_limit)
+        return self._limit_torque(tau)
 
 
 def _saturate(tau: np.ndarray, limit: float | None) -> np.ndarray:
