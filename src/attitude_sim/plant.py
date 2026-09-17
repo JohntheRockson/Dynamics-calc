@@ -41,6 +41,8 @@ and the inertial-frame angular momentum
     h_I = R(q) J ω.
 
 ``|h_b| = |J ω|`` is the same conserved magnitude in the body frame.
+See ``attitude_sim.polhode`` for energy–Casimir helpers, polhode /
+herpolhode sampling, and the intermediate-axis (tennis-racket) theorem.
 With applied torque the inertial-momentum theorem is
 
     Δh_I ≈ ∫ R(q) τ_b dt

@@ -203,6 +203,23 @@ J \dot{\omega} = \tau - \omega \times (J\omega),\qquad
 
 Principal moments of \(J\) are required to satisfy the physical triangle inequalities \(I_i+I_j\ge I_k\).
 
+**Torque-free polhode / energy–Casimir** (`attitude_sim.polhode`; library helpers, not a SimLab CLI flag). When \(\tau=0\), Euler's equation conserves rotational kinetic energy and the Lie–Poisson Casimir \(|h|^2\), and the inertial vector \(h_I\) is fixed:
+
+\[
+T=\tfrac12\omega\cdot(J\omega),\qquad
+h_b=J\omega,\qquad
+h_I=R(q)\,J\omega,\qquad
+|h|^2=|h_b|^2=|h_I|^2.
+\]
+
+Body-frame \(\omega(t)\) therefore stays on the intersection of the inertia ellipsoid \(\omega^{\top}J\omega=2T\) and the momentum ellipsoid \((J\omega)\cdot(J\omega)=|h|^2\) (the **polhode**). Mapped inertially, \(\omega_I=R(q)\omega\) traces the **herpolhode** in the invariable plane \(\omega_I\cdot h_I=2T\). Principal-axis spin is linearly stable about the min and max principal moments and unstable about the intermediate axis (tennis-racket / intermediate-axis theorem). Linearization about \(\omega=\Omega\,e_k\) with \(\{i,j,k\}=\{1,2,3\}\) gives
+
+\[
+\lambda^2=-\frac{(I_k-I_i)(I_k-I_j)}{I_i I_j}\,\Omega^2
+\]
+
+(\(\lambda^2<0\) oscillatory / stable, \(\lambda^2>0\) hyperbolic / unstable). See `attitude_sim.polhode` and `tests/test_polhode.py`.
+
 **Environmental torques** (`attitude_sim.disturbances`; opt-in SimLab flags, default **off**, independent of the constant `--tau-dist` bias). Orbit frame: \(\hat r\) zenith (Earth→s/c), \(\hat h\) orbit normal \(r\times v\), nadir \(-\hat r\). Body vectors are \(v_b=R(q)^{\top}v_I\). Gravity-gradient (circular or given orbit state)
 
 \[
@@ -292,6 +309,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.mrp` | Modified Rodrigues Parameters: quat/DCM conversions, shadow-set switch, \(\dot\sigma=\tfrac14 B(\sigma)\omega\) |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers, Euler equation, RK4 (default); optional RKMK4 via `step_rigid_body(..., method="rkmk4")` — **not** a SimLab CLI flag |
+| `attitude_sim.polhode` | Torque-free energy / Casimir, polhode & herpolhode sampling, tennis-racket stability — **not** a SimLab CLI flag |
 | `attitude_sim.disturbances` | Gravity-gradient, residual-dipole, aero, and SRP `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` (default off); aero/SRP library-only |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |

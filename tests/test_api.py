@@ -41,6 +41,12 @@ def test_version_and_public_exports():
         "mrp_switch",
         "mrp_B",
         "mrp_derivative",
+        "kinetic_energy",
+        "energy_casimir",
+        "sample_polhode",
+        "sample_herpolhode",
+        "principal_spin_stability",
+        "SpinStability",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
