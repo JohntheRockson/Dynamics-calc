@@ -3,8 +3,9 @@
 import numpy as np
 import pytest
 
+from attitude_sim.estimation import MultiplicativeEKF
 from attitude_sim.quaternions import geodesic_angle
-from attitude_sim.sim import build_parser, main, make_scenario_config
+from attitude_sim.sim import build_parser, main, make_scenario_config, make_sim_estimator
 
 
 def test_parser_defaults_to_slew():
@@ -15,6 +16,10 @@ def test_parser_defaults_to_slew():
     assert args.actuator_tau_max is None
     assert args.actuator_tau is None
     assert args.coarse_init is False
+    assert args.gyro_sigma_v is None
+    assert args.gyro_sigma_u is None
+    assert args.mag_sigma is None
+    assert args.sun_sigma is None
 
 
 def test_parser_detumble_and_flags():
@@ -124,6 +129,58 @@ def test_main_rejects_bad_tau_dist():
 def test_main_rejects_non_positive_dt():
     with pytest.raises(SystemExit):
         main(["--dt", "0", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_make_scenario_config_forwards_sensor_noise_to_estimator():
+    cfg = make_scenario_config(
+        "slew",
+        plot=False,
+        gif=False,
+        gyro_sigma_v=1.5e-3,
+        gyro_sigma_u=2.5e-6,
+        mag_sigma=0.01,
+        sun_sigma=0.004,
+    )
+    assert cfg.gyro_sigma_v == 1.5e-3
+    assert cfg.gyro_sigma_u == 2.5e-6
+    assert cfg.mag_sigma == 0.01
+    assert cfg.sun_sigma == 0.004
+    est = make_sim_estimator(cfg, cfg.q0)
+    assert isinstance(est, MultiplicativeEKF)
+    assert est.sigma_v == 1.5e-3
+    assert est.sigma_u == 2.5e-6
+    default = make_scenario_config("slew", plot=False, gif=False)
+    assert default.gyro_sigma_v == 5e-4
+    assert default.mag_sigma == 3e-3
+
+
+def test_main_sensor_noise_knobs_smoke():
+    assert (
+        main(
+            [
+                "--gyro-sigma-v",
+                "1e-3",
+                "--gyro-sigma-u",
+                "2e-6",
+                "--mag-sigma",
+                "0.01",
+                "--sun-sigma",
+                "0.005",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
+def test_main_rejects_negative_sensor_noise():
+    with pytest.raises(SystemExit):
+        main(["--gyro-sigma-v", "-1e-4", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--mag-sigma", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
 
 
 def test_main_rejects_bad_actuator_tau_max():
