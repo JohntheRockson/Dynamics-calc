@@ -34,6 +34,12 @@ from attitude_sim.estimation import (
     make_estimator,
     triad_attitude,
 )
+from attitude_sim.flex import (
+    HingedAppendage,
+    linearized_flex_state_space,
+    step_flex,
+    step_flex_attitude,
+)
 from attitude_sim.gyrostat import (
     Gyrostat,
     gyrostat_omega_dot,
@@ -98,6 +104,7 @@ __all__ = [
     "EnvironmentalTorques",
     "GravityGradientTorque",
     "Gyrostat",
+    "HingedAppendage",
     "InnovationLog",
     "LQRAttitudeController",
     "MahonyFilter",
@@ -126,6 +133,7 @@ __all__ = [
     "inertial_torque",
     "is_principal",
     "kinetic_energy",
+    "linearized_flex_state_space",
     "magnetic_dipole_torque",
     "magnetic_field_body",
     "make_actuator",
@@ -159,6 +167,8 @@ __all__ = [
     "shape_pid_command",
     "solve_care",
     "srp_torque",
+    "step_flex",
+    "step_flex_attitude",
     "step_gyrostat",
     "step_gyrostat_attitude",
     "step_rigid_body",
