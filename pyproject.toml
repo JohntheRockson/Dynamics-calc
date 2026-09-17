@@ -18,7 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.6",
+]
 
 [project.scripts]
 attitude-sim = "attitude_sim.sim:main"
@@ -37,4 +41,48 @@ pythonpath = ["src"]
 addopts = "--tb=short -ra"
 filterwarnings = [
     "ignore::DeprecationWarning",
+]
+
+# Lightweight lint gate. E501 is ignored so CI does not force a repo-wide wrap.
+# E741 is ignored because principal inertia I is conventional in this code.
+[tool.ruff]
+target-version = "py310"
+src = ["src", "tests"]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "RUF",
+]
+ignore = [
+    "E501",
+    "E741",
+    # Scientific comments/docstrings use minus, times, sigma, en-dash.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+# Line coverage of the attitude_sim package. Measured 89% on main after
+# Monte Carlo #6 (Python 3.12, pytest-cov, 2026-09-17). Floor is 80% so
+# the GIF path in plots.py and a little new code can land without a
+# coverage-only refactor. Raise later; do not lower without a note.
+[tool.coverage.run]
+source_pkgs = ["attitude_sim"]
+branch = false
+omit = ["*/attitude_sim/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]

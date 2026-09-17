@@ -1,7 +1,6 @@
 """Controller construction, inertia-scaled defaults, and disturbance rejection."""
 
 import numpy as np
-
 import pytest
 
 from attitude_sim.controls import (
@@ -110,7 +109,7 @@ def test_pid_rejects_constant_body_disturbance():
     pid = PIDAttitudeController(J)
     pd = PIDAttitudeController(J, ki=0.0)
     _, omega_i, err_i = _hold_against_disturbance(pid, J, tau_dist, t_final=30.0)
-    _, omega_pd, err_pd = _hold_against_disturbance(pd, J, tau_dist, t_final=30.0)
+    _, _omega_pd, err_pd = _hold_against_disturbance(pd, J, tau_dist, t_final=30.0)
     assert np.rad2deg(err_i[-1]) < 1.5
     assert err_i[-1] < 0.25 * err_pd[-1]
     assert np.linalg.norm(omega_i) < 0.02

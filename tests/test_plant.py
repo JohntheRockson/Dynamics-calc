@@ -20,7 +20,6 @@ from attitude_sim.plant import (
 )
 from attitude_sim.quaternions import quat_normalize
 
-
 # Asymmetric J, dt = 0.002 s, T = 10 s.  Bounds sit ~100× above the observed
 # RK4 residuals (~1e-14) for these cases so they stay honest without being flaky.
 ENERGY_REL_TOL = 1e-12
@@ -71,7 +70,7 @@ def test_rk4_global_error_is_fourth_order():
     dts = np.array([0.1, 0.05, 0.025])
     errors = []
     for dt in dts:
-        n = int(round(t_final / dt))
+        n = int(np.round(t_final / dt))
         y = np.array([1.0])
         t = 0.0
         for _ in range(n):
