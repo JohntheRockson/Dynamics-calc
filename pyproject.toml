@@ -70,9 +70,10 @@ ignore = [
 ]
 
 # Line coverage of the attitude_sim package. Measured 89% on main after
-# Monte Carlo #6 (Python 3.12, pytest-cov, 2026-09-17). Floor is 80% so
-# the GIF path in plots.py and a little new code can land without a
-# coverage-only refactor. Raise later; do not lower without a note.
+# Monte Carlo #6 and 91% after rebasing onto harden #7 (Python 3.12,
+# pytest-cov, 2026-09-17). Floor is 80% so the GIF path in plots.py and
+# a little new code can land without a coverage-only refactor. Raise
+# later; do not lower without a note.
 [tool.coverage.run]
 source_pkgs = ["attitude_sim"]
 branch = false

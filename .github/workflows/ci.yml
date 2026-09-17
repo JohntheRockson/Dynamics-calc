@@ -40,7 +40,7 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run unit tests with coverage
         # Floor is [tool.coverage.report] fail_under = 80 in pyproject.toml
-        # (measured 89% line coverage of attitude_sim on main after #6; re-check after #7).
+        # (measured 89% after #6, 91% after #7 on Python 3.12).
         run: pytest -v --tb=short --cov=attitude_sim --cov-report=term-missing --cov-fail-under=80
       - name: CLI smoke (scenarios + MC harness)
         run: |
