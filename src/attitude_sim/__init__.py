@@ -96,6 +96,7 @@ from attitude_sim.quaternions import (
     quat_to_euler321,
     quat_to_rotation,
 )
+from attitude_sim.reaction_wheels import ReactionWheelAssembly, make_reaction_wheels
 from attitude_sim.scenarios import (
     SCENARIOS,
     make_hold_environmental_torques,
@@ -123,6 +124,7 @@ __all__ = [
     "MultiplicativeEKF",
     "OrbitState",
     "PIDAttitudeController",
+    "ReactionWheelAssembly",
     "ResidualDipoleTorque",
     "RigidBody",
     "SimConfig",
@@ -158,6 +160,7 @@ __all__ = [
     "make_estimator",
     "make_hold_environmental_torques",
     "make_magnetic_torquer",
+    "make_reaction_wheels",
     "make_scenario_config",
     "mrp_B",
     "mrp_derivative",

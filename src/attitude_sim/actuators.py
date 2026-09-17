@@ -10,13 +10,24 @@ and an optional first-order lag
 Default construction is identity (unlimited, no lag) so existing closed-loop
 behaviour is unchanged.  Logged SimLab torque is the *applied* wheel torque
 that enters the plant (disturbance ``τ_d`` is still added after this stage).
+
+Momentum storage, friction, and ``|h|`` saturation live in the additive
+``attitude_sim.reaction_wheels.ReactionWheelAssembly`` (same ``apply``
+contract).  ``make_actuator`` returns that assembly when wheel inertia,
+``h_max``, or friction is configured; otherwise this clip/lag box is
+unchanged.  Magnetorquer dump is *not* modeled here — see the reserved
+``tau_dump`` hook on the RW assembly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from attitude_sim.reaction_wheels import ReactionWheelAssembly
 
 
 def clip_torque(
@@ -98,8 +109,17 @@ class TorqueActuator:
     def torque(self) -> np.ndarray:
         return self._tau.copy()
 
-    def apply(self, command: np.ndarray, dt: float) -> np.ndarray:
-        """Advance one sample: clip command, lag, clip output. Returns applied τ."""
+    def apply(
+        self,
+        command: np.ndarray,
+        dt: float,
+        omega: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Advance one sample: clip command, lag, clip output. Returns applied τ.
+
+        ``omega`` is ignored (body-rate coupling belongs to the RW assembly).
+        """
+        del omega
         u = clip_torque(command, self.tau_max)
         T = None if self.time_constant is None else float(self.time_constant)
         if T is None or T <= 0.0:
@@ -116,6 +136,36 @@ class TorqueActuator:
 def make_actuator(
     tau_max: float | np.ndarray | None = None,
     time_constant: float | None = None,
-) -> TorqueActuator:
-    """Factory matching ``make_controller`` / ``make_estimator`` style."""
-    return TorqueActuator(tau_max=tau_max, time_constant=time_constant)
+    *,
+    wheel_inertia: float | np.ndarray | None = None,
+    h_max: float | np.ndarray | None = None,
+    visc_friction: float = 0.0,
+    coulomb_friction: float = 0.0,
+    gyroscopic: bool = True,
+) -> TorqueActuator | ReactionWheelAssembly:
+    """Factory matching ``make_controller`` / ``make_estimator`` style.
+
+    Extra RW kwargs (``wheel_inertia``, ``h_max``, friction) select
+    :class:`~attitude_sim.reaction_wheels.ReactionWheelAssembly`.  Same
+    ``apply`` / ``reset`` / ``torque`` surface as ``TorqueActuator``.
+    Magnetorquers are not constructed here.
+    """
+    use_rw = (
+        wheel_inertia is not None
+        or h_max is not None
+        or float(visc_friction) != 0.0
+        or float(coulomb_friction) != 0.0
+    )
+    if not use_rw:
+        return TorqueActuator(tau_max=tau_max, time_constant=time_constant)
+    from attitude_sim.reaction_wheels import make_reaction_wheels
+
+    return make_reaction_wheels(
+        tau_max=tau_max,
+        h_max=h_max,
+        wheel_inertia=wheel_inertia,
+        visc_friction=visc_friction,
+        coulomb_friction=coulomb_friction,
+        time_constant=time_constant,
+        gyroscopic=gyroscopic,
+    )

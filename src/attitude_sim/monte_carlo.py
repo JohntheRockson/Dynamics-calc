@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from attitude_sim.actuators import parse_tau_max
 from attitude_sim.controls import cubesat_gain_report
 from attitude_sim.plant import inertia_from_principal, principal_moments_and_axes
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
@@ -68,6 +69,12 @@ class MonteCarloConfig:
     gyro_sigma_u: float | None = None
     mag_sigma: float | None = None
     sun_sigma: float | None = None
+    actuator_tau_max: float | np.ndarray | None = None
+    rw_inertia: float | np.ndarray | None = None
+    rw_h_max: float | np.ndarray | None = None
+    rw_visc: float = 0.0
+    rw_coulomb: float = 0.0
+    rw_gyroscopic: bool = True
 
 
 @dataclass
@@ -85,6 +92,8 @@ class TrialResult:
     fail_reason: str = ""
     gain_scale: float = 1.0
     tau_dist_norm: float = 0.0
+    peak_rate: float = float("nan")
+    sat_fraction: float = 0.0
 
     def as_row(self) -> dict[str, object]:
         row = asdict(self)
@@ -112,6 +121,9 @@ class MonteCarloSummary:
     estimator: str
     t_final: float
     settle_deg: float
+    peak_rate_max: float = float("nan")
+    peak_rate_mean: float = float("nan")
+    sat_fraction_mean: float = 0.0
     trials: list[TrialResult] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
@@ -123,6 +135,44 @@ class MonteCarloSummary:
                 payload[key] = None
         payload["trials"] = [t.as_row() for t in self.trials]
         return payload
+
+
+def rw_saturation_config(**overrides: object) -> MonteCarloConfig:
+    """Closed-loop MC preset: tight wheels + noisy sensors.
+
+    Stresses ``|τ|`` / ``|h|`` saturation on the RW assembly together with
+    a log-uniform sensor-noise scale.  Same ``run_slew`` harness as the
+    stock slew sweep — plant / controllers / estimators are not rewritten.
+    """
+    cfg = MonteCarloConfig(
+        n=8,
+        seed=0,
+        controller="pid",
+        estimator="mekf",
+        dt=0.02,
+        t_final=8.0,
+        angle_deg=75.0,
+        q0_max_deg=20.0,
+        omega0_max=0.08,
+        noise_scale_min=1.5,
+        noise_scale_max=5.0,
+        inertia_frac=0.05,
+        settle_deg=5.0,
+        diverge_deg=90.0,
+        torque_limit=0.02,
+        tau_dist_max=0.002,
+        actuator_tau_max=0.008,
+        rw_h_max=0.0015,
+        rw_inertia=2.0e-4,
+        rw_visc=2.0e-6,
+        rw_coulomb=0.0,
+        rw_gyroscopic=True,
+    )
+    for key, value in overrides.items():
+        if not hasattr(cfg, key):
+            raise TypeError(f"unknown MonteCarloConfig field {key!r}")
+        setattr(cfg, key, value)
+    return cfg
 
 
 def random_unit(rng: np.random.Generator) -> np.ndarray:
@@ -295,6 +345,12 @@ def sample_trial_config(
     else:
         gain_scale = log_uniform(rng, lo, hi)
     cfg.gain_scale = gain_scale
+    cfg.actuator_tau_max = mc.actuator_tau_max
+    cfg.rw_inertia = mc.rw_inertia
+    cfg.rw_h_max = mc.rw_h_max
+    cfg.rw_visc = mc.rw_visc
+    cfg.rw_coulomb = mc.rw_coulomb
+    cfg.rw_gyroscopic = mc.rw_gyroscopic
 
     # #38 cubesat helpers: SimLab run_slew applies tune_pid_second_order /
     # bryson_lqr_costs via cubesat_controller_kwargs on this trial inertia.
@@ -343,6 +399,8 @@ def score_trial(
         noise_scale=extras["noise_scale"],
         gain_scale=float(extras.get("gain_scale", 1.0)),
         tau_dist_norm=float(extras.get("tau_dist_norm", 0.0)),
+        peak_rate=float(log.peak_rate),
+        sat_fraction=float(log.sat_fraction),
         failed=failed,
         fail_reason=reason,
     )
@@ -358,6 +416,8 @@ def summarize(mc: MonteCarloConfig, trials: list[TrialResult]) -> MonteCarloSumm
     errs = _finite([t.final_att_error_deg for t in ok])
     settles = _finite([t.settle_time_s for t in ok])
     peaks = _finite([t.peak_torque for t in trials])
+    rates = _finite([t.peak_rate for t in trials])
+    sats = _finite([t.sat_fraction for t in trials])
 
     def _stat(arr: np.ndarray, fn) -> float:
         return float(fn(arr)) if arr.size else float("nan")
@@ -375,6 +435,9 @@ def summarize(mc: MonteCarloConfig, trials: list[TrialResult]) -> MonteCarloSumm
         settle_mean_s=_stat(settles, np.mean),
         peak_torque_max=_stat(peaks, np.max),
         peak_torque_mean=_stat(peaks, np.mean),
+        peak_rate_max=_stat(rates, np.max),
+        peak_rate_mean=_stat(rates, np.mean),
+        sat_fraction_mean=_stat(sats, np.mean) if sats.size else 0.0,
         controller=mc.controller,
         estimator=mc.estimator,
         t_final=mc.t_final,
@@ -452,6 +515,14 @@ def format_summary(summary: MonteCarloSummary) -> str:
                 f"peak |tau| [N·m]: max={_fmt(summary.peak_torque_max, '.4f')}  "
                 f"mean={_fmt(summary.peak_torque_mean, '.4f')}"
             ),
+            (
+                f"peak |omega| [rad/s]: max={_fmt(summary.peak_rate_max, '.4f')}  "
+                f"mean={_fmt(summary.peak_rate_mean, '.4f')}"
+            ),
+            (
+                f"RW sat fraction: mean={_fmt(summary.sat_fraction_mean, '.3f')}  "
+                f"(any-axis |τ| or |h| at limit)"
+            ),
         ]
     )
 
@@ -519,6 +590,12 @@ def trial_from_row(row: dict) -> TrialResult:
         tau_dist_norm=_as_float(row.get("tau_dist_norm"))
         if row.get("tau_dist_norm") not in (None, "")
         else 0.0,
+        peak_rate=_as_float(row.get("peak_rate"))
+        if row.get("peak_rate") not in (None, "")
+        else float("nan"),
+        sat_fraction=_as_float(row.get("sat_fraction"))
+        if row.get("sat_fraction") not in (None, "")
+        else 0.0,
     )
 
 
@@ -538,6 +615,15 @@ def summary_from_dict(payload: dict) -> MonteCarloSummary:
         settle_mean_s=_as_float(payload.get("settle_mean_s")),
         peak_torque_max=_as_float(payload.get("peak_torque_max")),
         peak_torque_mean=_as_float(payload.get("peak_torque_mean")),
+        peak_rate_max=_as_float(payload.get("peak_rate_max"))
+        if payload.get("peak_rate_max") not in (None, "")
+        else float("nan"),
+        peak_rate_mean=_as_float(payload.get("peak_rate_mean"))
+        if payload.get("peak_rate_mean") not in (None, "")
+        else float("nan"),
+        sat_fraction_mean=_as_float(payload.get("sat_fraction_mean"))
+        if payload.get("sat_fraction_mean") not in (None, "")
+        else 0.0,
         controller=str(payload.get("controller") or ""),
         estimator=str(payload.get("estimator") or ""),
         t_final=_as_float(payload.get("t_final")),
@@ -639,6 +725,41 @@ def build_parser() -> argparse.ArgumentParser:
         default=25.0,
         help="final geodesic error above this counts as diverged (deg)",
     )
+    p.add_argument(
+        "--actuator-tau-max",
+        default=None,
+        help="per-axis wheel torque limit [N·m]: scalar or x,y,z (enables RW with --rw-h-max)",
+    )
+    p.add_argument(
+        "--rw-h-max",
+        default=None,
+        help="per-axis wheel momentum limit [N·m·s]: scalar or x,y,z (enables RW assembly)",
+    )
+    p.add_argument(
+        "--rw-inertia",
+        default=None,
+        help="per-axis wheel inertia I_w [kg·m²] (default 2e-4 when --rw-h-max is set)",
+    )
+    p.add_argument(
+        "--rw-visc",
+        type=float,
+        default=None,
+        help="viscous wheel friction b [N·m·s]",
+    )
+    p.add_argument(
+        "--rw-coulomb",
+        type=float,
+        default=None,
+        help="smoothed Coulomb wheel friction c [N·m]",
+    )
+    p.add_argument(
+        "--rw-sat-stress",
+        action="store_true",
+        help=(
+            "preset: tight RW |τ|/|h| limits, body-disturbance fill, and noisy sensors "
+            "(same harness; overlays --n/--seed/--estimator/...)"
+        ),
+    )
     p.add_argument("--csv", type=Path, default=None, help="optional per-trial CSV path")
     p.add_argument("--json", type=Path, default=None, help="optional summary JSON path")
     p.add_argument(
@@ -662,29 +783,69 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
-    return MonteCarloConfig(
-        n=args.n,
-        seed=args.seed,
-        controller=args.controller,
-        estimator=args.estimator,
-        dt=args.dt,
-        t_final=args.t_final,
-        angle_deg=args.angle_deg,
-        q0_max_deg=args.q0_max_deg,
-        omega0_max=args.omega0_max,
-        noise_scale_min=args.noise_scale_min,
-        noise_scale_max=args.noise_scale_max,
-        inertia_frac=args.inertia_frac,
-        settle_deg=args.settle_deg,
-        diverge_deg=args.diverge_deg,
-        tau_dist_max=args.tau_dist_max,
-        gain_scale_min=args.gain_scale_min,
-        gain_scale_max=args.gain_scale_max,
-        gyro_sigma_v=args.gyro_sigma_v,
-        gyro_sigma_u=args.gyro_sigma_u,
-        mag_sigma=args.mag_sigma,
-        sun_sigma=args.sun_sigma,
-    )
+    if args.rw_sat_stress:
+        mc = rw_saturation_config(
+            n=args.n,
+            seed=args.seed,
+            controller=args.controller,
+            estimator=args.estimator,
+            dt=args.dt,
+            t_final=args.t_final,
+            angle_deg=args.angle_deg,
+            q0_max_deg=args.q0_max_deg,
+            omega0_max=args.omega0_max,
+            inertia_frac=args.inertia_frac,
+            settle_deg=args.settle_deg,
+            diverge_deg=args.diverge_deg,
+            gain_scale_min=args.gain_scale_min,
+            gain_scale_max=args.gain_scale_max,
+            gyro_sigma_v=args.gyro_sigma_v,
+            gyro_sigma_u=args.gyro_sigma_u,
+            mag_sigma=args.mag_sigma,
+            sun_sigma=args.sun_sigma,
+        )
+        # Keep the noisy-sensor / disturbance defaults unless the caller
+        # moved the noise-scale bounds away from the parser defaults.
+        if args.noise_scale_min != 0.5 or args.noise_scale_max != 2.0:
+            mc.noise_scale_min = args.noise_scale_min
+            mc.noise_scale_max = args.noise_scale_max
+        if args.tau_dist_max != 0.0:
+            mc.tau_dist_max = args.tau_dist_max
+    else:
+        mc = MonteCarloConfig(
+            n=args.n,
+            seed=args.seed,
+            controller=args.controller,
+            estimator=args.estimator,
+            dt=args.dt,
+            t_final=args.t_final,
+            angle_deg=args.angle_deg,
+            q0_max_deg=args.q0_max_deg,
+            omega0_max=args.omega0_max,
+            noise_scale_min=args.noise_scale_min,
+            noise_scale_max=args.noise_scale_max,
+            inertia_frac=args.inertia_frac,
+            settle_deg=args.settle_deg,
+            diverge_deg=args.diverge_deg,
+            tau_dist_max=args.tau_dist_max,
+            gain_scale_min=args.gain_scale_min,
+            gain_scale_max=args.gain_scale_max,
+            gyro_sigma_v=args.gyro_sigma_v,
+            gyro_sigma_u=args.gyro_sigma_u,
+            mag_sigma=args.mag_sigma,
+            sun_sigma=args.sun_sigma,
+        )
+    if args.actuator_tau_max is not None:
+        mc.actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
+    if args.rw_h_max is not None:
+        mc.rw_h_max = parse_tau_max(args.rw_h_max, "--rw-h-max")
+    if args.rw_inertia is not None:
+        mc.rw_inertia = parse_tau_max(args.rw_inertia, "--rw-inertia")
+    if args.rw_visc is not None:
+        mc.rw_visc = float(args.rw_visc)
+    if args.rw_coulomb is not None:
+        mc.rw_coulomb = float(args.rw_coulomb)
+    return mc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -699,10 +860,18 @@ def main(argv: list[str] | None = None) -> int:
         ):
             if value is not None and value < 0.0:
                 parser.error(f"{flag} must be >= 0")
+        if args.rw_visc is not None and args.rw_visc < 0.0:
+            parser.error("--rw-visc must be >= 0")
+        if args.rw_coulomb is not None and args.rw_coulomb < 0.0:
+            parser.error("--rw-coulomb must be >= 0")
     if args.from_json is not None:
         summary = summary_from_json(args.from_json)
     else:
-        summary = run_monte_carlo(config_from_args(args))
+        try:
+            mc = config_from_args(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+        summary = run_monte_carlo(mc)
     print(format_summary(summary))
     if args.csv is not None:
         write_csv(args.csv, summary)

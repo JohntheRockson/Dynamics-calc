@@ -271,6 +271,49 @@ in \(|\tau|\), then the wheels clip each axis and (optionally) lag.
 PID anti-windup can apply the same `clip_torque` box on the command (`tau_max`)
 so \(K_i\) sees per-axis saturation, not only the Euclidean ball.
 
+### Reaction-wheel assembly (momentum storage)
+
+`--rw-h-max` (or `SimConfig.rw_h_max` / `make_actuator(..., h_max=)`) selects
+the additive `ReactionWheelAssembly` on the same SimLab actuator path.
+`RigidBody`, `Gyrostat`, and `polhode` are not rewritten.  Orthogonal
+body-aligned wheels:
+
+\[
+h_w = I_w \Omega,\qquad
+I_w \dot\Omega = \tau_m + \tau_f + \tau_{\mathrm{dump}},
+\]
+
+\[
+\tau_m^{\mathrm{des}} = -\tau_{\mathrm{cmd}},\qquad
+\tau_m = \mathrm{clip}(\tau_m^{\mathrm{des}},\,\pm\tau_{\max}),
+\]
+
+and if \(|h_i|\ge h_{\max,i}\) and \(\tau_{m,i}\,h_i>0\) then \(\tau_{m,i}\leftarrow 0\).
+Friction is viscous plus smoothed Coulomb
+
+\[
+\tau_f = -b\Omega - c\tanh(\Omega/\varepsilon).
+\]
+
+The torque passed to `RigidBody` (already \(-\omega\times J\omega\)) is
+
+\[
+\tau = -\dot h_w - \omega\times h_w
+\]
+
+(`--rw-no-gyro` / `gyroscopic=False` drops \(\omega\times h_w\)).  Logged
+\(\tau\) is that applied torque; `SimLog.h_wheel` / `omega_wheel` /
+`sat_fraction` record stored momentum and any-axis \(|\tau|\) or \(|h|\)
+saturation.  \(\tau_{\mathrm{dump}}\) is reserved for a magnetorquer
+momentum-dump coupler — **not** implemented here (do not duplicate an MTQ
+module in this file).
+
+```bash
+python -m attitude_sim --controller pid --estimator truth \
+    --actuator-tau-max 0.02 --rw-h-max 0.004 --rw-visc 1e-6 --no-gif
+python -m attitude_sim.monte_carlo --rw-sat-stress --n 20 --estimator mekf
+```
+
 ## Magnetic torquer (library)
 
 `attitude_sim.magnetic.MagneticTorquer` is **not** a SimLab CLI flag.  A
