@@ -118,17 +118,27 @@ because there is no \(K_i\).
 
 ## Scenario
 
+Named SimLab presets (plant / controller cores unchanged):
+
 ```bash
 python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
     --tau-dist 0.002,-0.001,0.0008 --t-final 30 --no-gif
+
+# identity hold under EnvironmentalTorques (GG + demo-scale residual dipole)
+python -m attitude_sim --scenario hold --estimator truth --no-gif
+
+# principal-axis slew; default controller is LQR
+python -m attitude_sim --scenario eigenaxis --no-gif
+python -m attitude_sim --list-scenarios
 ```
 
 `--tau-dist` is a constant body-frame disturbance added to the plant only; the
 logged \(\tau\) is the torque applied to the plant (controller command after the
-actuator stage below).  Opt-in `--gravity-gradient` / `--residual-dipole` /
-`--aerodynamic` / `--srp` add the `attitude_sim.disturbances` models the same
-way (ZOH at each sample, default **off** so stock demos match).  They can share
-the wheel box:
+actuator stage below).  `--scenario hold` (or `--env`) turns on
+gravity-gradient + residual dipole via the same flags (ZOH at each sample).
+`--aerodynamic` / `--srp` stay independent opt-in flags.  `--mrp-plot` writes
+a post-process MRP chart from logged \(q\) (default on for hold / eigenaxis).
+They can share the wheel box:
 
 ```bash
 python -m attitude_sim --controller pid --estimator truth \

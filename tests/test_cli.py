@@ -17,11 +17,16 @@ from attitude_sim.sim import (
 def test_parser_defaults_to_slew():
     args = build_parser().parse_args([])
     assert args.scenario == "slew"
-    assert args.controller == "pid"
+    assert args.controller is None  # resolved to pid by the slew preset
     assert args.estimator == "mekf"
     assert args.actuator_tau_max is None
     assert args.actuator_tau is None
     assert args.coarse_init is False
+    assert args.angle_deg is None
+    assert args.env is False
+    assert args.no_env is False
+    assert args.mrp_plot is False
+    assert args.list_scenarios is False
     assert args.gyro_sigma_v is None
     assert args.gyro_sigma_u is None
     assert args.mag_sigma is None
@@ -32,6 +37,8 @@ def test_parser_defaults_to_slew():
     assert args.srp is False
     assert args.dipole_model == "tilted"
     assert args.orbit_radius == 7.0e6
+    assert args.orbit_inc_deg is None
+    assert args.dipole_m is None
     assert args.panel_area == 0.4
     assert args.aero_cd == 2.2
     assert args.srp_cr == 1.0
@@ -63,13 +70,37 @@ def test_parser_detumble_and_flags():
     assert args.coarse_init
 
 
+def test_parser_hold_eigenaxis_and_env_flags():
+    hold = build_parser().parse_args(["--scenario", "hold", "--no-env", "--mrp-plot"])
+    assert hold.scenario == "hold"
+    assert hold.no_env
+    assert hold.mrp_plot
+    eigen = build_parser().parse_args(["--scenario", "eigenaxis", "--env", "--angle-deg", "12"])
+    assert eigen.scenario == "eigenaxis"
+    assert eigen.env
+    assert eigen.angle_deg == 12.0
+
+
 def test_make_scenario_config_stems():
     slew = make_scenario_config("slew", plot=False, gif=False)
     det = make_scenario_config("detumble", plot=False, gif=False)
+    hold = make_scenario_config("hold", plot=False, gif=False)
+    eigen = make_scenario_config("eigenaxis", plot=False, gif=False)
     assert slew.artifact_stem == "slew"
     assert det.artifact_stem == "detumble"
+    assert hold.artifact_stem == "hold"
+    assert eigen.artifact_stem == "eigenaxis"
     assert abs(det.omega0).max() > 0.2
     assert slew.coarse_init is False
+    assert slew.controller == "pid"
+    assert eigen.controller == "lqr"
+    assert hold.gravity_gradient is True
+    assert hold.residual_dipole is True
+    assert hold.aerodynamic is False
+    assert hold.srp is False
+    assert make_sim_disturbances(hold) is not None
+    assert eigen.gravity_gradient is False
+    assert make_sim_disturbances(eigen) is None
     coarse = make_scenario_config("slew", plot=False, gif=False, coarse_init=True)
     assert coarse.coarse_init is True
     env = make_scenario_config(
@@ -116,7 +147,7 @@ def test_make_scenario_config_unknown():
         make_scenario_config("spinup", plot=False, gif=False)
 
 
-def test_angle_deg_only_affects_slew():
+def test_angle_deg_only_affects_slew_and_eigenaxis():
     a = make_scenario_config("slew", angle_deg=10.0, plot=False, gif=False)
     b = make_scenario_config("slew", angle_deg=90.0, plot=False, gif=False)
     assert geodesic_angle(a.q_des, b.q_des) > 1.0
@@ -129,6 +160,12 @@ def test_angle_deg_only_affects_slew():
 def test_main_both_scenarios_smoke():
     assert main(["--scenario", "slew", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
     assert main(["--scenario", "detumble", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
+    assert main(["--scenario", "hold", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
+    assert main(["--scenario", "eigenaxis", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
+
+
+def test_main_list_scenarios():
+    assert main(["--list-scenarios"]) == 0
 
 
 def test_main_tau_dist_and_lqr_mahony_smoke():
@@ -170,6 +207,47 @@ def test_main_tau_dist_and_lqr_mahony_smoke():
 
 def test_main_coarse_init_smoke():
     assert main(["--coarse-init", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
+
+
+def test_main_env_and_mrp_cli_smoke(tmp_path):
+    assert (
+        main(
+            [
+                "--scenario",
+                "slew",
+                "--env",
+                "--mrp-plot",
+                "--t-final",
+                "0.08",
+                "--no-gif",
+                "--out-dir",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    assert (tmp_path / "slew_summary.png").is_file()
+    assert (tmp_path / "slew_mrp.png").is_file()
+    assert (tmp_path / "slew_env_torque.png").is_file()
+    assert (
+        main(
+            [
+                "--scenario",
+                "hold",
+                "--no-env",
+                "--estimator",
+                "truth",
+                "--t-final",
+                "0.08",
+                "--no-gif",
+                "--out-dir",
+                str(tmp_path / "hold_off"),
+            ]
+        )
+        == 0
+    )
+    assert (tmp_path / "hold_off" / "hold_summary.png").is_file()
+    assert not (tmp_path / "hold_off" / "hold_env_torque.png").exists()
 
 
 def test_main_rejects_bad_tau_dist():
