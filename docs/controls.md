@@ -111,6 +111,11 @@ LQR has no integrator.  A constant \(\tau_{d}\) leaves
 \(\delta\theta_{\mathrm{ss}}\approx K_{\theta}^{-1}\tau_{d}\) (about \(1.4°\) for
 a 2 mN·m bias).  That residual is the stiffness, not a tracker-to-zero.
 
+Online LQR torque uses the same Euclidean ball + per-axis `clip_torque`
+(`tau_max`) as PID (`apply_torque_limits`) before the plant step;
+instantaneous `make_actuator` is that same box.  There is no anti-windup
+because there is no \(K_i\).
+
 ## Scenario
 
 ```bash
