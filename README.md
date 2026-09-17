@@ -213,13 +213,13 @@ e_{q} = \operatorname{sign}(q_{e0})\, q_{e,1:3},\qquad
 \delta\theta \approx 2 e_{q}.
 \]
 
-**PID** (inertia-scaled PD plus integral, optional gyroscopic cancellation, torque saturation, gated anti-windup):
+**PID** (inertia-scaled PD plus optional integral, gyroscopic cancellation, torque saturation, anti-windup):
 
 \[
 \tau = -K_{p} e_{q} - K_{d}(\hat{\omega}-\omega_{\mathrm{des}}) - K_{i} z + \omega \times J\omega,\qquad |\tau|\le\tau_{\max}.
 \]
 
-Defaults use \(e_{q}\approx\theta/2\) so the rotation-vector loop has \(\omega_{n},\,\zeta\): \(K_{p} = 2\omega_{n}^{2} J\), \(K_{d} = 2\zeta\omega_{n} J\), \(K_{i} = \tfrac12\omega_{n}^{3} J\) with \(\omega_{n}=0.5\,\mathrm{rad/s}\), \(\zeta=1\). That \(\omega_{n}\) puts the opening 75° PD torque on the \(0.02\,\mathrm{N\cdot m}\) actuator. The integrator is gated to \(\|e_{q}\|\le 0.10\) so it rejects a body-frame bias without winding up on the slew.
+Defaults use \(e_{q}\approx\theta/2\) so the rotation-vector loop has \(\omega_{n},\,\zeta\): \(K_{p} = 2\omega_{n}^{2} J\), \(K_{d} = 2\zeta\omega_{n} J\), \(K_{i} = \tfrac12\omega_{n}^{3} J\) with \(\omega_{n}=0.5\,\mathrm{rad/s}\), \(\zeta=1\). That \(\omega_{n}\) puts the opening 75° PD torque on the \(0.02\,\mathrm{N\cdot m}\) actuator. The integrator is gated to \(\|e_{q}\|\le 0.10\) and, when \(K_i\) is used, does not wind up under Euclidean or per-axis (`clip_torque`) saturation (conditional freeze; optional `kaw` back-calculation). Optional `shape_pid_command` can soft-limit eigenaxis rate / \(|\dot\tau|\).
 
 **LQR** on the rest linearization \(x=[\delta\theta,\,\omega]\), \(u=\tau\):
 

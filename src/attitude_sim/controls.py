@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import linalg
 
+from attitude_sim.actuators import clip_torque
 from attitude_sim.quaternions import attitude_error_vector, rotation_vector_error
 
 # --- plant-scale defaults (M1 smallsat + 20 mN·m wheels) -------------------
@@ -32,6 +33,8 @@ PID_KI_WN_COEFF = 0.5
 PID_INTEGRAL_LIMIT = 3.0
 # Only integrate when ||e_q|| is small (~11° geodesic) so the slew does not wind up.
 PID_INTEGRAL_GATE = 0.10
+# Back-calculation gain (1/s).  0 = freeze-only; Ki^{-1}(τ_unsat − τ_sat) tracking.
+PID_KAW = 0.0
 
 # Bryson references for Q, R.  K_θ ≈ τ_ref / θ_ref puts the linear region
 # around 14°, not a 1° bang-bang, while wn_LQR ≈ 1.1 rad/s stays near PID.
@@ -251,13 +254,103 @@ def design_attitude_lqr(
     return K, P, A, B
 
 
+def apply_pid_torque_limits(
+    tau: np.ndarray,
+    torque_limit: float | None = None,
+    tau_max: float | np.ndarray | None = None,
+) -> np.ndarray:
+    """Euclidean ``|τ|`` clamp, then per-axis ``clip_torque`` (wheel limits).
+
+    ``torque_limit`` is the controller ball (same geometry as LQR).  ``tau_max``
+    is the reaction-wheel box from ``attitude_sim.actuators.clip_torque`` —
+    scalar or length-3.  Either may be ``None``.  Both sets are convex, so
+    applying ball then box is a projection onto their intersection.
+    """
+    out = _saturate(np.asarray(tau, dtype=float).reshape(3), torque_limit)
+    return clip_torque(out, tau_max)
+
+
+def shape_pid_command(
+    tau: np.ndarray,
+    *,
+    dt: float,
+    tau_prev: np.ndarray | None = None,
+    tau_rate_max: float | None = None,
+    omega: np.ndarray | None = None,
+    omega_slew_max: float | None = None,
+) -> np.ndarray:
+    """Soft-limit a PID torque: optional ``|dτ/dt|`` and eigenaxis rate.
+
+    ``tau_rate_max`` caps Euclidean ``‖τ − τ_prev‖ / dt``.  ``omega_slew_max``
+    peels off the component of ``τ`` along ``ω`` that would further increase
+    ``‖ω‖`` once the body rate is already above the cap (power ``ω·τ > 0``,
+    blended from ``ω_max`` to ``2 ω_max``).  Defaults are a pass-through.
+    """
+    out = np.asarray(tau, dtype=float).reshape(3).copy()
+    if tau_rate_max is not None:
+        if float(tau_rate_max) < 0.0:
+            raise ValueError(f"tau_rate_max must be non-negative, got {tau_rate_max}")
+        if tau_prev is not None and dt > 0.0:
+            prev = np.asarray(tau_prev, dtype=float).reshape(3)
+            delta = out - prev
+            max_step = float(tau_rate_max) * float(dt)
+            n = float(np.linalg.norm(delta))
+            if max_step == 0.0:
+                out = prev.copy()
+            elif n > max_step:
+                out = prev + delta * (max_step / n)
+    if omega_slew_max is not None:
+        if float(omega_slew_max) < 0.0:
+            raise ValueError(f"omega_slew_max must be non-negative, got {omega_slew_max}")
+        if omega is not None:
+            wvec = np.asarray(omega, dtype=float).reshape(3)
+            w = float(np.linalg.norm(wvec))
+            w_max = float(omega_slew_max)
+            if w > w_max > 0.0 or (w_max == 0.0 and w > 0.0):
+                u = wvec / w
+                if float(wvec @ out) > 0.0:
+                    span = w_max if w_max > 0.0 else w
+                    alpha = 1.0 if w_max == 0.0 else min(1.0, (w - w_max) / span)
+                    out = out - alpha * u * float(u @ out)
+    return out
+
+
+def _ki_is_active(ki: np.ndarray) -> bool:
+    return float(np.linalg.norm(np.asarray(ki, dtype=float), ord="fro")) > 1e-18
+
+
+def _clamp_integral(z: np.ndarray, limit: float) -> np.ndarray:
+    out = np.asarray(z, dtype=float).reshape(3).copy()
+    max_z = float(limit)
+    n = float(np.linalg.norm(out))
+    if n > max_z > 0.0:
+        out *= max_z / n
+    return out
+
+
+def _backcalc_z_dot(ki: np.ndarray, tau_unsat: np.ndarray, tau_sat: np.ndarray, kaw: float) -> np.ndarray:
+    """``ż_aw = kaw Ki⁻¹ (τ_unsat − τ_sat)``; zero if ``kaw`` or ``Ki`` vanish."""
+    if kaw <= 0.0 or not _ki_is_active(ki):
+        return np.zeros(3)
+    deficit = np.asarray(tau_unsat, dtype=float).reshape(3) - np.asarray(tau_sat, dtype=float).reshape(3)
+    ki_m = np.asarray(ki, dtype=float).reshape(3, 3)
+    try:
+        return float(kaw) * np.linalg.solve(ki_m, deficit)
+    except np.linalg.LinAlgError:
+        return float(kaw) * np.linalg.lstsq(ki_m, deficit, rcond=None)[0]
+
+
 @dataclass
 class PIDAttitudeController:
     """PID on quaternion vector error + body rate, with anti-windup.
 
     ``τ = −Kp e_q − Kd (ω − ω_des) − Ki z`` plus optional gyroscopic
-    cancellation ``ω × Jω`` and optional ``|τ| ≤ τ_max``.  Gains default
-    to inertia-scaled PD for a target natural frequency and damping.
+    cancellation ``ω × Jω``.  Optional ``torque_limit`` is the Euclidean
+    ball; optional ``tau_max`` is the per-axis wheel box via
+    ``clip_torque``.  Optional Ki uses gated conditional integration and,
+    when ``kaw > 0``, back-calculation on saturation.  Optional
+    ``omega_slew_max`` / ``tau_rate_max`` run ``shape_pid_command``.
+    Gains default to inertia-scaled PD for a target ``wn``, ``zeta``.
     """
 
     inertia: np.ndarray
@@ -270,9 +363,14 @@ class PIDAttitudeController:
     integral_limit: float = PID_INTEGRAL_LIMIT
     integral_gate: float = PID_INTEGRAL_GATE
     torque_limit: float | None = DEFAULT_TORQUE_LIMIT
+    tau_max: float | np.ndarray | None = None
+    kaw: float = PID_KAW
+    omega_slew_max: float | None = None
+    tau_rate_max: float | None = None
     gyroscopic_cancel: bool = True
     gain_scale: float = 1.0
     _z: np.ndarray = field(default_factory=lambda: np.zeros(3), init=False, repr=False)
+    _tau_prev: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         J = np.asarray(self.inertia, dtype=float).reshape(3, 3)
@@ -294,9 +392,21 @@ class PIDAttitudeController:
             self.kp = scale * self.kp
             self.kd = scale * self.kd
             self.ki = scale * self.ki
+        if float(self.kaw) < 0.0:
+            raise ValueError(f"kaw must be non-negative, got {self.kaw}")
+        if self.omega_slew_max is not None and float(self.omega_slew_max) < 0.0:
+            raise ValueError(f"omega_slew_max must be non-negative, got {self.omega_slew_max}")
+        if self.tau_rate_max is not None and float(self.tau_rate_max) < 0.0:
+            raise ValueError(f"tau_rate_max must be non-negative, got {self.tau_rate_max}")
+        if self.tau_max is not None:
+            clip_torque(np.zeros(3), self.tau_max)
 
     def reset(self) -> None:
         self._z[:] = 0.0
+        self._tau_prev = None
+
+    def _limit_torque(self, tau: np.ndarray) -> np.ndarray:
+        return apply_pid_torque_limits(tau, self.torque_limit, self.tau_max)
 
     def command(
         self,
@@ -310,20 +420,49 @@ class PIDAttitudeController:
         omega_des = np.zeros(3) if omega_des is None else np.asarray(omega_des, dtype=float).reshape(3)
         e_q = attitude_error_vector(q, q_des)
         e_w = omega - omega_des
-        integrate = np.linalg.norm(e_q) <= self.integral_gate
-        z_next = self._z + e_q * dt if integrate else self._z.copy()
-        max_z = self.integral_limit
-        n = np.linalg.norm(z_next)
-        if n > max_z > 0.0:
-            z_next *= max_z / n
-        tau = -np.asarray(self.kp) @ e_q - np.asarray(self.kd) @ e_w - np.asarray(self.ki) @ z_next
+        kp = np.asarray(self.kp)
+        kd = np.asarray(self.kd)
+        ki = np.asarray(self.ki)
+        tau_unsat = -kp @ e_q - kd @ e_w - ki @ self._z
         if self.gyroscopic_cancel:
-            tau = tau + np.cross(omega, self.inertia @ omega)
-        tau = _saturate(tau, self.torque_limit)
-        # Anti-windup: freeze the integrator while the command is saturated.
-        if self.torque_limit is None or np.linalg.norm(tau) < self.torque_limit * (1.0 - 1e-9):
-            self._z = z_next
+            tau_unsat = tau_unsat + np.cross(omega, self.inertia @ omega)
+        tau = self._limit_torque(tau_unsat)
+        tau = shape_pid_command(
+            tau,
+            dt=dt,
+            tau_prev=self._tau_prev,
+            tau_rate_max=self.tau_rate_max,
+            omega=omega,
+            omega_slew_max=self.omega_slew_max,
+        )
+        tau = self._limit_torque(tau)
+        self._update_integrator(e_q, tau_unsat, tau, dt)
+        self._tau_prev = tau.copy()
         return tau
+
+    def _update_integrator(
+        self,
+        e_q: np.ndarray,
+        tau_unsat: np.ndarray,
+        tau: np.ndarray,
+        dt: float,
+    ) -> None:
+        ki = np.asarray(self.ki)
+        if not _ki_is_active(ki) or dt <= 0.0:
+            return
+        gated = float(np.linalg.norm(e_q)) <= self.integral_gate
+        excess = tau_unsat - tau
+        sat_tol = 1e-15 + 1e-9 * max(float(np.linalg.norm(tau_unsat)), 1e-15)
+        saturated = float(np.linalg.norm(excess)) > sat_tol
+        z_dot = np.zeros(3)
+        if gated:
+            # Conditional: freeze when extra integral torque would deepen saturation.
+            wind = saturated and float(excess @ (ki @ e_q)) < 0.0
+            if not wind:
+                z_dot = e_q
+            if saturated:
+                z_dot = z_dot + _backcalc_z_dot(ki, tau_unsat, tau, float(self.kaw))
+        self._z = _clamp_integral(self._z + z_dot * dt, self.integral_limit)
 
 
 @dataclass

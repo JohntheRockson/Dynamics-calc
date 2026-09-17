@@ -3,22 +3,25 @@
 import numpy as np
 import pytest
 
+from attitude_sim.actuators import clip_torque, make_actuator
 from attitude_sim.controls import (
     DEFAULT_TORQUE_LIMIT,
     LQR_THETA_REF,
     AttitudeLQR,
     LQRAttitudeController,
     PIDAttitudeController,
+    apply_pid_torque_limits,
     bryson_lqr_weights,
     care_residual,
     design_attitude_lqr,
     linearize_attitude,
     make_controller,
     pid_gains_from_wn,
+    shape_pid_command,
     solve_care,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
-from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
+from attitude_sim.quaternions import attitude_error_vector, axis_angle_to_quat, geodesic_angle
 
 
 def _inertia() -> np.ndarray:
@@ -241,3 +244,190 @@ def test_controllers_are_double_cover_invariant():
     t_lqr = lqr.command(q, omega, q_des, dt=0.01)
     np.testing.assert_allclose(t_lqr, lqr.command(-q, omega, q_des, dt=0.01), atol=1e-15)
     np.testing.assert_allclose(t_lqr, lqr.command(q, omega, -q_des, dt=0.01), atol=1e-15)
+
+
+def _fixed_error_pid_loop(pid, q, q_des, n, dt=0.01, omega=None):
+    """Call PID on a frozen attitude; return torque and integrator histories."""
+    omega = np.zeros(3) if omega is None else np.asarray(omega, dtype=float).reshape(3)
+    pid.reset()
+    taus = []
+    zs = []
+    for _ in range(n):
+        taus.append(pid.command(q, omega, q_des, dt=dt).copy())
+        zs.append(pid._z.copy())
+    return np.asarray(taus), np.asarray(zs)
+
+
+def test_pid_integrator_does_not_windup_euclidean_saturation():
+    """Sustained |τ| saturation must not grow z like ∫ e_q dt (clamp disabled)."""
+    J = _inertia()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.array([1.0, 0.0, 0.0]), 0.16)
+    e_q = attitude_error_vector(q, q_des)
+    assert np.linalg.norm(e_q) < 0.10  # inside the default gate
+    lim = 5e-4
+    dt = 0.01
+    t_final = 40.0
+    n = round(t_final / dt)
+    pid = PIDAttitudeController(
+        J,
+        torque_limit=lim,
+        tau_max=None,
+        integral_limit=1e6,
+        integral_gate=1.0,
+        kaw=0.0,
+        gyroscopic_cancel=False,
+    )
+    taus, zs = _fixed_error_pid_loop(pid, q, q_des, n, dt=dt)
+    assert np.all(np.linalg.norm(taus, axis=1) <= lim * (1.0 + 1e-9))
+    assert np.mean(np.linalg.norm(taus, axis=1) >= lim * (1.0 - 1e-9)) > 0.95
+    naive = np.linalg.norm(e_q) * t_final
+    assert naive > 1.0
+    assert np.linalg.norm(zs[-1]) < 0.05 * naive
+    # Freeze: after the first saturated sample, z does not keep integrating.
+    np.testing.assert_allclose(zs[-1], zs[1], atol=1e-12)
+
+
+def test_pid_integrator_does_not_windup_per_axis_clip():
+    """Per-axis clip_torque saturation (no Euclidean ball) also freezes Ki."""
+    J = _inertia()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.array([1.0, 0.0, 0.0]), 0.16)
+    e_q = attitude_error_vector(q, q_des)
+    tau_max = np.array([4e-4, 1.0, 1.0])
+    dt = 0.01
+    t_final = 30.0
+    n = round(t_final / dt)
+    pid = PIDAttitudeController(
+        J,
+        torque_limit=None,
+        tau_max=tau_max,
+        integral_limit=1e6,
+        integral_gate=1.0,
+        kaw=0.0,
+        gyroscopic_cancel=False,
+    )
+    taus, zs = _fixed_error_pid_loop(pid, q, q_des, n, dt=dt)
+    assert np.all(np.abs(taus) <= tau_max * (1.0 + 1e-9))
+    assert np.max(np.abs(taus[:, 0])) >= tau_max[0] * (1.0 - 1e-9)
+    naive = np.linalg.norm(e_q) * t_final
+    assert np.linalg.norm(zs[-1]) < 0.05 * naive
+    np.testing.assert_allclose(zs[-1], zs[1], atol=1e-12)
+    # Same box as make_actuator / clip_torque; not a Euclidean ball.
+    act = make_actuator(tau_max=tau_max)
+    act.reset()
+    np.testing.assert_allclose(act.apply(taus[-1], dt), clip_torque(taus[-1], tau_max))
+    unsat = apply_pid_torque_limits(np.array([0.05, 0.0, 0.0]), None, tau_max)
+    np.testing.assert_allclose(unsat, clip_torque(np.array([0.05, 0.0, 0.0]), tau_max))
+
+
+def test_pid_backcalculation_bounded_under_saturation():
+    """kaw > 0 back-calculates a finite z; still no ∫e wind-up under saturation."""
+    J = _inertia()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), 0.16)
+    e_q = attitude_error_vector(q, q_des)
+    lim = 5e-4
+    dt = 0.01
+    t_final = 20.0
+    n = round(t_final / dt)
+    pid = PIDAttitudeController(
+        J,
+        torque_limit=lim,
+        integral_limit=1e6,
+        integral_gate=1.0,
+        kaw=8.0,
+        gyroscopic_cancel=False,
+    )
+    _taus, zs = _fixed_error_pid_loop(pid, q, q_des, n, dt=dt)
+    naive = np.linalg.norm(e_q) * t_final
+    # Back-calc tracks a finite Ki⁻¹(τ_unsat − τ_sat); it must not keep integrating e_q.
+    assert np.linalg.norm(zs[-1]) < 0.5 * naive
+    np.testing.assert_allclose(zs[-1], zs[-50], atol=1e-4)
+
+
+def test_pid_ki_zero_skips_integrator():
+    J = _inertia()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.12)
+    pid = PIDAttitudeController(J, ki=0.0, torque_limit=None, integral_gate=1.0)
+    _taus, zs = _fixed_error_pid_loop(pid, q, q_des, 200, dt=0.01)
+    np.testing.assert_allclose(zs, 0.0, atol=1e-15)
+
+
+def test_pid_per_axis_clip_is_not_euclidean():
+    J = _inertia()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.array([1.0, 1.0, 0.0]), np.deg2rad(75.0))
+    pid = PIDAttitudeController(
+        J,
+        torque_limit=None,
+        tau_max=0.005,
+        ki=0.0,
+        gyroscopic_cancel=False,
+    )
+    tau = pid.command(q, np.zeros(3), q_des, dt=0.01)
+    np.testing.assert_allclose(tau, clip_torque(tau, 0.005))
+    # Independent axes: a [1,1,0] error saturates both wheels, ‖τ‖ > 0.005.
+    assert np.linalg.norm(tau) > 0.005
+    assert np.max(np.abs(tau)) <= 0.005 + 1e-12
+
+
+def test_shape_pid_command_pass_through_and_torque_rate():
+    tau = np.array([0.04, -0.03, 0.01])
+    np.testing.assert_allclose(shape_pid_command(tau, dt=0.01), tau)
+    prev = np.zeros(3)
+    dt = 0.01
+    limited = shape_pid_command(tau, dt=dt, tau_prev=prev, tau_rate_max=0.5)
+    np.testing.assert_allclose(np.linalg.norm(limited - prev) / dt, 0.5)
+    np.testing.assert_allclose(limited / np.linalg.norm(limited), tau / np.linalg.norm(tau))
+    frozen = shape_pid_command(tau, dt=dt, tau_prev=prev, tau_rate_max=0.0)
+    np.testing.assert_allclose(frozen, prev)
+    with pytest.raises(ValueError, match="tau_rate_max"):
+        shape_pid_command(tau, dt=dt, tau_rate_max=-1.0)
+
+
+def test_shape_pid_command_eigenaxis_slew_strips_spinup():
+    omega = np.array([0.0, 0.0, 2.0])
+    tau = np.array([0.01, 0.0, 0.02])  # +z power would increase ‖ω‖
+    out = shape_pid_command(tau, dt=0.01, omega=omega, omega_slew_max=0.5)
+    assert abs(out[2]) < abs(tau[2])
+    assert out[2] <= 1e-12
+    np.testing.assert_allclose(out[:2], tau[:2])
+    # Already below the cap: unchanged.
+    slow = shape_pid_command(tau, dt=0.01, omega=np.array([0.0, 0.0, 0.1]), omega_slew_max=0.5)
+    np.testing.assert_allclose(slow, tau)
+    with pytest.raises(ValueError, match="omega_slew_max"):
+        shape_pid_command(tau, dt=0.01, omega_slew_max=-0.1)
+
+
+def test_pid_uses_command_shaping_torque_rate():
+    J = _inertia()
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des_pos = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.5)
+    q_des_neg = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), -0.5)
+    dt = 0.01
+    rate = 0.05
+    kwargs = dict(torque_limit=None, ki=0.0, gyroscopic_cancel=False)
+    pid = PIDAttitudeController(J, tau_rate_max=rate, **kwargs)
+    pid.reset()
+    t0 = pid.command(q, np.zeros(3), q_des_pos, dt=dt)
+    t1 = pid.command(q, np.zeros(3), q_des_neg, dt=dt)
+    assert np.linalg.norm(t1 - t0) <= rate * dt * (1.0 + 1e-9)
+    raw = PIDAttitudeController(J, **kwargs)
+    raw.reset()
+    r0 = raw.command(q, np.zeros(3), q_des_pos, dt=dt)
+    r1 = raw.command(q, np.zeros(3), q_des_neg, dt=dt)
+    assert np.linalg.norm(r1 - r0) > rate * dt
+
+
+def test_pid_rejects_negative_anti_windup_knobs():
+    J = _inertia()
+    with pytest.raises(ValueError, match="kaw"):
+        PIDAttitudeController(J, kaw=-1.0)
+    with pytest.raises(ValueError, match="omega_slew_max"):
+        PIDAttitudeController(J, omega_slew_max=-0.1)
+    with pytest.raises(ValueError, match="tau_rate_max"):
+        PIDAttitudeController(J, tau_rate_max=-0.1)
+    with pytest.raises(ValueError, match="non-negative"):
+        PIDAttitudeController(J, tau_max=-0.01)

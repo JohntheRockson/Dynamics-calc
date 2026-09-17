@@ -34,10 +34,15 @@ LQR feeds \(\delta\theta\).
 | \tau | \le \tau_{\max}.
 \]
 
-\(z=\int e_{q}\,dt\) with a norm clamp \(\|z\|\le z_{\max}\) and two anti-windup
-rules: integrate only when \(\|e_{q}\|\) is inside a small gate, and freeze \(z\)
-while the command is saturated.  Gyroscopic cancellation and \(\tau_{\max}\) are
-optional (`gyroscopic_cancel`, `torque_limit`).
+\(z=\int e_{q}\,dt\) with a norm clamp \(\|z\|\le z_{\max}\).  Optional \(K_i\)
+anti-windup is conditional integration plus optional back-calculation: integrate
+only when \(\|e_{q}\|\) is inside a small gate, freeze \(z\) when Euclidean
+\(|\tau|\) or per-axis `clip_torque` (`tau_max`) is saturated in the winding
+direction, and if `kaw>0` unwind with \(\dot z_{\mathrm{aw}}=k_{\mathrm{aw}}
+K_i^{-1}(\tau_{\mathrm{unsat}}-\tau_{\mathrm{sat}})\).  Gyroscopic cancellation
+and the Euclidean ball are optional (`gyroscopic_cancel`, `torque_limit`).
+Optional `shape_pid_command` knobs `omega_slew_max` / `tau_rate_max` soft-limit
+eigenaxis rate and \(|\dot\tau|\).
 
 Because \(e_{q}\approx\theta/2\), matching a rotation-vector PD
 \(\tau=- \omega_{n}^{2} J\,\theta - 2\zeta\omega_{n} J\,\omega\) gives the
@@ -142,3 +147,5 @@ python -m attitude_sim --controller pid --estimator truth \
 right geometry for independent wheels; it is *not* the Euclidean ball used
 inside the controllers.  Both can be active: the controller still saturates
 in \(|\tau|\), then the wheels clip each axis and (optionally) lag.
+PID anti-windup can apply the same `clip_torque` box on the command (`tau_max`)
+so \(K_i\) sees per-axis saturation, not only the Euclidean ball.

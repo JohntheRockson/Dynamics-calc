@@ -7,6 +7,7 @@ from attitude_sim.controls import (
     PIDAttitudeController,
     design_attitude_lqr,
     make_controller,
+    shape_pid_command,
     solve_care,
 )
 from attitude_sim.disturbances import (
@@ -89,6 +90,7 @@ __all__ = [
     "rkmk4_step",
     "run_sim",
     "run_slew",
+    "shape_pid_command",
     "solve_care",
     "step_rigid_body",
     "triad_attitude",
