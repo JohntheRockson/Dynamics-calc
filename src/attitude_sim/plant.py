@@ -54,9 +54,11 @@ same principal-axis DCM:
 
 :func:`scale_principal_inertia` is the deterministic reconstruction (SPD
 and triangle inequalities are re-validated).  :func:`perturb_principal_inertia`
-samples independent ``εᵢ`` with a uniform-scale fallback.  Closed-loop
-runtime Monte Carlo stays in SimLab; the plant helpers exist so tests
-share one physical perturbation path.
+samples independent ``εᵢ`` with a uniform-scale fallback.  SimLab's
+``monte_carlo.perturb_inertia`` is the runtime sampler; these helpers are
+the plant-owned reconstruction (same ``R diag(s ⊙ I) Rᵀ``) used by
+torque-free I-mismatch tests.  Work–energy / spherical closed-form
+checks live in ``tests/test_plant.py``.
 
 RK4 step
 --------
@@ -110,9 +112,13 @@ def principal_moments_and_axes(inertia: np.ndarray) -> tuple[np.ndarray, np.ndar
 
     and ``det(axes) = +1``.  ``inertia`` is symmetrized before the
     eigendecomposition; it is not otherwise validated (use
-    :func:`validate_inertia` for SPD / triangle checks).
+    :func:`validate_inertia` for SPD / triangle checks).  Entries must
+    be finite so Monte Carlo-style principal scaling cannot ``eigh`` a
+    NaN tensor.
     """
     J = np.asarray(inertia, dtype=float).reshape(3, 3)
+    if not np.all(np.isfinite(J)):
+        raise ValueError("inertia must be finite")
     J = 0.5 * (J + J.T)
     moments, axes = np.linalg.eigh(J)
     if np.linalg.det(axes) < 0.0:

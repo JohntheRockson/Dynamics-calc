@@ -5,7 +5,8 @@ plant helpers and RK4 invariants only — no controllers or estimators.
 
 Torque-free tolerances are for classical RK4 (not symplectic).  They are
 documented bounds for the scenarios in this file, not machine epsilon.
-The tight fixed-dt cases stay in ``tests/test_plant.py``.
+The tight fixed-dt cases, work–energy trapezoid, and spherical
+constant-torque closed form stay in ``tests/test_plant.py`` (#7).
 """
 
 import numpy as np
@@ -13,7 +14,9 @@ import pytest
 
 from attitude_sim.plant import (
     RigidBody,
+    inertia_from_principal,
     perturb_principal_inertia,
+    principal_moments_and_axes,
     random_principal_scale,
     rk4_step,
     scale_principal_inertia,
@@ -78,6 +81,8 @@ def test_validate_inertia_rejects_nonfinite():
         validate_inertia(J)
     with pytest.raises(ValueError, match="finite"):
         validate_inertia(np.diag([1.0, np.inf, 2.0]))
+    with pytest.raises(ValueError, match="finite"):
+        principal_moments_and_axes(np.full((3, 3), np.nan))
 
 
 def test_rk4_rejects_nonfinite_dt():
@@ -113,6 +118,26 @@ def test_scale_principal_inertia_reconstructs_and_validates():
         scale_principal_inertia(np.diag([1.0, 1.0, 1.5]), [0.5, 0.5, 1.5])
 
 
+def test_scale_principal_inertia_is_mc_reconstruction():
+    """Same ``J' = R diag(s ⊙ I) Rᵀ`` path SimLab ``perturb_inertia`` uses.
+
+    ``scale[i]`` multiplies the *ascending* principal moment, not body-frame
+    ``J_ii``.  Work–energy / spherical-torque closed forms stay in
+    ``tests/test_plant.py`` (#7).
+    """
+    J = validate_inertia(_ASYM_J)
+    s = np.array([0.97, 1.02, 1.04])
+    moments, axes = principal_moments_and_axes(J)
+    via_mc = inertia_from_principal(moments * s, axes)
+    via_plant = scale_principal_inertia(J, s)
+    np.testing.assert_allclose(via_plant, via_mc, atol=1e-12)
+    np.testing.assert_allclose(
+        principal_moments_and_axes(via_plant)[0],
+        moments * s,
+        atol=1e-12,
+    )
+
+
 def test_random_principal_scale_bounds_and_rejects_bad_frac():
     rng = np.random.default_rng(3)
     np.testing.assert_allclose(random_principal_scale(rng, 0.0), np.ones(3))
@@ -133,8 +158,11 @@ def test_perturb_principal_inertia_stays_physical():
         for _ in range(24):
             J = perturb_principal_inertia(J0, INERTIA_FRAC, rng)
             validate_inertia(J)
+            moments0 = np.linalg.eigvalsh(J0)
             moments = np.linalg.eigvalsh(J)
             assert np.all(moments > 0.0)
+            # Independent (or uniform fallback) scales stay inside ±frac.
+            assert np.all(np.abs(moments / moments0 - 1.0) <= INERTIA_FRAC + 1e-12)
             rel = np.linalg.norm(J - J0) / np.linalg.norm(J0)
             assert rel < 3.0 * INERTIA_FRAC + 1e-12
         J_same = perturb_principal_inertia(J0, 0.0, rng)
