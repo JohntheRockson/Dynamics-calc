@@ -9,7 +9,8 @@ state or filter estimates.
 
 Default gains are sized to the M1 smallsat-class plant
 ``J ≈ diag(0.05, 0.06, 0.07) kg·m²`` and actuator ``|τ| ≤ 0.02 N·m``
-(see ``docs/controls.md``).
+(see ``docs/controls.md``).  ``tune_pid_second_order`` and
+``bryson_lqr_costs`` are the auto-tune helpers behind those defaults.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from attitude_sim.quaternions import attitude_error_vector, rotation_vector_erro
 # --- plant-scale defaults (M1 smallsat + 20 mN·m wheels) -------------------
 # Opening 75° PD torque is ~τ_max; 2% settling is a few tens of seconds.
 DEFAULT_TORQUE_LIMIT = 0.02
+# Stock principal moments (kg·m²).  Same numbers as ``sim.default_inertia``.
+CUBESAT_PRINCIPAL_INERTIA = (0.05, 0.06, 0.07)
+PID_SLEW_ANGLE = float(np.deg2rad(75.0))
 PID_WN = 0.5
 PID_ZETA = 1.0
 # Ki = coeff · wn³ J  →  PI zero near wn/4; slow mode still inside a 30 s hold.
@@ -43,6 +47,51 @@ LQR_OMEGA_REF = 0.20  # rad/s
 LQR_TAU_REF = DEFAULT_TORQUE_LIMIT  # N·m
 
 
+def default_cubesat_inertia() -> np.ndarray:
+    """Return a copy of the stock cubesat-scale principal inertia (kg·m²)."""
+    return np.diag(CUBESAT_PRINCIPAL_INERTIA)
+
+
+def as_inertia_ref(I_ref: np.ndarray | float) -> np.ndarray:
+    """Broadcast a scalar / principal 3-vector / 3×3 into an SPD inertia."""
+    arr = np.asarray(I_ref, dtype=float)
+    if arr.ndim == 0:
+        value = float(arr)
+        if value <= 0.0:
+            raise ValueError(f"I_ref must be positive, got {value}")
+        return value * np.eye(3)
+    if arr.shape == (3,):
+        if np.any(arr <= 0.0):
+            raise ValueError(f"I_ref principal moments must be positive, got {arr}")
+        return np.diag(arr)
+    if arr.shape == (3, 3):
+        J = 0.5 * (arr + arr.T)
+        if np.any(np.linalg.eigvalsh(J) <= 0.0):
+            raise ValueError("I_ref must be symmetric positive definite")
+        return J
+    raise ValueError(f"I_ref must be scalar, 3-vector, or 3x3; got shape {arr.shape}")
+
+
+def _require_positive(name: str, value: float) -> float:
+    out = float(value)
+    if not np.isfinite(out) or out <= 0.0:
+        raise ValueError(f"{name} must be a positive finite number, got {value}")
+    return out
+
+
+def is_spd(matrix: np.ndarray, *, semi: bool = False, atol: float = 1e-12) -> bool:
+    """True if ``matrix`` is symmetric and positive (semi)definite."""
+    arr = np.asarray(matrix, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+        return False
+    if not np.allclose(arr, arr.T, atol=atol, rtol=0.0):
+        return False
+    eig = np.linalg.eigvalsh(0.5 * (arr + arr.T))
+    if semi:
+        return bool(np.all(eig >= -atol))
+    return bool(np.all(eig > atol))
+
+
 def _as_pd_gain(value: np.ndarray | float, inertia: np.ndarray) -> np.ndarray:
     """Broadcast a scalar / 3-vector / 3x3 into a 3x3 body-frame gain."""
     arr = np.asarray(value, dtype=float)
@@ -53,6 +102,39 @@ def _as_pd_gain(value: np.ndarray | float, inertia: np.ndarray) -> np.ndarray:
     if arr.shape == (3, 3):
         return arr
     raise ValueError(f"gain must be scalar, 3-vector, or 3x3; got shape {arr.shape}")
+
+
+def tune_pid_second_order(
+    I_ref: np.ndarray | float,
+    wn: float = PID_WN,
+    zeta: float = PID_ZETA,
+    *,
+    ki_wn_coeff: float = PID_KI_WN_COEFF,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Second-order matching for quaternion-vector PID on a cubesat-scale plant.
+
+    ``I_ref`` is a scalar isotropic inertia, principal 3-vector, or SPD 3×3.
+    Because the law feeds ``e_q ≈ θ/2``, matching the rotation-vector PD
+
+        τ = −wn² J θ − 2 ζ wn J ω
+
+    requires
+
+        Kp = 2 wn² J ,   Kd = 2 ζ wn J ,   Ki = ki_wn_coeff · wn³ J.
+
+    ``ki_wn_coeff = 0`` is PD-only (``Ki = 0``).  Gains are SPD whenever
+    ``J`` is SPD and ``wn, ζ > 0`` (and ``ki_wn_coeff ≥ 0``).
+    """
+    J = as_inertia_ref(I_ref)
+    wn_v = _require_positive("wn", wn)
+    zeta_v = _require_positive("zeta", zeta)
+    c = float(ki_wn_coeff)
+    if not np.isfinite(c) or c < 0.0:
+        raise ValueError(f"ki_wn_coeff must be a non-negative finite number, got {ki_wn_coeff}")
+    kp = 2.0 * (wn_v**2) * J
+    kd = 2.0 * zeta_v * wn_v * J
+    ki = c * (wn_v**3) * J
+    return kp, kd, ki
 
 
 def pid_gains_from_wn(
@@ -66,12 +148,32 @@ def pid_gains_from_wn(
     Matching a rotation-vector PD ``τ = −wn² J θ − 2 ζ wn J ω`` requires
 
         Kp = 2 wn² J ,   Kd = 2 ζ wn J ,   Ki = ki_wn_coeff · wn³ J.
+
+    Thin wrapper around :func:`tune_pid_second_order`.
     """
-    J = np.asarray(inertia, dtype=float).reshape(3, 3)
-    kp = 2.0 * (wn**2) * J
-    kd = 2.0 * zeta * wn * J
-    ki = ki_wn_coeff * (wn**3) * J
-    return kp, kd, ki
+    return tune_pid_second_order(inertia, wn, zeta, ki_wn_coeff=ki_wn_coeff)
+
+
+def recommended_pid_wn(
+    I_ref: np.ndarray | float,
+    tau_max: float = DEFAULT_TORQUE_LIMIT,
+    theta_slew: float = PID_SLEW_ANGLE,
+) -> float:
+    """``wn`` that puts the opening PD torque on ``τ_max``.
+
+    Peak rotation-vector PD is ``|τ| ≈ wn² I θ``, so
+
+        wn = sqrt(τ_max / (I_char θ_slew))
+
+    with ``I_char = λ_max(J)`` (most sluggish principal axis).  On the
+    stock plant this is ``≈ 0.47 rad/s``; shipped ``PID_WN = 0.5`` is
+    that number rounded to a round design value.
+    """
+    J = as_inertia_ref(I_ref)
+    tau = _require_positive("tau_max", tau_max)
+    theta = _require_positive("theta_slew", theta_slew)
+    i_char = float(np.max(np.linalg.eigvalsh(J)))
+    return float(np.sqrt(tau / (i_char * theta)))
 
 
 def bryson_lqr_weights(
@@ -80,7 +182,139 @@ def bryson_lqr_weights(
     tau_ref: float = LQR_TAU_REF,
 ) -> tuple[float, float, float]:
     """Return ``(q_att, q_rate, r_torque)`` from Bryson reference magnitudes."""
-    return 1.0 / (theta_ref**2), 1.0 / (omega_ref**2), 1.0 / (tau_ref**2)
+    th = _require_positive("theta_ref", theta_ref)
+    om = _require_positive("omega_ref", omega_ref)
+    tau = _require_positive("tau_ref", tau_ref)
+    return 1.0 / (th**2), 1.0 / (om**2), 1.0 / (tau**2)
+
+
+def bryson_lqr_costs(
+    theta_ref: float = LQR_THETA_REF,
+    omega_ref: float = LQR_OMEGA_REF,
+    tau_ref: float = LQR_TAU_REF,
+    *,
+    q_att: float | None = None,
+    q_rate: float | None = None,
+    r_torque: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bryson ``(Q, R)`` on ``x = [δθ, ω]``, ``u = τ``.
+
+    Both matrices are symmetric positive definite:
+
+        Q = diag(1/θ_ref² × 3, 1/ω_ref² × 3),   R = (1/τ_ref²) I₃
+
+    Optional ``q_att`` / ``q_rate`` / ``r_torque`` override the scalar
+    weights after the reference-to-weight conversion.  This is the helper
+    used by :func:`design_attitude_lqr` defaults.
+    """
+    qa, qr, rt = bryson_lqr_weights(theta_ref, omega_ref, tau_ref)
+    if q_att is None:
+        q_att = qa
+    if q_rate is None:
+        q_rate = qr
+    if r_torque is None:
+        r_torque = rt
+    q_att = _require_positive("q_att", q_att)
+    q_rate = _require_positive("q_rate", q_rate)
+    r_torque = _require_positive("r_torque", r_torque)
+    Q = np.diag([q_att] * 3 + [q_rate] * 3)
+    R = r_torque * np.eye(3)
+    return Q, R
+
+
+def lqr_second_order_equiv(
+    K: np.ndarray,
+    inertia: np.ndarray | float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-axis ``(wn, ζ)`` implied by ``τ = −K_θ δθ − K_ω ω`` on ``J``.
+
+    Uses the principal-axis reading ``wn_i² = K_θ,ii / J_ii``,
+    ``2 ζ_i wn_i = K_ω,ii / J_ii``.  Meaningful when ``K_θ``, ``K_ω``,
+    and ``J`` share a principal frame (the stock cubesat plant).
+    """
+    J = as_inertia_ref(inertia)
+    gain = np.asarray(K, dtype=float)
+    if gain.shape != (3, 6):
+        raise ValueError(f"LQR gain K must be 3x6; got {gain.shape}")
+    j_diag = np.diag(J)
+    if np.any(j_diag <= 0.0):
+        raise ValueError("lqr_second_order_equiv needs positive principal inertias")
+    k_theta = np.diag(gain[:, :3])
+    k_omega = np.diag(gain[:, 3:])
+    if np.any(k_theta <= 0.0):
+        raise ValueError("K_θ diagonal must be positive for a real wn")
+    wn = np.sqrt(k_theta / j_diag)
+    zeta = k_omega / (2.0 * wn * j_diag)
+    return wn, zeta
+
+
+@dataclass(frozen=True)
+class CubesatGainReport:
+    """Numerical PID / LQR defaults for the stock cubesat-scale plant.
+
+    Produced by :func:`cubesat_gain_report`.  Arrays are copies.
+    """
+
+    inertia: np.ndarray
+    tau_max: float
+    wn: float
+    zeta: float
+    ki_wn_coeff: float
+    kp: np.ndarray
+    kd: np.ndarray
+    ki: np.ndarray
+    recommended_wn: float
+    theta_ref: float
+    omega_ref: float
+    tau_ref: float
+    Q: np.ndarray
+    R: np.ndarray
+    lqr_wn_equiv: np.ndarray
+    lqr_zeta_equiv: np.ndarray
+
+
+def cubesat_gain_report(
+    I_ref: np.ndarray | float | None = None,
+    *,
+    wn: float = PID_WN,
+    zeta: float = PID_ZETA,
+    ki_wn_coeff: float = PID_KI_WN_COEFF,
+    tau_max: float = DEFAULT_TORQUE_LIMIT,
+    theta_ref: float = LQR_THETA_REF,
+    omega_ref: float = LQR_OMEGA_REF,
+    tau_ref: float | None = None,
+    theta_slew: float = PID_SLEW_ANGLE,
+) -> CubesatGainReport:
+    """Snapshot recommended PID gains and Bryson ``Q, R`` vs a plant.
+
+    Defaults are the repo cubesat inertia and ``τ_max``.  ``tau_ref``
+    tracks ``tau_max`` unless overridden so a wheel resize retunes ``R``.
+    """
+    J = default_cubesat_inertia() if I_ref is None else as_inertia_ref(I_ref)
+    tau_lim = _require_positive("tau_max", tau_max)
+    tau_r = tau_lim if tau_ref is None else _require_positive("tau_ref", tau_ref)
+    kp, kd, ki = tune_pid_second_order(J, wn, zeta, ki_wn_coeff=ki_wn_coeff)
+    Q, R = bryson_lqr_costs(theta_ref, omega_ref, tau_r)
+    K, _P, _A, _B = design_attitude_lqr(J, Q=Q, R=R)
+    wn_lqr, zeta_lqr = lqr_second_order_equiv(K, J)
+    return CubesatGainReport(
+        inertia=J.copy(),
+        tau_max=tau_lim,
+        wn=float(wn),
+        zeta=float(zeta),
+        ki_wn_coeff=float(ki_wn_coeff),
+        kp=np.asarray(kp, dtype=float).copy(),
+        kd=np.asarray(kd, dtype=float).copy(),
+        ki=np.asarray(ki, dtype=float).copy(),
+        recommended_wn=recommended_pid_wn(J, tau_max=tau_lim, theta_slew=theta_slew),
+        theta_ref=float(theta_ref),
+        omega_ref=float(omega_ref),
+        tau_ref=tau_r,
+        Q=np.asarray(Q, dtype=float).copy(),
+        R=np.asarray(R, dtype=float).copy(),
+        lqr_wn_equiv=np.asarray(wn_lqr, dtype=float).copy(),
+        lqr_zeta_equiv=np.asarray(zeta_lqr, dtype=float).copy(),
+    )
 
 
 def linearize_attitude(inertia: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -229,8 +463,8 @@ def design_attitude_lqr(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Design rest-linearized attitude LQR.  Returns ``(K, P, A, B)``.
 
-    Default ``Q``, ``R`` are the Bryson placeholders on ``x = [δθ, ω]``,
-    ``u = τ``.  ``K`` is 3×6 so ``τ = −K x``.
+    Default ``Q``, ``R`` come from :func:`bryson_lqr_costs` on
+    ``x = [δθ, ω]``, ``u = τ``.  ``K`` is 3×6 so ``τ = −K x``.
     """
     if q_att is None or q_rate is None or r_torque is None:
         qa, qr, rt = bryson_lqr_weights()
@@ -241,12 +475,13 @@ def design_attitude_lqr(
         if r_torque is None:
             r_torque = rt
     A, B = linearize_attitude(inertia)
+    Q_def, R_def = bryson_lqr_costs(q_att=q_att, q_rate=q_rate, r_torque=r_torque)
     if Q is None:
-        Q = np.diag([float(q_att)] * 3 + [float(q_rate)] * 3)
+        Q = Q_def
     else:
         Q = np.asarray(Q, dtype=float)
     if R is None:
-        R = float(r_torque) * np.eye(3)
+        R = R_def
     else:
         R = np.asarray(R, dtype=float)
     P = solve_care(A, B, Q, R, method=method)
@@ -518,12 +753,13 @@ class LQRAttitudeController:
         scale = float(self.gain_scale)
         if scale <= 0.0:
             raise ValueError("gain_scale must be positive")
+        Q_def, R_def = bryson_lqr_costs(q_att=self.q_att, q_rate=self.q_rate, r_torque=self.r_torque)
         if self.Q is None:
-            self.Q = np.diag([self.q_att] * 3 + [self.q_rate] * 3)
+            self.Q = Q_def
         else:
             self.Q = np.asarray(self.Q, dtype=float)
         if self.R is None:
-            self.R = self.r_torque * np.eye(3)
+            self.R = R_def
         else:
             self.R = np.asarray(self.R, dtype=float)
         if self.K is None:
