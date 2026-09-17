@@ -197,6 +197,7 @@ def run_open_loop_mekf_nees(
     for k in range(n):
         t[k] = k * dt
         x = mekf_error_state(q, filt.q, gyro.bias, filt.bias)
+        assert filt.P is not None
         full[k], att[k], bias[k] = split_mekf_nees(x, filt.P)
         if k == n - 1:
             break
