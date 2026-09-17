@@ -12,10 +12,12 @@ import numpy as np
 from attitude_sim.actuators import make_actuator, parse_tau_max
 from attitude_sim.controls import make_controller
 from attitude_sim.disturbances import (
+    AerodynamicTorque,
     CircularOrbit,
     EnvironmentalTorques,
     GravityGradientTorque,
     ResidualDipoleTorque,
+    SolarRadiationPressureTorque,
 )
 from attitude_sim.estimation import (
     ComplementaryFilter,
@@ -38,10 +40,16 @@ SLEW_AXIS = np.array([0.2, 0.5, 0.84])
 DETUMBLE_Q0_AXIS = np.array([0.4, 0.2, 0.9])
 DETUMBLE_OMEGA0 = np.array([0.55, -0.40, 0.30])
 DIPOLE_MODELS = ("tilted", "orbit_normal")
-# LEO-scale circular orbit used only when gravity-gradient / residual-dipole
-# flags are on. Defaults preserve the prior constant-τ_d-only plant.
+SRP_ECLIPSE_MODES = ("off", "on", "cylindrical")
+# LEO-scale circular orbit used only when env-model flags are on.
+# Defaults preserve the prior constant-τ_d-only plant.
 DEFAULT_ORBIT_RADIUS = 7.0e6
 DEFAULT_DIPOLE_M = np.array([0.10, 0.0, 0.0])
+# Smallsat-class panel for opt-in aero / SRP (ram cannonball / absorbing plate).
+DEFAULT_PANEL_AREA = 0.4
+DEFAULT_PANEL_RCP = np.array([0.05, 0.0, 0.02])
+DEFAULT_AERO_CD = 2.2
+DEFAULT_SRP_CR = 1.0
 
 
 def default_inertia() -> np.ndarray:
@@ -69,11 +77,18 @@ class SimConfig:
     tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gravity_gradient: bool = False
     residual_dipole: bool = False
+    aerodynamic: bool = False
+    srp: bool = False
     orbit_radius: float = DEFAULT_ORBIT_RADIUS
     orbit_inclination_deg: float = 0.0
     orbit_raan_deg: float = 0.0
     dipole_m: np.ndarray = field(default_factory=lambda: DEFAULT_DIPOLE_M.copy())
     dipole_model: str = "tilted"
+    panel_area: float = DEFAULT_PANEL_AREA
+    panel_r_cp: np.ndarray = field(default_factory=lambda: DEFAULT_PANEL_RCP.copy())
+    aero_cd: float = DEFAULT_AERO_CD
+    srp_cr: float = DEFAULT_SRP_CR
+    srp_eclipse: str = "off"
     gyro_sigma_v: float = 5e-4
     gyro_sigma_u: float = 1e-6
     gyro_bias: np.ndarray = field(default_factory=lambda: np.array([0.002, -0.001, 0.0015]))
@@ -130,11 +145,18 @@ def make_scenario_config(
     actuator_tau: float | None = None,
     gravity_gradient: bool = False,
     residual_dipole: bool = False,
+    aerodynamic: bool = False,
+    srp: bool = False,
     orbit_radius: float | None = None,
     orbit_inclination_deg: float | None = None,
     orbit_raan_deg: float | None = None,
     dipole_m: np.ndarray | None = None,
     dipole_model: str | None = None,
+    panel_area: float | None = None,
+    panel_r_cp: np.ndarray | None = None,
+    aero_cd: float | None = None,
+    srp_cr: float | None = None,
+    srp_eclipse: str | None = None,
     use_mag: bool = True,
     use_sun: bool = True,
     coarse_init: bool = False,
@@ -153,9 +175,9 @@ def make_scenario_config(
     truth sensors *and* — via ``make_sim_estimator`` — the MEKF Farrenkopf
     ``Q_d``.  ``None`` keeps the ``SimConfig`` defaults.
 
-    ``gravity_gradient`` / ``residual_dipole`` default off so the stock
-    demos stay on the constant-``τ_d`` plant.  Orbit / dipole knobs are
-    stored even when the models are off.
+    ``gravity_gradient`` / ``residual_dipole`` / ``aerodynamic`` / ``srp``
+    default off so the stock demos stay on the constant-``τ_d`` plant.
+    Orbit / dipole / panel knobs are stored even when the models are off.
     """
     name = scenario.lower()
     if name not in SCENARIOS:
@@ -176,6 +198,8 @@ def make_scenario_config(
             actuator_tau=actuator_tau,
             gravity_gradient=gravity_gradient,
             residual_dipole=residual_dipole,
+            aerodynamic=aerodynamic,
+            srp=srp,
             use_mag=use_mag,
             use_sun=use_sun,
             coarse_init=coarse_init,
@@ -197,6 +221,8 @@ def make_scenario_config(
             actuator_tau=actuator_tau,
             gravity_gradient=gravity_gradient,
             residual_dipole=residual_dipole,
+            aerodynamic=aerodynamic,
+            srp=srp,
             use_mag=use_mag,
             use_sun=use_sun,
             coarse_init=coarse_init,
@@ -215,6 +241,16 @@ def make_scenario_config(
         cfg.dipole_m = np.asarray(dipole_m, dtype=float).reshape(3)
     if dipole_model is not None:
         cfg.dipole_model = str(dipole_model)
+    if panel_area is not None:
+        cfg.panel_area = float(panel_area)
+    if panel_r_cp is not None:
+        cfg.panel_r_cp = np.asarray(panel_r_cp, dtype=float).reshape(3)
+    if aero_cd is not None:
+        cfg.aero_cd = float(aero_cd)
+    if srp_cr is not None:
+        cfg.srp_cr = float(srp_cr)
+    if srp_eclipse is not None:
+        cfg.srp_eclipse = str(srp_eclipse)
     if gyro_sigma_v is not None:
         cfg.gyro_sigma_v = float(gyro_sigma_v)
     if gyro_sigma_u is not None:
@@ -247,15 +283,31 @@ def make_sim_estimator(
     return make_estimator(mode, q0=q0)
 
 
-def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
-    """Optional gravity-gradient / residual-dipole models (default off).
+def _env_models_requested(cfg: SimConfig) -> bool:
+    return bool(cfg.gravity_gradient or cfg.residual_dipole or cfg.aerodynamic or cfg.srp)
 
-    When both flags are false this returns ``None`` so the closed-loop
+
+def _srp_eclipse_flag(mode: str) -> bool | str:
+    """Map SimLab ``srp_eclipse`` to :class:`SolarRadiationPressureTorque`."""
+    key = str(mode).lower()
+    if key == "off":
+        return False
+    if key == "on":
+        return True
+    if key == "cylindrical":
+        return "cylindrical"
+    raise ValueError(f"srp_eclipse must be one of {SRP_ECLIPSE_MODES}")
+
+
+def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
+    """Optional env models (GG / dipole / aero / SRP; default off).
+
+    When every flag is false this returns ``None`` so the closed-loop
     plant matches the prior constant-``τ_d``-only contract.  Enabled
     models share one bound :class:`CircularOrbit` and are sampled ZOH at
     the left endpoint of each SimLab step (same hold as the actuator).
     """
-    if not cfg.gravity_gradient and not cfg.residual_dipole:
+    if not _env_models_requested(cfg):
         return None
     radius = float(cfg.orbit_radius)
     if not np.isfinite(radius) or radius <= 0.0:
@@ -267,6 +319,21 @@ def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
     model = str(cfg.dipole_model)
     if model not in DIPOLE_MODELS:
         raise ValueError(f"dipole_model must be one of {DIPOLE_MODELS}")
+    eclipse = str(cfg.srp_eclipse)
+    if eclipse not in SRP_ECLIPSE_MODES:
+        raise ValueError(f"srp_eclipse must be one of {SRP_ECLIPSE_MODES}")
+    area = float(cfg.panel_area)
+    cd = float(cfg.aero_cd)
+    cr = float(cfg.srp_cr)
+    if not np.isfinite(area) or area < 0.0:
+        raise ValueError("panel_area must be nonnegative")
+    if not np.isfinite(cd) or cd < 0.0:
+        raise ValueError("aero_cd must be nonnegative")
+    if not np.isfinite(cr) or cr < 0.0:
+        raise ValueError("srp_cr must be nonnegative")
+    r_cp = np.asarray(cfg.panel_r_cp, dtype=float).reshape(3)
+    if not np.all(np.isfinite(r_cp)):
+        raise ValueError("panel_r_cp must be finite")
     orbit = CircularOrbit(
         radius=radius,
         inclination=np.deg2rad(inc),
@@ -280,7 +347,21 @@ def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
             orbit=orbit,
             model=model,
         )
-    return EnvironmentalTorques(gravity_gradient=gg, residual_dipole=mag)
+    aero = None
+    if cfg.aerodynamic:
+        aero = AerodynamicTorque(r_cp, area, cd=cd, orbit=orbit)
+    srp = None
+    if cfg.srp:
+        srp = SolarRadiationPressureTorque(
+            r_cp,
+            area,
+            cr=cr,
+            orbit=orbit,
+            eclipse=_srp_eclipse_flag(eclipse),
+        )
+    return EnvironmentalTorques(
+        gravity_gradient=gg, residual_dipole=mag, aerodynamic=aero, srp=srp
+    )
 
 
 def run_slew(cfg: SimConfig | None = None) -> SimLog:
@@ -507,6 +588,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--aerodynamic",
+        action="store_true",
+        help=(
+            "add panel/box aero τ = r_cp × (−½ ρ v² C_d A n̂) with an exponential "
+            "atmosphere (default: off; prior demos unchanged)"
+        ),
+    )
+    p.add_argument(
+        "--srp",
+        action="store_true",
+        help=(
+            "add SRP τ = r_cp × (P_srp c_r A cosθ û_sun) with an umbra stub "
+            "(default: off; prior demos unchanged)"
+        ),
+    )
+    p.add_argument(
         "--orbit-radius",
         type=float,
         default=DEFAULT_ORBIT_RADIUS,
@@ -537,6 +634,38 @@ def build_parser() -> argparse.ArgumentParser:
         choices=DIPOLE_MODELS,
         default="tilted",
         help="Earth field for --residual-dipole: tilted (default 11.5°) or orbit_normal",
+    )
+    p.add_argument(
+        "--panel-area",
+        type=float,
+        default=DEFAULT_PANEL_AREA,
+        metavar="M2",
+        help="panel area [m²] for --aerodynamic / --srp (default: 0.4)",
+    )
+    p.add_argument(
+        "--panel-rcp",
+        default="0.05,0,0.02",
+        help="body-frame centre of pressure [m] for --aerodynamic / --srp",
+    )
+    p.add_argument(
+        "--aero-cd",
+        type=float,
+        default=DEFAULT_AERO_CD,
+        metavar="CD",
+        help="drag coefficient for --aerodynamic (default: 2.2)",
+    )
+    p.add_argument(
+        "--srp-cr",
+        type=float,
+        default=DEFAULT_SRP_CR,
+        metavar="CR",
+        help="reflectivity coefficient for --srp (1=absorb, default: 1)",
+    )
+    p.add_argument(
+        "--srp-eclipse",
+        choices=SRP_ECLIPSE_MODES,
+        default="off",
+        help="SRP umbra stub: off (sunlit, default), on (force eclipse), cylindrical Earth shadow",
     )
     p.add_argument(
         "--actuator-tau-max",
@@ -603,6 +732,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         tau_dist = _parse_vec3(args.tau_dist, "--tau-dist")
         dipole_m = _parse_vec3(args.dipole_m, "--dipole-m")
+        panel_r_cp = _parse_vec3(args.panel_rcp, "--panel-rcp")
         actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
     except ValueError as exc:
         parser.error(str(exc))
@@ -612,6 +742,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--actuator-tau must be >= 0")
     if args.orbit_radius <= 0.0:
         parser.error("--orbit-radius must be positive")
+    if args.panel_area < 0.0:
+        parser.error("--panel-area must be >= 0")
+    if args.aero_cd < 0.0:
+        parser.error("--aero-cd must be >= 0")
+    if args.srp_cr < 0.0:
+        parser.error("--srp-cr must be >= 0")
     for flag, value in (
         ("--orbit-inc-deg", args.orbit_inc_deg),
         ("--orbit-raan-deg", args.orbit_raan_deg),
@@ -638,11 +774,18 @@ def main(argv: list[str] | None = None) -> int:
         actuator_tau=args.actuator_tau,
         gravity_gradient=args.gravity_gradient,
         residual_dipole=args.residual_dipole,
+        aerodynamic=args.aerodynamic,
+        srp=args.srp,
         orbit_radius=args.orbit_radius,
         orbit_inclination_deg=args.orbit_inc_deg,
         orbit_raan_deg=args.orbit_raan_deg,
         dipole_m=dipole_m,
         dipole_model=args.dipole_model,
+        panel_area=args.panel_area,
+        panel_r_cp=panel_r_cp,
+        aero_cd=args.aero_cd,
+        srp_cr=args.srp_cr,
+        srp_eclipse=args.srp_eclipse,
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         coarse_init=args.coarse_init,
