@@ -63,13 +63,40 @@ Detumble summary (optional; not committed by default):
 python -m attitude_sim --scenario detumble --out-dir outputs --no-gif
 ```
 
+## Monte Carlo robustness sweep
+
+`python -m attitude_sim.monte_carlo` runs **N** closed-loop slews through the same `run_slew` path as the SimLab CLI. Each trial randomizes, within bounds:
+
+- initial attitude (geodesic angle from identity ≤ `--q0-max-deg`) and body rate (cube `±--omega0-max`)
+- sensor noise **seed** (per trial) and a log-uniform **scale** on gyro ARW/RRW and mag/sun σ
+- optional principal-inertia perturbation (`--inertia-frac`, default ±5%; `0` disables)
+
+It does not rewrite the plant, controllers, or estimators. Summary metrics: final geodesic attitude error (deg), a settle-time proxy (first time after which error stays below `--settle-deg`), peak `‖τ‖`, and failure counts (NaN / non-unit quaternion / diverged).
+
+CI only runs a tiny **N=5** smoke (`tests/test_monte_carlo.py`). A larger local sweep:
+
+```bash
+# ~50 trials, default pid + mekf, 40 s, ±5% inertia
+python -m attitude_sim.monte_carlo --n 50 --seed 0
+
+# recruiter-scale local sweep with CSV/JSON
+python -m attitude_sim.monte_carlo --n 200 --seed 1 --estimator mekf \
+    --t-final 40 --inertia-frac 0.05 \
+    --csv outputs/mc_slew.csv --json outputs/mc_slew.json
+
+# faster checkout (truth-state feedback, shorter runs)
+python -m attitude_sim.monte_carlo --n 50 --estimator truth --t-final 22
+```
+
+`--help` lists the IC / noise / inertia knobs. Failures are counted, not treated as a process error (the command still exits 0 after printing the table).
+
 ## Tests and CI
 
 ```bash
 pytest
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]`, runs `pytest -v`, then a no-plot CLI smoke of both scenarios. Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, a detumble rate-dump smoke test, and a constant body-torque hold (PID nulls the bias; LQR holds a small proportional residual). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
+GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]`, runs `pytest -v`, then a no-plot CLI smoke of both SimLab scenarios plus `python -m attitude_sim.monte_carlo --n 5`. Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, a detumble rate-dump smoke test, a constant body-torque hold (PID nulls the bias; LQR holds a small proportional residual), and a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
 
 ## Equations (what the SimLab integrates)
 
@@ -165,6 +192,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
 | `attitude_sim.sim` | SimLab scenarios + CLI (`slew`, `detumble`) |
+| `attitude_sim.monte_carlo` | Closed-loop Monte Carlo / noise-sweep harness (`python -m attitude_sim.monte_carlo`) |
 | `attitude_sim.plots` | `{scenario}_summary.png` and `{scenario}_attitude.gif` |
 
 Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2}\). Sample is 10 ms.

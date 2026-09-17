@@ -23,7 +23,8 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run unit tests
         run: pytest -v --tb=short
-      - name: CLI smoke (both scenarios)
+      - name: CLI smoke (both scenarios + MC harness)
         run: |
           python -m attitude_sim --scenario slew --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0
