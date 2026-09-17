@@ -278,6 +278,15 @@ y^+ &= y + (h/6)\,(k_1+2k_2+2k_3+k_4).
 
 After each step \(q\leftarrow q/\|q\|\). RK4 is not symplectic; torque-free first integrals are the rotational kinetic energy \(T=\tfrac12\omega\cdot(J\omega)\) and the inertial angular momentum \(h_I=R(q)\,J\omega\) (and \(|h_b|=|J\omega|\)). With applied torque the discrete theorem is \(\Delta h_I\approx\int R(q)\tau_b\,dt\) (`inertial_torque` / `trapezoid_inertial_impulse`). See `attitude_sim.plant` and `tests/test_plant.py` for the documented conservation tolerances. The SimLab CLI holds \(\tau\) (and, when enabled, \(\tau_{\mathrm{env}}\)) ZOH over each sample. An optional Munthe–Kaas RKMK4 step exists on the plant library (`step_rigid_body(..., method="rkmk4")` / `rkmk4_step`); it is **not** exposed as a SimLab CLI flag, so `python -m attitude_sim` stays on default RK4.
 
+**Dual-spin / gyrostat** (`attitude_sim.gyrostat`; library plant, **not** a SimLab CLI flag). Locked-rotor inertia \(J\) plus one body-fixed rotor axis \(\hat a\) with relative momentum \(h_w=h\hat a=I_w\Omega\hat a\):
+
+\[
+J\dot\omega+\omega\times(J\omega+h_w)+\dot h_w=\tau,\qquad
+\dot\omega=J^{-1}\bigl(\tau-\omega\times(J\omega+h_w)-\dot h_w\bigr).
+\]
+
+Constant-speed (or commanded constant \(h_w\)) has \(\dot h_w=0\). A variable-speed wheel uses \(I_w\dot\Omega=\tau_w\) and \(\dot h_w=\tau_w\hat a\). \(h_w=0\) reduces to Euler's equation on `RigidBody`. Torque-free first integrals at constant \(h_w\) are the carrier Hamiltonian \(T=\tfrac12\omega\cdot(J\omega)\) and \(H_I=R(q)(J\omega+h_w)\) (and \(|H|=|J\omega+h_w|\)). Spin about the rotor axis is an equilibrium; the transverse mode about a principal axis \(e_k\) is \(\lambda^2=-[(I_k-I_i)\Omega+h][(I_k-I_j)\Omega+h]/(I_i I_j)\) (large \(|h|\) can stabilize the intermediate axis). Optional RK4 steps `step_gyrostat` (\(\omega\), optional \(\Omega\)) and `step_gyrostat_attitude`. See `attitude_sim.gyrostat` and `tests/test_gyrostat.py`.
+
 **Attitude error** (both controllers):
 
 \[
@@ -345,6 +354,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.plant` | `RigidBody`, inertia helpers, Euler equation, RK4 (default); optional RKMK4 via `step_rigid_body(..., method="rkmk4")` — **not** a SimLab CLI flag |
 | `attitude_sim.polhode` | Torque-free energy / Casimir, polhode & herpolhode sampling, tennis-racket stability — **not** a SimLab CLI flag |
 | `attitude_sim.disturbances` | Gravity-gradient, residual-dipole, aero, and SRP `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` (GG/dipole default off except `--scenario hold` / `--env`) |
+| `attitude_sim.gyrostat` | Dual-spin / one-rotor gyrostat: \(J\dot\omega+\omega\times(J\omega+h_w)=\tau\) (constant or commanded \(h_w\)); optional RK4 of \(\omega\) / \(\Omega\) — **not** a SimLab CLI flag |
 | `attitude_sim.scenarios` | Named closed-loop pack (`slew`, `detumble`, `hold`, `eigenaxis`) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch; `tune_pid_second_order` / `bryson_lqr_costs` |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |

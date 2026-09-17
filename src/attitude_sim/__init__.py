@@ -34,6 +34,12 @@ from attitude_sim.estimation import (
     make_estimator,
     triad_attitude,
 )
+from attitude_sim.gyrostat import (
+    Gyrostat,
+    gyrostat_omega_dot,
+    step_gyrostat,
+    step_gyrostat_attitude,
+)
 from attitude_sim.mrp import (
     mrp_B,
     mrp_derivative,
@@ -91,6 +97,7 @@ __all__ = [
     "ComplementaryFilter",
     "EnvironmentalTorques",
     "GravityGradientTorque",
+    "Gyrostat",
     "InnovationLog",
     "LQRAttitudeController",
     "MahonyFilter",
@@ -114,6 +121,7 @@ __all__ = [
     "energy_casimir",
     "geodesic_angle",
     "gravity_gradient_torque",
+    "gyrostat_omega_dot",
     "inertia_from_principal",
     "inertial_torque",
     "is_principal",
@@ -151,6 +159,8 @@ __all__ = [
     "shape_pid_command",
     "solve_care",
     "srp_torque",
+    "step_gyrostat",
+    "step_gyrostat_attitude",
     "step_rigid_body",
     "trapezoid_inertial_impulse",
     "triad_attitude",
