@@ -6,8 +6,15 @@ import numpy as np
 import pytest
 
 from attitude_sim.estimation import ComplementaryFilter, MultiplicativeEKF
+from attitude_sim.plant import RigidBody, trapezoid_inertial_impulse
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
-from attitude_sim.sim import SimConfig, make_scenario_config, make_sim_estimator, run_slew
+from attitude_sim.sim import (
+    SimConfig,
+    make_scenario_config,
+    make_sim_disturbances,
+    make_sim_estimator,
+    run_slew,
+)
 
 
 def _cfg(**kwargs) -> SimConfig:
@@ -258,3 +265,157 @@ def test_coarse_init_without_two_sensors_warns_and_keeps_true_q0():
         )
     assert log.est_att_error is not None
     assert np.rad2deg(log.est_att_error[0]) < 2.0
+
+
+def test_make_sim_disturbances_default_off():
+    env = make_sim_disturbances(SimConfig())
+    assert env is None
+    off = make_scenario_config("slew", plot=False, gif=False)
+    assert off.gravity_gradient is False
+    assert off.residual_dipole is False
+    assert make_sim_disturbances(off) is None
+
+
+def test_make_sim_disturbances_rejects_bad_orbit_and_model():
+    with pytest.raises(ValueError, match="orbit_radius"):
+        make_sim_disturbances(SimConfig(gravity_gradient=True, orbit_radius=0.0))
+    with pytest.raises(ValueError, match="dipole_model"):
+        make_sim_disturbances(SimConfig(residual_dipole=True, dipole_model="igrf"))
+
+
+def test_env_disturbances_default_off_matches_prior_closed_loop():
+    kwargs = dict(controller="pid", estimator="truth", t_final=1.5, seed=5)
+    log_prior = run_slew(_cfg(**kwargs))
+    log_explicit = run_slew(_cfg(**kwargs, gravity_gradient=False, residual_dipole=False))
+    np.testing.assert_allclose(log_prior.q, log_explicit.q, atol=0.0)
+    np.testing.assert_allclose(log_prior.omega, log_explicit.omega, atol=0.0)
+    np.testing.assert_allclose(log_prior.tau, log_explicit.tau, atol=0.0)
+
+
+def test_env_disturbances_change_plant_and_logged_tau_excludes_env():
+    """Env torque is plant-only; logged τ stays the actuator command."""
+    kwargs = dict(
+        controller="pid",
+        estimator="truth",
+        t_final=2.0,
+        seed=6,
+        q0=np.array([1.0, 0.0, 0.0, 0.0]),
+        q_des=np.array([1.0, 0.0, 0.0, 0.0]),
+        torque_limit=0.02,
+    )
+    log_off = run_slew(_cfg(**kwargs))
+    cfg_on = _cfg(
+        **kwargs,
+        gravity_gradient=True,
+        residual_dipole=True,
+        dipole_m=np.array([8.0, -2.0, 1.0]),
+        orbit_inclination_deg=51.6,
+    )
+    log_on = run_slew(cfg_on)
+    # Same opening command at identity; env is added after the actuator.
+    np.testing.assert_allclose(log_on.tau[0], log_off.tau[0], atol=1e-12)
+    assert np.linalg.norm(log_on.q[-1] - log_off.q[-1]) > 1e-8
+    assert np.linalg.norm(log_on.omega[-1] - log_off.omega[-1]) > 1e-8
+    env = make_sim_disturbances(cfg_on)
+    assert env is not None
+    tau_env0 = env.tau_body(log_on.q[0], log_on.omega[0], float(log_on.t[0]))
+    assert np.linalg.norm(tau_env0) > 0.0
+
+
+def _closed_loop_inertial_impulse(log, cfg: SimConfig) -> np.ndarray:
+    env = make_sim_disturbances(cfg)
+    tau_dist = np.asarray(cfg.tau_dist, dtype=float).reshape(3)
+    impulse = np.zeros(3)
+    for k in range(len(log.t) - 1):
+        tau_plant = np.asarray(log.tau[k], dtype=float) + tau_dist
+        if env is not None:
+            tau_plant = tau_plant + env.tau_body(log.q[k], log.omega[k], float(log.t[k]))
+        impulse += trapezoid_inertial_impulse(log.q[k], log.q[k + 1], tau_plant, cfg.dt)
+    return impulse
+
+
+def test_closed_loop_discrete_momentum_includes_env():
+    """Plant Δh_I matches ∫ R(q)(τ + τ_d + τ_env) dt; omitting env leaves a residual."""
+    cfg = _cfg(
+        controller="pid",
+        estimator="truth",
+        t_final=2.0,
+        seed=7,
+        gravity_gradient=True,
+        residual_dipole=True,
+        dipole_m=np.array([12.0, 0.0, -4.0]),
+        orbit_inclination_deg=40.0,
+        q0=axis_angle_to_quat(np.array([0.0, 1.0, 0.0]), 0.4),
+        q_des=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    log = run_slew(cfg)
+    body = RigidBody(cfg.inertia)
+    dh = body.angular_momentum_inertial(log.q[-1], log.omega[-1]) - body.angular_momentum_inertial(
+        log.q[0], log.omega[0]
+    )
+    impulse = _closed_loop_inertial_impulse(log, cfg)
+    assert np.linalg.norm(dh - impulse) / max(np.linalg.norm(impulse), 1e-12) < 5e-3
+    cfg_no_env = _cfg(
+        controller="pid",
+        estimator="truth",
+        t_final=2.0,
+        seed=7,
+        q0=cfg.q0,
+        q_des=cfg.q_des,
+    )
+    impulse_without = _closed_loop_inertial_impulse(log, cfg_no_env)
+    assert np.linalg.norm(dh - impulse_without) > 10.0 * np.linalg.norm(dh - impulse)
+
+
+def test_env_plus_saturation_slew_stays_healthy():
+    """Optional coupling: GG + residual dipole + per-axis wheel box."""
+    lim = 0.008
+    log = run_slew(
+        _cfg(
+            controller="pid",
+            estimator="truth",
+            gravity_gradient=True,
+            residual_dipole=True,
+            dipole_m=np.array([0.5, 0.1, -0.05]),
+            orbit_inclination_deg=51.6,
+            actuator_tau_max=lim,
+            torque_limit=None,
+            t_final=8.0,
+            seed=8,
+        )
+    )
+    np.testing.assert_allclose(np.linalg.norm(log.q, axis=1), 1.0, atol=1e-12)
+    assert np.all(np.isfinite(log.q))
+    assert np.all(np.isfinite(log.omega))
+    assert np.all(np.abs(log.tau) <= lim * (1.0 + 1e-9))
+    assert np.max(np.abs(log.tau)) > 0.5 * lim
+    assert log.final_att_error_deg < 90.0
+    assert np.linalg.norm(log.omega[-1]) < 1.0
+
+
+def test_truth_path_skips_sensors_with_env_enabled(monkeypatch):
+    from attitude_sim.sensors import GyroModel, VectorSensor
+
+    gyro_calls = {"n": 0}
+    orig_gyro = GyroModel.measure
+
+    def gyro_measure(self, omega, dt):
+        gyro_calls["n"] += 1
+        return orig_gyro(self, omega, dt)
+
+    monkeypatch.setattr(GyroModel, "measure", gyro_measure)
+
+    def vec_measure(self, q):
+        raise AssertionError("truth path sampled a vector")
+
+    monkeypatch.setattr(VectorSensor, "measure", vec_measure)
+    log = run_slew(
+        _cfg(
+            estimator="truth",
+            gravity_gradient=True,
+            residual_dipole=True,
+            t_final=0.05,
+        )
+    )
+    assert gyro_calls["n"] == 0
+    np.testing.assert_allclose(log.q_hat, log.q)

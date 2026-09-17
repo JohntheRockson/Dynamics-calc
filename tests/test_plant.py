@@ -10,15 +10,17 @@ import pytest
 from attitude_sim.plant import (
     RigidBody,
     inertia_from_principal,
+    inertial_torque,
     is_principal,
     pack_state,
     principal_moments_and_axes,
     rk4_step,
     step_rigid_body,
+    trapezoid_inertial_impulse,
     unpack_state,
     validate_inertia,
 )
-from attitude_sim.quaternions import quat_normalize
+from attitude_sim.quaternions import axis_angle_to_quat, quat_normalize
 
 # Asymmetric J, dt = 0.002 s, T = 10 s.  Bounds sit ~100× above the observed
 # RK4 residuals (~1e-14) for these cases so they stay honest without being flaky.
@@ -316,3 +318,56 @@ def test_work_energy_theorem_with_constant_torque():
     t1 = body.kinetic_energy(omega)
     assert abs(t1 - t0 - work) / abs(work) < 1e-6
     assert abs(np.linalg.norm(q) - 1.0) < QUAT_NORM_ABS_TOL
+
+
+def test_inertial_torque_identity_and_z_rotation():
+    tau = np.array([0.04, -0.02, 0.01])
+    q_id = np.array([1.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(inertial_torque(q_id, tau), tau)
+    qz = axis_angle_to_quat([0.0, 0.0, 1.0], 0.5 * np.pi)
+    # R_z(90°) maps body x→y, y→−x, z→z.
+    np.testing.assert_allclose(inertial_torque(qz, tau), [-tau[1], tau[0], tau[2]], atol=1e-15)
+
+
+def test_trapezoid_inertial_impulse_rejects_non_positive_dt():
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    tau = np.zeros(3)
+    with pytest.raises(ValueError, match="dt must be positive"):
+        trapezoid_inertial_impulse(q, q, tau, 0.0)
+    with pytest.raises(ValueError, match="dt must be positive"):
+        trapezoid_inertial_impulse(q, q, tau, -0.01)
+
+
+def test_discrete_angular_momentum_theorem_constant_torque():
+    """Δh_I ≈ ∫ R(q) τ dt (trapezoid) for a ZOH body torque — harden #7 backlog."""
+    body = RigidBody(np.diag([1.5, 2.5, 3.5]))
+    q = quat_normalize([0.4, 0.3, 0.2, 0.8])
+    omega = np.array([-0.5, 0.4, 0.7])
+    tau = np.array([0.04, -0.02, 0.01])
+    dt = 0.001
+    h0 = body.angular_momentum_inertial(q, omega)
+    impulse = np.zeros(3)
+    for _ in range(2000):
+        q0 = q.copy()
+        q, omega = step_rigid_body(body, q, omega, tau, dt)
+        impulse += trapezoid_inertial_impulse(q0, q, tau, dt)
+    h1 = body.angular_momentum_inertial(q, omega)
+    residual = h1 - h0 - impulse
+    assert np.linalg.norm(residual) / np.linalg.norm(impulse) < 1e-6
+    assert abs(np.linalg.norm(q) - 1.0) < QUAT_NORM_ABS_TOL
+
+
+def test_discrete_angular_momentum_zero_torque_matches_conservation():
+    body = RigidBody(_asymmetric_inertia())
+    q = quat_normalize([0.5, 0.2, -0.1, 0.8])
+    omega = np.array([0.3, -0.4, 0.2])
+    dt = 0.002
+    h0 = body.angular_momentum_inertial(q, omega)
+    impulse = np.zeros(3)
+    for _ in range(1500):
+        q0 = q.copy()
+        q, omega = step_rigid_body(body, q, omega, np.zeros(3), dt)
+        impulse += trapezoid_inertial_impulse(q0, q, np.zeros(3), dt)
+    h1 = body.angular_momentum_inertial(q, omega)
+    np.testing.assert_allclose(impulse, 0.0, atol=0.0)
+    np.testing.assert_allclose(h1, h0, rtol=H_INERTIAL_REL_TOL, atol=H_INERTIAL_ABS_TOL)

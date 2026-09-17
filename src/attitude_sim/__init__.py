@@ -37,11 +37,13 @@ from attitude_sim.mrp import (
 from attitude_sim.plant import (
     RigidBody,
     inertia_from_principal,
+    inertial_torque,
     is_principal,
     principal_moments_and_axes,
     rk4_step,
     rkmk4_step,
     step_rigid_body,
+    trapezoid_inertial_impulse,
     validate_inertia,
 )
 from attitude_sim.quaternions import (
@@ -81,6 +83,7 @@ __all__ = [
     "geodesic_angle",
     "gravity_gradient_torque",
     "inertia_from_principal",
+    "inertial_torque",
     "is_principal",
     "magnetic_dipole_torque",
     "magnetic_field_body",
@@ -107,6 +110,7 @@ __all__ = [
     "shape_pid_command",
     "solve_care",
     "step_rigid_body",
+    "trapezoid_inertial_impulse",
     "triad_attitude",
     "validate_inertia",
 ]
