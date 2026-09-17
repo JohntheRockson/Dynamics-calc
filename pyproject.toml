@@ -22,6 +22,7 @@ dev = ["pytest>=7.4"]
 
 [project.scripts]
 attitude-sim = "attitude_sim.sim:main"
+attitude-sim-mc = "attitude_sim.monte_carlo:main"
 
 [project.urls]
 Homepage = "https://github.com/JohntheRockson/Dynamics-calc"
