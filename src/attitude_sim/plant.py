@@ -21,7 +21,8 @@ kinematics on S^3 are
 
 ``q`` is the attitude of the body relative to inertial; ``ω`` is resolved in
 the body frame.  The Euclidean chart does not preserve ``||q|| = 1``, so the
-integrator projects ``q ← q / ||q||`` after every completed step.
+classical RK4 integrator projects ``q ← q / ||q||`` after every completed
+step.  The optional RKMK4 (Lie-group) step stays on S^3 by construction.
 
 Euler's equation
 ----------------
@@ -41,9 +42,13 @@ and the inertial-frame angular momentum
 
 ``|h_b| = |J ω|`` is the same conserved magnitude in the body frame.
 Classical RK4 is not symplectic, so these invariants hold only up to
-truncation error.  ``tests/test_plant.py`` records tight tolerances at a
+truncation error.  The RKMK4 attitude step is also a classical RK tableau
+(on the Lie algebra), so energy / momentum residuals are comparable, not
+machine-zero.  ``tests/test_plant.py`` records tight tolerances at a
 small fixed ``dt``; ``tests/test_plant_perturbations.py`` records looser
-bounds under mild principal-inertia mismatch and varied ``dt``.
+bounds under mild principal-inertia mismatch and varied ``dt``;
+``tests/test_plant_rkmk4.py`` records unit-norm-by-construction and
+side-by-side RK4 vs RKMK4 drift.
 
 Principal-axis perturbations
 ----------------------------
@@ -72,6 +77,44 @@ fourth-order Runge–Kutta step of size ``h`` is
     y⁺ = y + (h/6) (k₁ + 2 k₂ + 2 k₃ + k₄)
 
 applied to ``x``, after which ``q`` is renormalized.
+
+RKMK4 step
+----------
+Optional Lie-group integrator selected by ``method="rkmk4"``.  Right-
+trivialized kinematics are an ODE on the Lie group S^3 ≅ Spin(3):
+
+    q̇ = q · λ(ω),     λ(ω) = ω ∈ so(3) ≅ R³.
+
+Munthe–Kaas RK4 pulls the vector field back to the Lie algebra with the
+inverse exponential differential, runs the classical RK4 tableau there,
+and returns via the exponential map.  With Butcher coefficients
+``c = (0, 1/2, 1/2, 1)``, ``b = (1/6, 1/3, 1/3, 1/6)``:
+
+    uᵢ = h Σⱼ aᵢⱼ kⱼ
+    ωᵢ = ω + h Σⱼ aᵢⱼ kⱼ^ω
+    kᵢ = dexp⁻¹_{uᵢ}(ωᵢ)
+    kᵢ^ω = J⁻¹ (τ − ωᵢ × J ωᵢ)
+    φ  = h Σᵢ bᵢ kᵢ
+    q⁺ = q ⊗ Exp(φ)
+    ω⁺ = ω + h Σᵢ bᵢ kᵢ^ω
+
+The exponential ``Exp: R³ → S³`` (rotation vector → unit quaternion) is
+
+    Exp(φ) = [cos(θ/2), sin(θ/2) φ̂],     θ = ||φ||,   φ̂ = φ/θ
+
+and is unit by construction (``cos²(θ/2) + sin²(θ/2) = 1``).  The inverse
+exponential differential on so(3) is
+
+    dexp⁻¹_φ(v) = v − ½ φ×v
+                  + [1 − (θ/2) cot(θ/2)] / θ²  ·  φ×(φ×v)
+
+with the small-θ series ``v − ½ φ×v + (1/12) φ×(φ×v)``.  Euler's equation
+lives in Euclidean R³, so the same RK4 tableau applies directly to ``ω``.
+Unlike classical RK4, RKMK4 does **not** renormalize ``q``.
+
+:func:`step_rigid_body` is the API switch (``method="rk4"`` default,
+``method="rkmk4"`` for the geometric step).  Torque is a zero-order hold
+in the body frame over the sample, as with RK4.
 """
 
 from __future__ import annotations
@@ -81,10 +124,21 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from attitude_sim.quaternions import quat_derivative, quat_normalize, quat_to_rotation
+from attitude_sim.quaternions import (
+    quat_derivative,
+    quat_multiply,
+    quat_normalize,
+    quat_to_rotation,
+)
 
 _SYMM_TOL = 1e-12
 _TRIANGLE_TOL = 1e-9
+_SO3_EXP_EPS = 1e-14
+_DEXP_SERIES_EPS = 1e-8
+
+INTEGRATOR_RK4 = "rk4"
+INTEGRATOR_RKMK4 = "rkmk4"
+_INTEGRATOR_METHODS = (INTEGRATOR_RK4, INTEGRATOR_RKMK4)
 
 
 def pack_state(q: np.ndarray, omega: np.ndarray) -> np.ndarray:
@@ -310,6 +364,110 @@ def rk4_step(
     return y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
+def _require_positive_dt(dt: float) -> float:
+    dt = float(dt)
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError("dt must be positive")
+    return dt
+
+
+def so3_quat_exp(phi: np.ndarray) -> np.ndarray:
+    """Exponential map ``Exp: so(3) ≅ R³ → S³``.
+
+    A rotation vector ``φ`` (axis × angle, radians) maps to the unit
+    quaternion
+
+        Exp(φ) = [cos(θ/2), sin(θ/2) φ̂],     θ = ||φ||
+
+    which is unit by construction (``cos² + sin² = 1``).  Right-trivialized
+    kinematics then compose as ``q⁺ = q ⊗ Exp(φ)``.  ``θ = 0`` returns the
+    identity; the small-θ branch uses ``v = φ/2`` on the sphere
+    ``w = √(1 − ||v||²)`` so the result stays in S^3 without a separate
+    normalization step.
+    """
+    phi = np.asarray(phi, dtype=float).reshape(3)
+    theta = float(np.linalg.norm(phi))
+    if theta < _SO3_EXP_EPS:
+        v = 0.5 * phi
+        w = float(np.sqrt(max(0.0, 1.0 - float(v @ v))))
+        return np.array([w, v[0], v[1], v[2]])
+    half = 0.5 * theta
+    scale = np.sin(half) / theta
+    return np.array([np.cos(half), scale * phi[0], scale * phi[1], scale * phi[2]])
+
+
+def dexpinv_so3(phi: np.ndarray, vec: np.ndarray) -> np.ndarray:
+    """Right-trivialized ``dexp⁻¹_φ(v)`` on so(3).
+
+        dexp⁻¹_φ(v) = v − ½ φ×v
+                      + [1 − (θ/2) cot(θ/2)] / θ²  ·  φ×(φ×v)
+
+    with ``θ = ||φ||``.  The small-θ series (Bernoulli truncation used by
+    classical RKMK4) is
+
+        v − ½ φ×v + (1/12) φ×(φ×v).
+
+    When ``v`` is parallel to ``φ``, the cross terms vanish and the map is
+    the identity, so a constant body rate is integrated exactly.
+    """
+    phi = np.asarray(phi, dtype=float).reshape(3)
+    vec = np.asarray(vec, dtype=float).reshape(3)
+    theta = float(np.linalg.norm(phi))
+    w = np.cross(phi, vec)
+    if theta < _DEXP_SERIES_EPS:
+        return vec - 0.5 * w + (1.0 / 12.0) * np.cross(phi, w)
+    half = 0.5 * theta
+    s = np.sin(half)
+    # |φ| from one RKMK stage is O(|ω| dt) ≪ 2π for practical sample times.
+    cot_half = np.cos(half) / s
+    beta = (1.0 - half * cot_half) / (theta * theta)
+    return vec - 0.5 * w + beta * np.cross(phi, w)
+
+
+def rkmk4_step(
+    body: RigidBody,
+    q: np.ndarray,
+    omega: np.ndarray,
+    tau: np.ndarray,
+    dt: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """One Munthe–Kaas RK4 step on S^3 with Euclidean RK4 on ``ω``.
+
+    Attitude is advanced by the group exponential (unit quaternion by
+    construction).  Euler's equation is the same RK4 tableau in R³.
+    ``dt`` must be finite and strictly positive.  ``tau`` is held ZOH in
+    the body frame.  See the module docstring for the stage equations.
+    """
+    dt = _require_positive_dt(dt)
+    q = np.asarray(q, dtype=float).reshape(4)
+    omega = np.asarray(omega, dtype=float).reshape(3)
+    tau = np.asarray(tau, dtype=float).reshape(3)
+    half = 0.5 * dt
+
+    k1_w = body.omega_dot(omega, tau)
+    k1_q = omega
+
+    w2 = omega + half * k1_w
+    u2 = half * k1_q
+    k2_w = body.omega_dot(w2, tau)
+    k2_q = dexpinv_so3(u2, w2)
+
+    w3 = omega + half * k2_w
+    u3 = half * k2_q
+    k3_w = body.omega_dot(w3, tau)
+    k3_q = dexpinv_so3(u3, w3)
+
+    w4 = omega + dt * k3_w
+    u4 = dt * k3_q
+    k4_w = body.omega_dot(w4, tau)
+    k4_q = dexpinv_so3(u4, w4)
+
+    omega_next = omega + (dt / 6.0) * (k1_w + 2.0 * k2_w + 2.0 * k3_w + k4_w)
+    phi = (dt / 6.0) * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q)
+    q_next = quat_multiply(q, so3_quat_exp(phi))
+    return q_next, omega_next
+
+
 @dataclass
 class RigidBody:
     """Torque-driven rigid body with a constant body-frame inertia matrix.
@@ -383,14 +541,32 @@ def step_rigid_body(
     omega: np.ndarray,
     tau: np.ndarray,
     dt: float,
+    *,
+    method: str = INTEGRATOR_RK4,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Advance the plant one RK4 step with zero-order-hold torque.
+    """Advance the plant one step with zero-order-hold torque.
 
-    After the Euclidean RK4 update the quaternion is renormalized so that
-    subsequent kinematics stay on S^3 (``||q|| = 1`` is an integrator
-    invariant, independent of ``J`` and of the held ``τ``).
+    Parameters
+    ----------
+    method:
+        Integrator switch.  ``"rk4"`` (default) is classical Euclidean RK4
+        on ``x = [q, ω]`` followed by quaternion renormalization.
+        ``"rkmk4"`` is Munthe–Kaas RK4 on S^3 (exponential-map attitude
+        update, unit-norm by construction) with the same RK4 tableau on
+        ``ω``.  Unknown names raise ``ValueError``.
+
+    After Euclidean RK4 the quaternion is renormalized so subsequent
+    kinematics stay on S^3.  RKMK4 does not renormalize: ``||q|| = 1``
+    comes from ``q ⊗ Exp(φ)``.
     """
     tau = np.asarray(tau, dtype=float).reshape(3)
+    name = str(method).strip().lower()
+    if name == INTEGRATOR_RKMK4:
+        return rkmk4_step(body, q, omega, tau, dt)
+    if name != INTEGRATOR_RK4:
+        raise ValueError(
+            f"unknown integrator {method!r}; expected one of {_INTEGRATOR_METHODS}"
+        )
 
     def fun(_t: float, y: np.ndarray) -> np.ndarray:
         return body.derivatives(y[:4], y[4:], tau)

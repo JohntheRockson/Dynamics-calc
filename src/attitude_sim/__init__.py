@@ -9,6 +9,7 @@ from attitude_sim.plant import (
     is_principal,
     principal_moments_and_axes,
     rk4_step,
+    rkmk4_step,
     step_rigid_body,
     validate_inertia,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "quat_to_euler321",
     "quat_to_rotation",
     "rk4_step",
+    "rkmk4_step",
     "run_sim",
     "run_slew",
     "step_rigid_body",
