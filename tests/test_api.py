@@ -25,6 +25,10 @@ def test_version_and_public_exports():
         "clip_torque",
         "make_actuator",
         "triad_attitude",
+        "GravityGradientTorque",
+        "ResidualDipoleTorque",
+        "gravity_gradient_torque",
+        "magnetic_dipole_torque",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
