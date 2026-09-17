@@ -467,7 +467,7 @@ class EnvironmentalTorques:
 
     gravity_gradient: GravityGradientTorque | None = None
     residual_dipole: ResidualDipoleTorque | None = None
-    extra: Sequence[object] = field(default_factory=tuple)
+    extra: Sequence[GravityGradientTorque | ResidualDipoleTorque] = field(default_factory=tuple)
 
     def tau_body(
         self,
@@ -481,7 +481,8 @@ class EnvironmentalTorques:
         for model in (self.gravity_gradient, self.residual_dipole, *self.extra):
             if model is None:
                 continue
-            tau = tau + np.asarray(
-                model.tau_body(q, omega, t, orbit=orbit), dtype=float
-            ).reshape(3)
+            piece = np.asarray(
+                model.tau_body(q, omega, t, orbit=orbit), dtype=np.float64
+            )
+            tau = tau + piece.reshape(3)
         return tau
