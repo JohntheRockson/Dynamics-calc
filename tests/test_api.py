@@ -29,7 +29,9 @@ def test_version_and_public_exports():
         "GravityGradientTorque",
         "ResidualDipoleTorque",
         "gravity_gradient_torque",
+        "inertial_torque",
         "magnetic_dipole_torque",
+        "trapezoid_inertial_impulse",
         "quat_to_mrp",
         "mrp_to_quat",
         "mrp_switch",
@@ -46,3 +48,5 @@ def test_version_and_public_exports():
     assert "TorqueActuator" in attitude_sim.__all__
     assert "triad_attitude" in attitude_sim.__all__
     assert "shape_pid_command" in attitude_sim.__all__
+    assert "inertial_torque" in attitude_sim.__all__
+    assert "trapezoid_inertial_impulse" in attitude_sim.__all__

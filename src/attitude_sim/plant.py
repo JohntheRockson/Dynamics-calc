@@ -41,14 +41,20 @@ and the inertial-frame angular momentum
     h_I = R(q) J ω.
 
 ``|h_b| = |J ω|`` is the same conserved magnitude in the body frame.
-Classical RK4 is not symplectic, so these invariants hold only up to
-truncation error.  The RKMK4 attitude step is also a classical RK tableau
-(on the Lie algebra), so energy / momentum residuals are comparable, not
-machine-zero.  ``tests/test_plant.py`` records tight tolerances at a
-small fixed ``dt``; ``tests/test_plant_perturbations.py`` records looser
-bounds under mild principal-inertia mismatch and varied ``dt``;
-``tests/test_plant_rkmk4.py`` records unit-norm-by-construction and
-side-by-side RK4 vs RKMK4 drift.
+With applied torque the inertial-momentum theorem is
+
+    Δh_I ≈ ∫ R(q) τ_b dt
+
+(:func:`inertial_torque` / :func:`trapezoid_inertial_impulse`; trapezoid
+of ``R(q)`` on a ZOH body torque).  Classical RK4 is not symplectic, so
+these identities hold only up to truncation error.  The RKMK4 attitude
+step is also a classical RK tableau (on the Lie algebra), so energy /
+momentum residuals are comparable, not machine-zero.
+``tests/test_plant.py`` records tight tolerances at a small fixed ``dt``
+(including the discrete-momentum check); ``tests/test_plant_perturbations.py``
+records looser bounds under mild principal-inertia mismatch and varied
+``dt``; ``tests/test_plant_rkmk4.py`` records unit-norm-by-construction
+and side-by-side RK4 vs RKMK4 drift.
 
 Principal-axis perturbations
 ----------------------------
@@ -535,6 +541,37 @@ class RigidBody:
     def angular_momentum_inertial(self, q: np.ndarray, omega: np.ndarray) -> np.ndarray:
         """Inertial-frame angular momentum ``h_I = R(q) J ω``."""
         return quat_to_rotation(q) @ self.angular_momentum_body(omega)
+
+
+def inertial_torque(q: np.ndarray, tau_body: np.ndarray) -> np.ndarray:
+    """Map a body-frame torque into inertial coordinates: ``τ_I = R(q) τ_b``.
+
+    This is the integrand of the rigid-body angular-momentum theorem
+    ``ḣ_I = R(q) τ_b``.
+    """
+    return quat_to_rotation(q) @ np.asarray(tau_body, dtype=float).reshape(3)
+
+
+def trapezoid_inertial_impulse(
+    q_left: np.ndarray,
+    q_right: np.ndarray,
+    tau_body: np.ndarray,
+    dt: float,
+) -> np.ndarray:
+    """Trapezoid increment of ``∫ R(q) τ_b dt`` on one ZOH body-torque interval.
+
+    ``tau_body`` is held constant over ``[t, t+dt]`` (SimLab / plant
+    contract).  Attitude is sampled at the interval endpoints so the
+    rotating DCM is not frozen at the left state.  ``dt`` must be finite
+    and strictly positive.
+    """
+    dt = float(dt)
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError("dt must be positive")
+    tau = np.asarray(tau_body, dtype=float).reshape(3)
+    if not np.all(np.isfinite(tau)):
+        raise ValueError("tau_body must be finite")
+    return 0.5 * (inertial_torque(q_left, tau) + inertial_torque(q_right, tau)) * dt
 
 
 def step_rigid_body(

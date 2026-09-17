@@ -41,15 +41,20 @@ python -m attitude_sim --controller pid --estimator truth \
 python -m attitude_sim --coarse-init --no-gif
 python -m attitude_sim --gyro-sigma-v 1e-3 --gyro-sigma-u 2e-6 \
     --mag-sigma 0.01 --sun-sigma 0.005 --no-gif
+python -m attitude_sim --controller pid --estimator truth \
+    --gravity-gradient --residual-dipole --no-gif
+python -m attitude_sim --controller pid --estimator truth \
+    --gravity-gradient --residual-dipole --actuator-tau-max 0.008 --no-gif
 python -m attitude_sim --help
 ```
 
-`--angle-deg` sets the commanded principal rotation for `--scenario slew` and is ignored for `detumble`. `--tau-dist` is a constant body-frame disturbance added to the plant only.
+`--angle-deg` sets the commanded principal rotation for `--scenario slew` and is ignored for `detumble`. `--tau-dist` is a constant body-frame disturbance added to the plant only. `--gravity-gradient` / `--residual-dipole` are **off by default** so prior demos match; when on they add `attitude_sim.disturbances` models (ZOH at each sample) after the actuator, still plant-only.
 
 | Flag | CLI behavior |
 | --- | --- |
 | `--dt` | Sample / RK4 step (s). Must be `> 0`; otherwise argparse exits with an error (not a traceback). |
 | `--tau-dist` | Three comma-separated body-frame disturbance torques `[N·m]` (e.g. `0.002,-0.001,0.0008`). Wrong arity or non-floats → argparse error. Logged `τ` is the control command; `τ_d` is plant-only. |
+| `--gravity-gradient` / `--residual-dipole` | Opt-in environmental models from `attitude_sim.disturbances`. Default **off**. Orbit knobs: `--orbit-radius` (m, default `7e6`), `--orbit-inc-deg`, `--orbit-raan-deg`. Dipole: `--dipole-m` (`A·m²`, default `0.1,0,0`) and `--dipole-model` `tilted` / `orbit_normal`. Sampled ZOH at \(t_k\) and added with \(\tau_d\). Logged \(\tau\) still excludes them. |
 | `--no-mag --no-sun` | Gyro-only. Allowed; `mekf` / `mahony` emit a `UserWarning` because full attitude is not observable from rate. `truth` does not sample sensors and does not warn. |
 | `--gyro-sigma-v` / `--gyro-sigma-u` | Truth-gyro ARW/RRW densities (rad/s/√Hz, rad/s²/√Hz). SimLab copies the same values into the MEKF Farrenkopf \(Q_d\) (`make_sim_estimator`). MC has the same flags as the *base* before `--noise-scale-*`. |
 | `--mag-sigma` / `--sun-sigma` | Vector-stub Cartesian σ; filter \(R\) follows via `vectors_from_sensors`. |
@@ -166,9 +171,9 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **lint** on Python 3.12: `ruff check src tests` and `mypy src`. Ruff rules live in `[tool.ruff]`: E/F/W/I/UP/B/RUF. `E501` (line length), `E741` (name `I` for principal inertia), and RUF001–003 (unicode minus/times/sigma in scientific comments) are ignored so CI does not mass-reformat the tree. Ruff does not run `format`. Mypy is scoped to `src/attitude_sim` on **Python 3.12** (`ignore_missing_imports` only for matplotlib and scipy) so current numpy stubs parse; runtime/pytest still cover 3.10–3.12.
 - **pytest + coverage** on Python **3.10, 3.11, and 3.12**. Line coverage of the `attitude_sim` package must stay at or above **80%** (`pytest-cov`, `[tool.coverage.report] fail_under = 80`). The 3.12 job also uploads `coverage.xml` as an artifact. Measured **91%** on `main` after Monte Carlo #6, harden #7, actuator #8, and plant #9 (Python 3.12); the floor is a modest buffer, not a freeze of that number. `plots.py` (GIF renderer) is the largest uncovered slice. `__main__.py` is omitted from the denominator.
 - **packaging**: `python -m build`, install the wheel, `import attitude_sim`.
-- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; detumble is not in the MC harness). Attitude GIF rendering is not a CI gate.
+- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, gravity-gradient + residual-dipole + wheel box, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; detumble is not in the MC harness). Attitude GIF rendering is not a CI gate.
 
-Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC plot-helper coverage, and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
+Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, a discrete angular-momentum theorem \(\Delta h_I\approx\int R(q)\tau\,dt\), axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), opt-in gravity-gradient / residual-dipole closed-loop wiring (default off; logged \(\tau\) excludes \(\tau_{\mathrm{env}}\)), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), a disturbed+saturated slew smoke, a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC plot-helper coverage, and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md). `--estimator truth` still skips gyro/vector sampling (including when env models are on).
 
 ## Equations (what the SimLab integrates)
 
@@ -198,13 +203,13 @@ J \dot{\omega} = \tau - \omega \times (J\omega),\qquad
 
 Principal moments of \(J\) are required to satisfy the physical triangle inequalities \(I_i+I_j\ge I_k\).
 
-**Environmental torques** (`attitude_sim.disturbances`; optional plant inputs, not the SimLab `--tau-dist` bias). Orbit frame: \(\hat r\) zenith (Earth→s/c), \(\hat h\) orbit normal \(r\times v\), nadir \(-\hat r\). Body vectors are \(v_b=R(q)^{\top}v_I\). Gravity-gradient (circular or given orbit state)
+**Environmental torques** (`attitude_sim.disturbances`; opt-in SimLab flags, default **off**, independent of the constant `--tau-dist` bias). Orbit frame: \(\hat r\) zenith (Earth→s/c), \(\hat h\) orbit normal \(r\times v\), nadir \(-\hat r\). Body vectors are \(v_b=R(q)^{\top}v_I\). Gravity-gradient (circular or given orbit state)
 
 \[
 \tau_{\mathrm{gg}} = 3\frac{\mu}{r^{3}}\,(\hat r_b \times J\hat r_b)
 \]
 
-vanishes when a principal axis of \(J\) lies along nadir/zenith. Residual dipole \(\tau_m=m_b\times B_b\) with \(B_b=R(q)^{\top}B_I\) and \(B_I\) either a tilted Earth dipole or \(B_I=(\mu_m/r^{3})\hat h\) (orbit-normal / equatorial-dipole option). Parallel \(m\) and \(B\) give zero torque. Call `τ_body(q, ω, t)` with a bound `CircularOrbit`, or pass `orbit=OrbitState(...)`.
+vanishes when a principal axis of \(J\) lies along nadir/zenith. Residual dipole \(\tau_m=m_b\times B_b\) with \(B_b=R(q)^{\top}B_I\) and \(B_I\) either a tilted Earth dipole or \(B_I=(\mu_m/r^{3})\hat h\) (orbit-normal / equatorial-dipole option). Parallel \(m\) and \(B\) give zero torque. Library: call `τ_body(q, ω, t)` with a bound `CircularOrbit`, or pass `orbit=OrbitState(...)`. SimLab: `--gravity-gradient` / `--residual-dipole` (ZOH at \(t_k\), added with \(\tau_d\); default off).
 
 **RK4** (classical fourth-order, step \(h\), zero-order-hold \(\tau\)):
 
@@ -218,7 +223,7 @@ y^+ &= y + (h/6)\,(k_1+2k_2+2k_3+k_4).
 \end{aligned}
 \]
 
-After each step \(q\leftarrow q/\|q\|\). RK4 is not symplectic; torque-free first integrals are the rotational kinetic energy \(T=\tfrac12\omega\cdot(J\omega)\) and the inertial angular momentum \(h_I=R(q)\,J\omega\) (and \(|h_b|=|J\omega|\)). See `attitude_sim.plant` and `tests/test_plant.py` for the documented conservation tolerances. The SimLab CLI holds \(\tau\) ZOH over each sample. An optional Munthe–Kaas RKMK4 step exists on the plant library (`step_rigid_body(..., method="rkmk4")` / `rkmk4_step`); it is **not** exposed as a SimLab CLI flag, so `python -m attitude_sim` stays on default RK4.
+After each step \(q\leftarrow q/\|q\|\). RK4 is not symplectic; torque-free first integrals are the rotational kinetic energy \(T=\tfrac12\omega\cdot(J\omega)\) and the inertial angular momentum \(h_I=R(q)\,J\omega\) (and \(|h_b|=|J\omega|\)). With applied torque the discrete theorem is \(\Delta h_I\approx\int R(q)\tau_b\,dt\) (`inertial_torque` / `trapezoid_inertial_impulse`). See `attitude_sim.plant` and `tests/test_plant.py` for the documented conservation tolerances. The SimLab CLI holds \(\tau\) (and, when enabled, \(\tau_{\mathrm{env}}\)) ZOH over each sample. An optional Munthe–Kaas RKMK4 step exists on the plant library (`step_rigid_body(..., method="rkmk4")` / `rkmk4_step`); it is **not** exposed as a SimLab CLI flag, so `python -m attitude_sim` stays on default RK4.
 
 **Attitude error** (both controllers):
 
@@ -273,6 +278,8 @@ sensors  →  estimator (MEKF / Mahony / truth)
                  ↓
             actuator (per-axis clip, optional lag)  →  τ
                  ↓
+            + τ_d + τ_env (GG / residual dipole; default off)
+                 ↓
             rigid-body plant (RK4; optional RKMK4 is library-only)  →  q, ω
                  ↓
             sensors
@@ -283,7 +290,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.mrp` | Modified Rodrigues Parameters: quat/DCM conversions, shadow-set switch, \(\dot\sigma=\tfrac14 B(\sigma)\omega\) |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers, Euler equation, RK4 (default); optional RKMK4 via `step_rigid_body(..., method="rkmk4")` — **not** a SimLab CLI flag |
-| `attitude_sim.disturbances` | Gravity-gradient and residual-dipole `τ_body(q, ω, t or orbit)`; not wired into the CLI |
+| `attitude_sim.disturbances` | Gravity-gradient and residual-dipole `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` (default off) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
 | `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, wheels |

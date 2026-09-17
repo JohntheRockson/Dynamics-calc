@@ -5,7 +5,13 @@ import pytest
 
 from attitude_sim.estimation import MultiplicativeEKF
 from attitude_sim.quaternions import geodesic_angle
-from attitude_sim.sim import build_parser, main, make_scenario_config, make_sim_estimator
+from attitude_sim.sim import (
+    build_parser,
+    main,
+    make_scenario_config,
+    make_sim_disturbances,
+    make_sim_estimator,
+)
 
 
 def test_parser_defaults_to_slew():
@@ -20,6 +26,10 @@ def test_parser_defaults_to_slew():
     assert args.gyro_sigma_u is None
     assert args.mag_sigma is None
     assert args.sun_sigma is None
+    assert args.gravity_gradient is False
+    assert args.residual_dipole is False
+    assert args.dipole_model == "tilted"
+    assert args.orbit_radius == 7.0e6
 
 
 def test_parser_detumble_and_flags():
@@ -56,6 +66,27 @@ def test_make_scenario_config_stems():
     assert slew.coarse_init is False
     coarse = make_scenario_config("slew", plot=False, gif=False, coarse_init=True)
     assert coarse.coarse_init is True
+    env = make_scenario_config(
+        "slew",
+        plot=False,
+        gif=False,
+        gravity_gradient=True,
+        residual_dipole=True,
+        orbit_radius=6.8e6,
+        orbit_inclination_deg=51.6,
+        dipole_m=np.array([0.2, 0.0, 0.0]),
+        dipole_model="orbit_normal",
+    )
+    assert env.gravity_gradient is True
+    assert env.residual_dipole is True
+    assert env.orbit_radius == 6.8e6
+    assert env.orbit_inclination_deg == 51.6
+    assert env.dipole_model == "orbit_normal"
+    np.testing.assert_allclose(env.dipole_m, [0.2, 0.0, 0.0])
+    models = make_sim_disturbances(env)
+    assert models is not None
+    assert models.gravity_gradient is not None
+    assert models.residual_dipole is not None
 
 
 def test_make_scenario_config_unknown():
@@ -181,6 +212,65 @@ def test_main_rejects_negative_sensor_noise():
         main(["--gyro-sigma-v", "-1e-4", "--t-final", "0.05", "--no-plot", "--no-gif"])
     with pytest.raises(SystemExit):
         main(["--mag-sigma", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_main_env_disturbance_flags_smoke():
+    assert (
+        main(
+            [
+                "--controller",
+                "pid",
+                "--estimator",
+                "truth",
+                "--gravity-gradient",
+                "--residual-dipole",
+                "--orbit-radius",
+                "6.8e6",
+                "--orbit-inc-deg",
+                "51.6",
+                "--dipole-m",
+                "0.2,0.05,-0.01",
+                "--dipole-model",
+                "orbit_normal",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
+def test_main_env_plus_actuator_sat_smoke():
+    assert (
+        main(
+            [
+                "--controller",
+                "pid",
+                "--estimator",
+                "truth",
+                "--gravity-gradient",
+                "--residual-dipole",
+                "--actuator-tau-max",
+                "0.008",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
+def test_main_rejects_bad_env_flags():
+    with pytest.raises(SystemExit):
+        main(["--dipole-m", "1,2", "--residual-dipole", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--orbit-radius", "0", "--gravity-gradient", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--dipole-model", "igrf", "--t-final", "0.05", "--no-plot", "--no-gif"])
 
 
 def test_main_rejects_bad_actuator_tau_max():
