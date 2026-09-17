@@ -3,8 +3,9 @@
 import numpy as np
 import pytest
 
+from attitude_sim.estimation import MultiplicativeEKF
 from attitude_sim.quaternions import geodesic_angle
-from attitude_sim.sim import build_parser, main, make_scenario_config
+from attitude_sim.sim import build_parser, main, make_scenario_config, make_sim_estimator
 
 
 def test_parser_defaults_to_slew():
@@ -15,6 +16,13 @@ def test_parser_defaults_to_slew():
     assert args.actuator_tau_max is None
     assert args.actuator_tau is None
     assert args.coarse_init is False
+    assert args.gravity_gradient is False
+    assert args.residual_dipole is None
+    assert args.gyro_sigma_v is None
+    assert args.gyro_sigma_u is None
+    assert args.mag_sigma is None
+    assert args.sun_sigma is None
+    assert args.mag_field_model == "tilted"
 
 
 def test_parser_detumble_and_flags():
@@ -133,3 +141,111 @@ def test_main_rejects_bad_actuator_tau_max():
         main(["--actuator-tau-max", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
     with pytest.raises(SystemExit):
         main(["--actuator-tau", "-0.1", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_make_scenario_config_forwards_sensor_noise_to_estimator():
+    cfg = make_scenario_config(
+        "slew",
+        plot=False,
+        gif=False,
+        gyro_sigma_v=1.5e-3,
+        gyro_sigma_u=2.5e-6,
+        mag_sigma=0.01,
+        sun_sigma=0.004,
+    )
+    assert cfg.gyro_sigma_v == 1.5e-3
+    assert cfg.gyro_sigma_u == 2.5e-6
+    assert cfg.mag_sigma == 0.01
+    assert cfg.sun_sigma == 0.004
+    est = make_sim_estimator(cfg, cfg.q0)
+    assert isinstance(est, MultiplicativeEKF)
+    assert est.sigma_v == 1.5e-3
+    assert est.sigma_u == 2.5e-6
+    default = make_scenario_config("slew", plot=False, gif=False)
+    assert default.gyro_sigma_v == 5e-4
+    assert default.mag_sigma == 3e-3
+    assert default.gravity_gradient is False
+    assert default.residual_dipole_m is None
+
+
+def test_make_scenario_config_forwards_env_flags():
+    m = np.array([0.1, 0.0, -0.2])
+    cfg = make_scenario_config(
+        "detumble",
+        plot=False,
+        gif=False,
+        gravity_gradient=True,
+        residual_dipole_m=m,
+        orbit_radius=6.8e6,
+        orbit_inclination_deg=51.6,
+        mag_field_model="orbit_normal",
+    )
+    assert cfg.gravity_gradient is True
+    np.testing.assert_allclose(cfg.residual_dipole_m, m)
+    assert cfg.orbit_radius == 6.8e6
+    assert cfg.orbit_inclination_deg == 51.6
+    assert cfg.mag_field_model == "orbit_normal"
+    assert cfg.scenario == "detumble"
+
+
+def test_main_sensor_noise_knobs_smoke():
+    assert (
+        main(
+            [
+                "--gyro-sigma-v",
+                "1e-3",
+                "--gyro-sigma-u",
+                "2e-6",
+                "--mag-sigma",
+                "0.01",
+                "--sun-sigma",
+                "0.005",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
+def test_main_env_disturbance_flags_smoke():
+    assert (
+        main(
+            [
+                "--controller",
+                "pid",
+                "--estimator",
+                "truth",
+                "--gravity-gradient",
+                "--residual-dipole",
+                "0.2,-0.1,0.5",
+                "--orbit-incl-deg",
+                "30",
+                "--tau-dist",
+                "0.001,0,0",
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+
+
+def test_main_rejects_negative_sensor_noise():
+    with pytest.raises(SystemExit):
+        main(["--gyro-sigma-v", "-1e-4", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--mag-sigma", "-0.01", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_main_rejects_bad_env_flags():
+    with pytest.raises(SystemExit):
+        main(["--residual-dipole", "1,2", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--orbit-radius", "0", "--gravity-gradient", "--t-final", "0.05", "--no-plot", "--no-gif"])
+    with pytest.raises(SystemExit):
+        main(["--mag-field-model", "igrf", "--t-final", "0.05", "--no-plot", "--no-gif"])

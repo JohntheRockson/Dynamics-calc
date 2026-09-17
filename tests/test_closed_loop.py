@@ -258,3 +258,134 @@ def test_coarse_init_without_two_sensors_warns_and_keeps_true_q0():
         )
     assert log.est_att_error is not None
     assert np.rad2deg(log.est_att_error[0]) < 2.0
+
+
+def test_env_disturbances_default_off_matches_baseline():
+    """Omitting gravity-gradient / residual-dipole is bit-identical to prior demos."""
+    kwargs = dict(controller="pid", estimator="truth", t_final=1.5, seed=5)
+    log_a = run_slew(_cfg(**kwargs))
+    log_b = run_slew(_cfg(**kwargs, gravity_gradient=False, residual_dipole_m=None))
+    np.testing.assert_array_equal(log_a.q, log_b.q)
+    np.testing.assert_array_equal(log_a.omega, log_b.omega)
+    np.testing.assert_array_equal(log_a.tau, log_b.tau)
+    assert log_a.tau_env is not None
+    np.testing.assert_allclose(log_a.tau_env, 0.0)
+
+
+def test_gravity_gradient_is_injected_and_keeps_unit_quat():
+    kwargs = dict(controller="pid", estimator="truth", t_final=2.0, seed=6)
+    log0 = run_slew(_cfg(**kwargs))
+    log1 = run_slew(_cfg(**kwargs, gravity_gradient=True))
+    assert log1.tau_env is not None
+    assert float(np.max(np.linalg.norm(log1.tau_env, axis=1))) > 0.0
+    # Logged wheel torque is unchanged at t=0 (same command); env is plant-only.
+    np.testing.assert_array_equal(log0.q[0], log1.q[0])
+    np.testing.assert_allclose(np.linalg.norm(log1.q, axis=1), 1.0, atol=1e-12)
+    assert np.all(np.isfinite(log1.omega))
+    np.testing.assert_array_equal(log0.tau[0], log1.tau[0])
+
+
+def test_residual_dipole_and_tau_dist_both_enter_plant():
+    # Large dipole so τ_m is O(mN·m), comparable to --tau-dist, and the
+    # closed-loop trajectories actually separate (LEO-scale 0.5 A·m² is tiny).
+    m_body = np.array([40.0, -20.0, 10.0])
+    tau_dist = np.array([0.001, 0.0, 0.0])
+    kwargs = dict(controller="pid", estimator="truth", t_final=1.2, seed=7)
+    none = run_slew(_cfg(**kwargs))
+    dist_only = run_slew(_cfg(**kwargs, tau_dist=tau_dist))
+    mag_only = run_slew(_cfg(**kwargs, residual_dipole_m=m_body))
+    both = run_slew(_cfg(**kwargs, tau_dist=tau_dist, residual_dipole_m=m_body))
+    assert mag_only.tau_env is not None
+    assert both.tau_env is not None
+    assert float(np.max(np.linalg.norm(mag_only.tau_env, axis=1))) > 0.0
+    np.testing.assert_allclose(both.tau_env, mag_only.tau_env)
+    assert not np.allclose(none.omega, dist_only.omega)
+    assert not np.allclose(none.omega, mag_only.omega)
+    assert not np.allclose(both.omega, dist_only.omega)
+    assert not np.allclose(both.omega, mag_only.omega)
+    np.testing.assert_allclose(np.linalg.norm(both.q, axis=1), 1.0, atol=1e-12)
+
+
+def test_pid_hold_rejects_residual_dipole():
+    """Integral PID still nulls a LEO-scale residual dipole at identity."""
+    q_des = np.array([1.0, 0.0, 0.0, 0.0])
+    log = run_slew(
+        _cfg(
+            controller="pid",
+            estimator="truth",
+            q0=q_des,
+            q_des=q_des,
+            residual_dipole_m=np.array([0.5, -0.2, 0.3]),
+            t_final=30.0,
+        )
+    )
+    assert log.final_att_error_deg < 1.5
+    assert np.linalg.norm(log.omega[-1]) < 0.02
+    assert log.tau_env is not None
+    # Logged τ is the wheel command; at rest it cancels τ_env (no extra τ_d).
+    np.testing.assert_allclose(log.tau[-1], -log.tau_env[-1], atol=3e-4)
+
+
+def test_make_sim_controller_forwards_wheel_limits_to_pid_only():
+    from attitude_sim.controls import LQRAttitudeController, PIDAttitudeController
+    from attitude_sim.sim import make_sim_controller
+
+    pid = make_sim_controller(_cfg(controller="pid", actuator_tau_max=0.007))
+    assert isinstance(pid, PIDAttitudeController)
+    assert pid.tau_max == 0.007
+    default_pid = make_sim_controller(_cfg(controller="pid"))
+    assert isinstance(default_pid, PIDAttitudeController)
+    assert default_pid.tau_max is None
+    lqr = make_sim_controller(_cfg(controller="lqr", actuator_tau_max=0.007))
+    assert isinstance(lqr, LQRAttitudeController)
+    assert not hasattr(lqr, "tau_max")
+
+
+def test_saturated_pid_slew_with_lag_stays_in_wheel_box():
+    """PID anti-windup + first-order wheels: |τ_i| stays in the box, q on S^3."""
+    lim = 0.004
+    log = run_slew(
+        _cfg(
+            controller="pid",
+            estimator="truth",
+            actuator_tau_max=lim,
+            actuator_tau=0.04,
+            t_final=10.0,
+            torque_limit=0.02,
+        )
+    )
+    assert np.all(np.abs(log.tau) <= lim * (1.0 + 1e-9))
+    np.testing.assert_allclose(np.linalg.norm(log.q, axis=1), 1.0, atol=1e-12)
+    assert np.all(np.isfinite(log.omega))
+    assert np.max(np.abs(log.tau[:80])) >= lim * 0.99
+    assert log.att_error[-1] < log.att_error[0]
+
+
+def test_make_sim_disturbances_none_when_flags_off():
+    from attitude_sim.sim import make_sim_disturbances
+
+    assert make_sim_disturbances(_cfg()) is None
+    env = make_sim_disturbances(_cfg(gravity_gradient=True))
+    assert env is not None
+    assert env.gravity_gradient is not None
+    assert env.residual_dipole is None
+
+
+def test_logged_tau_env_matches_bound_models():
+    """SimLab ZOH env torque equals EnvironmentalTorques at the logged sample."""
+    from attitude_sim.sim import make_sim_disturbances
+
+    cfg = _cfg(
+        estimator="truth",
+        t_final=0.4,
+        gravity_gradient=True,
+        residual_dipole_m=np.array([0.3, 0.0, -0.1]),
+        orbit_inclination_deg=20.0,
+    )
+    log = run_slew(cfg)
+    env = make_sim_disturbances(cfg)
+    assert env is not None
+    assert log.tau_env is not None
+    for k in (0, len(log.t) // 2, -1):
+        expected = env.tau_body(log.q[k], log.omega[k], log.t[k])
+        np.testing.assert_allclose(log.tau_env[k], expected, atol=1e-15)

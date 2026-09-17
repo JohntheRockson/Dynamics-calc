@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from attitude_sim.controls import make_controller
 from attitude_sim.estimation import (
     MEKF_NEES_DOF,
     ComplementaryFilter,
@@ -28,6 +29,7 @@ from attitude_sim.quaternions import (
     quat_to_rotation,
 )
 from attitude_sim.sensors import GyroModel, magnetometer, sun_sensor
+from attitude_sim.sim import default_inertia
 
 
 def _vector_meas(q, v_I, sigma=0.0):
@@ -393,3 +395,99 @@ def test_mekf_nees_matched_synthetic_is_consistent():
         f"matched ANEES={mean:.3f} not in 99% χ²_{MEKF_NEES_DOF} mean bounds "
         f"[{lo:.3f}, {hi:.3f}] (N={n}; single-trial 99% [{single_lo}, {single_hi}])"
     )
+
+
+def _mekf_closed_loop_nees_trial(seed: int, n_steps: int = 150, dt: float = 0.02) -> float:
+    """Short PID+MEKF slew with honest P0; torque comes from filter estimates.
+
+    Control coupling (τ = u(q̂, ω̂)) correlates the plant trajectory with the
+    filter error, and Euler dynamics / unmatched τ are not in Farrenkopf Qd.
+    NEES is therefore a *smoke* metric, not the matched open-loop χ² test.
+    """
+    rng = np.random.default_rng(seed)
+    inertia = default_inertia()
+    body = RigidBody(inertia)
+    ctrl = make_controller("pid", inertia, torque_limit=0.02)
+    ctrl.reset()
+    q_true = axis_angle_to_quat(rng.normal(size=3), 0.25)
+    omega = np.array([0.02, -0.015, 0.01])
+    q_des = axis_angle_to_quat(np.array([0.2, 0.5, 0.84]), np.deg2rad(20.0))
+    bias0 = np.array([0.002, -0.001, 0.0015])
+    sigma_v, sigma_u = 5e-4, 1e-6
+    p0 = np.diag([3e-3, 3e-3, 3e-3, 1e-5, 1e-5, 1e-5])
+    x0 = rng.multivariate_normal(np.zeros(6), p0)
+    filt = MultiplicativeEKF(
+        q=_inject_body_error(q_true, -x0[:3]),
+        bias=bias0 - x0[3:],
+        P=p0.copy(),
+        sigma_v=sigma_v,
+        sigma_u=sigma_u,
+    )
+    gyro = GyroModel(sigma_v=sigma_v, sigma_u=sigma_u, bias=bias0.copy(), seed=rng)
+    mag = magnetometer(sigma=3e-3, seed=rng)
+    sun = sun_sensor(sigma=2e-3, seed=rng)
+    for _ in range(n_steps):
+        omega_m = gyro.measure(omega, dt)
+        vecs = vectors_from_sensors(q_true, [mag, sun])
+        q_hat, omega_hat = filt.step(omega_m, dt, vecs)
+        tau = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=dt)
+        q_true, omega = step_rigid_body(body, q_true, omega, tau, dt)
+    x = mekf_error_state(filt.q, filt.bias, q_true, gyro.bias)
+    return nees(x, filt.P)
+
+
+def test_mekf_nees_closed_loop_slew_is_finite_and_bounded():
+    """Closed-loop ANEES is a loose smoke gate, not matched χ²_6 consistency.
+
+    Control coupling / unmatched τ make this looser than
+    ``test_mekf_nees_matched_synthetic_is_consistent``.  Do not tighten this
+    to the open-loop 99% mean interval without rewriting the MEKF or the
+    plant/control model.
+    """
+    n = 8
+    values = np.array([_mekf_closed_loop_nees_trial(seed=2000 + i) for i in range(n)])
+    assert np.all(np.isfinite(values))
+    assert values.min() > 0.0
+    mean = float(values.mean())
+    lo, hi = chi2_mean_nees_bounds(MEKF_NEES_DOF, n, alpha=0.01)
+    assert mean < 80.0, (
+        f"closed-loop ANEES={mean:.3f} exploded (matched 99% mean would be "
+        f"[{lo:.3f}, {hi:.3f}]; this smoke allows up to 80)"
+    )
+    assert values.max() < 400.0
+
+
+def test_mahony_stays_unit_with_noisy_vectors():
+    q_true = axis_angle_to_quat(np.array([0.3, 0.2, 0.9]), 0.4)
+    filt = ComplementaryFilter(q=np.array([1.0, 0.0, 0.0, 0.0]), kp=1.5, ki=0.08)
+    v_I = np.array([0.2, 0.1, 1.0])
+    v2 = np.array([1.0, 0.0, 0.0])
+    omega_m = np.array([0.04, -0.03, 0.02])
+    for _ in range(40):
+        filt.step(omega_m, 0.02, [_vector_meas(q_true, v_I, 2e-3), _vector_meas(q_true, v2, 2e-3)])
+    assert abs(np.linalg.norm(filt.q) - 1.0) < 1e-12
+    assert np.all(np.isfinite(filt.bias))
+
+
+def test_mahony_zero_gains_dead_reckons_measured_rate():
+    """kp = ki = 0 → kinematics integrate ω_m − b̂ with frozen bias."""
+    q0 = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.3)
+    filt = ComplementaryFilter(q=q0.copy(), kp=0.0, ki=0.0, bias=np.zeros(3))
+    omega_m = np.array([0.05, -0.02, 0.08])
+    dt = 0.01
+    q_ref = q0.copy()
+    for _ in range(50):
+        filt.step(omega_m, dt, None)
+        q_ref = quat_integrate_const_omega(q_ref, omega_m, dt)
+    assert geodesic_angle(filt.q, q_ref) < 1e-12
+    np.testing.assert_allclose(filt.bias, 0.0, atol=1e-15)
+
+
+def test_mahony_ki_moves_bias_from_vector_innovation():
+    q_true = axis_angle_to_quat(np.array([0.0, 0.0, 1.0]), 0.4)
+    filt = ComplementaryFilter(q=np.array([1.0, 0.0, 0.0, 0.0]), kp=1.5, ki=0.2)
+    b0 = filt.bias.copy()
+    v_I = np.array([0.0, 0.0, 1.0])
+    v2 = np.array([1.0, 0.0, 0.0])
+    filt.step(np.zeros(3), 0.05, [_vector_meas(q_true, v_I), _vector_meas(q_true, v2)])
+    assert float(np.linalg.norm(filt.bias - b0)) > 1e-8

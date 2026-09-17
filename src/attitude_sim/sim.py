@@ -10,7 +10,13 @@ from pathlib import Path
 import numpy as np
 
 from attitude_sim.actuators import make_actuator, parse_tau_max
-from attitude_sim.controls import make_controller
+from attitude_sim.controls import LQRAttitudeController, PIDAttitudeController, make_controller
+from attitude_sim.disturbances import (
+    CircularOrbit,
+    EnvironmentalTorques,
+    GravityGradientTorque,
+    ResidualDipoleTorque,
+)
 from attitude_sim.estimation import (
     ComplementaryFilter,
     MultiplicativeEKF,
@@ -31,6 +37,9 @@ SCENARIOS = ("slew", "detumble")
 SLEW_AXIS = np.array([0.2, 0.5, 0.84])
 DETUMBLE_Q0_AXIS = np.array([0.4, 0.2, 0.9])
 DETUMBLE_OMEGA0 = np.array([0.55, -0.40, 0.30])
+# LEO-scale circular orbit used when gravity-gradient / residual-dipole are on.
+DEFAULT_ORBIT_RADIUS_M = 7.0e6
+MAG_FIELD_MODELS = ("tilted", "orbit_normal")
 
 
 def default_inertia() -> np.ndarray:
@@ -56,6 +65,13 @@ class SimConfig:
     actuator_tau_max: float | np.ndarray | None = None
     actuator_tau: float | None = None
     tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    gravity_gradient: bool = False
+    residual_dipole_m: np.ndarray | None = None
+    orbit_radius: float = DEFAULT_ORBIT_RADIUS_M
+    orbit_inclination_deg: float = 0.0
+    orbit_raan_deg: float = 0.0
+    orbit_arg_latitude0_deg: float = 0.0
+    mag_field_model: str = "tilted"
     gyro_sigma_v: float = 5e-4
     gyro_sigma_u: float = 1e-6
     gyro_bias: np.ndarray = field(default_factory=lambda: np.array([0.002, -0.001, 0.0015]))
@@ -91,6 +107,7 @@ class SimLog:
     controller: str
     estimator: str
     scenario: str = "slew"
+    tau_env: np.ndarray | None = None
     plot_path: Path | None = None
     gif_path: Path | None = None
 
@@ -113,18 +130,43 @@ def make_scenario_config(
     use_mag: bool = True,
     use_sun: bool = True,
     coarse_init: bool = False,
+    gravity_gradient: bool = False,
+    residual_dipole_m: np.ndarray | None = None,
+    orbit_radius: float = DEFAULT_ORBIT_RADIUS_M,
+    orbit_inclination_deg: float = 0.0,
+    orbit_raan_deg: float = 0.0,
+    orbit_arg_latitude0_deg: float = 0.0,
+    mag_field_model: str = "tilted",
+    gyro_sigma_v: float | None = None,
+    gyro_sigma_u: float | None = None,
+    mag_sigma: float | None = None,
+    sun_sigma: float | None = None,
     seed: int = 1,
     plot: bool = True,
     gif: bool = True,
     out_dir: Path = Path("outputs"),
 ) -> SimConfig:
-    """Named SimLab presets. Plant / controller / estimator cores are unchanged."""
+    """Named SimLab presets. Plant / controller / estimator cores are unchanged.
+
+    ``gyro_sigma_v`` / ``gyro_sigma_u`` (and mag/sun ``sigma``) retune the
+    truth sensors *and* — via ``make_sim_estimator`` — the MEKF Farrenkopf
+    ``Q_d``.  ``None`` keeps the ``SimConfig`` defaults.
+
+    Environmental models (gravity-gradient / residual dipole) default **off**
+    so prior demos match.  Constant ``tau_dist`` is still added when they
+    are enabled.
+    """
     name = scenario.lower()
     if name not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}; expected one of {SCENARIOS}")
     dist = np.zeros(3) if tau_dist is None else np.asarray(tau_dist, dtype=float).reshape(3)
+    dipole = (
+        None
+        if residual_dipole_m is None
+        else np.asarray(residual_dipole_m, dtype=float).reshape(3).copy()
+    )
     if name == "detumble":
-        return SimConfig(
+        cfg = SimConfig(
             dt=dt,
             t_final=30.0 if t_final is None else t_final,
             controller=controller,
@@ -136,6 +178,13 @@ def make_scenario_config(
             tau_dist=dist,
             actuator_tau_max=actuator_tau_max,
             actuator_tau=actuator_tau,
+            gravity_gradient=bool(gravity_gradient),
+            residual_dipole_m=dipole,
+            orbit_radius=float(orbit_radius),
+            orbit_inclination_deg=float(orbit_inclination_deg),
+            orbit_raan_deg=float(orbit_raan_deg),
+            orbit_arg_latitude0_deg=float(orbit_arg_latitude0_deg),
+            mag_field_model=str(mag_field_model),
             use_mag=use_mag,
             use_sun=use_sun,
             coarse_init=coarse_init,
@@ -144,24 +193,41 @@ def make_scenario_config(
             gif=gif,
             out_dir=out_dir,
         )
-    return SimConfig(
-        dt=dt,
-        t_final=40.0 if t_final is None else t_final,
-        controller=controller,
-        estimator=estimator,
-        scenario="slew",
-        q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
-        tau_dist=dist,
-        actuator_tau_max=actuator_tau_max,
-        actuator_tau=actuator_tau,
-        use_mag=use_mag,
-        use_sun=use_sun,
-        coarse_init=coarse_init,
-        seed=seed,
-        plot=plot,
-        gif=gif,
-        out_dir=out_dir,
-    )
+    else:
+        cfg = SimConfig(
+            dt=dt,
+            t_final=40.0 if t_final is None else t_final,
+            controller=controller,
+            estimator=estimator,
+            scenario="slew",
+            q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
+            tau_dist=dist,
+            actuator_tau_max=actuator_tau_max,
+            actuator_tau=actuator_tau,
+            gravity_gradient=bool(gravity_gradient),
+            residual_dipole_m=dipole,
+            orbit_radius=float(orbit_radius),
+            orbit_inclination_deg=float(orbit_inclination_deg),
+            orbit_raan_deg=float(orbit_raan_deg),
+            orbit_arg_latitude0_deg=float(orbit_arg_latitude0_deg),
+            mag_field_model=str(mag_field_model),
+            use_mag=use_mag,
+            use_sun=use_sun,
+            coarse_init=coarse_init,
+            seed=seed,
+            plot=plot,
+            gif=gif,
+            out_dir=out_dir,
+        )
+    if gyro_sigma_v is not None:
+        cfg.gyro_sigma_v = float(gyro_sigma_v)
+    if gyro_sigma_u is not None:
+        cfg.gyro_sigma_u = float(gyro_sigma_u)
+    if mag_sigma is not None:
+        cfg.mag_sigma = float(mag_sigma)
+    if sun_sigma is not None:
+        cfg.sun_sigma = float(sun_sigma)
+    return cfg
 
 
 def make_sim_estimator(
@@ -185,6 +251,63 @@ def make_sim_estimator(
     return make_estimator(mode, q0=q0)
 
 
+def make_sim_controller(cfg: SimConfig) -> PIDAttitudeController | LQRAttitudeController:
+    """Build the SimLab controller.
+
+    PID receives ``actuator_tau_max`` as ``tau_max`` so anti-windup sees the
+    same per-axis wheel box as ``TorqueActuator``.  LQR has no integrator /
+    wheel box; it keeps the Euclidean ``torque_limit`` only.  ``None``
+    actuator limits leave PID ``tau_max`` unset (prior demo).
+    """
+    if cfg.controller.lower() == "pid":
+        return make_controller(
+            cfg.controller,
+            cfg.inertia,
+            torque_limit=cfg.torque_limit,
+            gain_scale=cfg.gain_scale,
+            tau_max=cfg.actuator_tau_max,
+        )
+    return make_controller(
+        cfg.controller,
+        cfg.inertia,
+        torque_limit=cfg.torque_limit,
+        gain_scale=cfg.gain_scale,
+    )
+
+
+def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
+    """Bind gravity-gradient / residual-dipole models, or ``None`` if both off.
+
+    Defaults are off.  A bound :class:`CircularOrbit` is shared so both
+    models see the same ``t``-parametrized LEO state.  Evaluation in
+    ``run_slew`` is zero-order hold at the sample (same as ``τ_cmd``).
+    """
+    gg_on = bool(cfg.gravity_gradient)
+    dipole_m = cfg.residual_dipole_m
+    if not gg_on and dipole_m is None:
+        return None
+    model = str(cfg.mag_field_model)
+    if model not in MAG_FIELD_MODELS:
+        raise ValueError(
+            f"mag_field_model must be one of {MAG_FIELD_MODELS}, got {model!r}"
+        )
+    orbit = CircularOrbit(
+        radius=float(cfg.orbit_radius),
+        inclination=np.deg2rad(float(cfg.orbit_inclination_deg)),
+        raan=np.deg2rad(float(cfg.orbit_raan_deg)),
+        arg_latitude0=np.deg2rad(float(cfg.orbit_arg_latitude0_deg)),
+    )
+    gg = GravityGradientTorque(cfg.inertia, orbit=orbit) if gg_on else None
+    dipole = None
+    if dipole_m is not None:
+        dipole = ResidualDipoleTorque(
+            m_body=np.asarray(dipole_m, dtype=float).reshape(3),
+            orbit=orbit,
+            model=model,
+        )
+    return EnvironmentalTorques(gravity_gradient=gg, residual_dipole=dipole)
+
+
 def run_slew(cfg: SimConfig | None = None) -> SimLog:
     """Closed-loop SimLab run (slew or detumble); optionally writes plot/GIF.
 
@@ -197,15 +320,11 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         raise ValueError("t_final must be non-negative")
     rng = np.random.default_rng(cfg.seed)
     body = RigidBody(cfg.inertia)
-    ctrl = make_controller(
-        cfg.controller,
-        cfg.inertia,
-        torque_limit=cfg.torque_limit,
-        gain_scale=cfg.gain_scale,
-    )
+    ctrl = make_sim_controller(cfg)
     ctrl.reset()
     actuator = make_actuator(tau_max=cfg.actuator_tau_max, time_constant=cfg.actuator_tau)
     actuator.reset()
+    env = make_sim_disturbances(cfg)
 
     q = quat_normalize(cfg.q0)
     omega = np.asarray(cfg.omega0, dtype=float).reshape(3).copy()
@@ -269,6 +388,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
     tau_hist = np.zeros((n, 3))
     qh_hist = np.zeros((n, 4))
     wh_hist = np.zeros((n, 3))
+    tau_env_hist = np.zeros((n, 3))
 
     for k in range(n):
         q_hist[k] = q
@@ -286,10 +406,13 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         tau_cmd = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
         tau = actuator.apply(tau_cmd, cfg.dt)
         tau_hist[k] = tau
+        env_tau = np.zeros(3) if env is None else np.asarray(env.tau_body(q, omega, t[k]), dtype=float).reshape(3)
+        tau_env_hist[k] = env_tau
         # τ[k] is held over [t[k], t[k+1]).  Do not take an extra unused
-        # plant step after the last logged sample.
+        # plant step after the last logged sample.  Environmental torque is
+        # ZOH at the sample (same as the actuator), added with constant τ_d.
         if k + 1 < n:
-            q, omega = step_rigid_body(body, q, omega, tau + tau_dist, cfg.dt)
+            q, omega = step_rigid_body(body, q, omega, tau + tau_dist + env_tau, cfg.dt)
 
     euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
     att_error = np.array([geodesic_angle(qi, q_des) for qi in q_hist])
@@ -317,6 +440,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         controller=cfg.controller,
         estimator=cfg.estimator,
         scenario=cfg.scenario,
+        tau_env=tau_env_hist,
     )
 
     if cfg.plot or cfg.gif:
@@ -402,6 +526,82 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="first-order actuator lag time constant [s] (default: none / instantaneous)",
     )
+    p.add_argument(
+        "--gravity-gradient",
+        action="store_true",
+        help="inject gravity-gradient τ_gg into the plant (default: off)",
+    )
+    p.add_argument(
+        "--residual-dipole",
+        default=None,
+        metavar="MX,MY,MZ",
+        help=(
+            "residual dipole m_b [A·m²], comma-separated; omitted = off. "
+            "Added with --tau-dist (ZOH at the sample)"
+        ),
+    )
+    p.add_argument(
+        "--orbit-radius",
+        type=float,
+        default=DEFAULT_ORBIT_RADIUS_M,
+        help=f"circular-orbit radius [m] for env torques (default: {DEFAULT_ORBIT_RADIUS_M:.0e})",
+    )
+    p.add_argument(
+        "--orbit-incl-deg",
+        type=float,
+        default=0.0,
+        help="orbit inclination [deg] (default: 0 equatorial)",
+    )
+    p.add_argument(
+        "--orbit-raan-deg",
+        type=float,
+        default=0.0,
+        help="orbit RAAN [deg] (default: 0)",
+    )
+    p.add_argument(
+        "--orbit-u0-deg",
+        type=float,
+        default=0.0,
+        help="argument of latitude at t=0 [deg] (default: 0)",
+    )
+    p.add_argument(
+        "--mag-field-model",
+        choices=MAG_FIELD_MODELS,
+        default="tilted",
+        help="Earth dipole for residual-dipole torque (default: tilted)",
+    )
+    p.add_argument(
+        "--gyro-sigma-v",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help=(
+            "gyro ARW density σ_v [rad/s/√Hz]; also MEKF Farrenkopf Qd (default: SimConfig 5e-4)"
+        ),
+    )
+    p.add_argument(
+        "--gyro-sigma-u",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help=(
+            "gyro RRW density σ_u [rad/s²/√Hz]; also MEKF Farrenkopf Qd (default: SimConfig 1e-6)"
+        ),
+    )
+    p.add_argument(
+        "--mag-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="magnetometer Cartesian σ (default: SimConfig 3e-3)",
+    )
+    p.add_argument(
+        "--sun-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="sun-sensor Cartesian σ (default: SimConfig 2e-3)",
+    )
     return p
 
 
@@ -421,12 +621,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         tau_dist = _parse_vec3(args.tau_dist, "--tau-dist")
         actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
+        residual_dipole_m = (
+            None
+            if args.residual_dipole is None
+            else _parse_vec3(args.residual_dipole, "--residual-dipole")
+        )
     except ValueError as exc:
         parser.error(str(exc))
     if args.dt <= 0.0:
         parser.error("--dt must be positive")
     if args.actuator_tau is not None and args.actuator_tau < 0.0:
         parser.error("--actuator-tau must be >= 0")
+    if args.orbit_radius <= 0.0:
+        parser.error("--orbit-radius must be positive")
+    for flag, value in (
+        ("--gyro-sigma-v", args.gyro_sigma_v),
+        ("--gyro-sigma-u", args.gyro_sigma_u),
+        ("--mag-sigma", args.mag_sigma),
+        ("--sun-sigma", args.sun_sigma),
+    ):
+        if value is not None and value < 0.0:
+            parser.error(f"{flag} must be >= 0")
     cfg = make_scenario_config(
         args.scenario,
         dt=args.dt,
@@ -440,6 +655,17 @@ def main(argv: list[str] | None = None) -> int:
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         coarse_init=args.coarse_init,
+        gravity_gradient=args.gravity_gradient,
+        residual_dipole_m=residual_dipole_m,
+        orbit_radius=args.orbit_radius,
+        orbit_inclination_deg=args.orbit_incl_deg,
+        orbit_raan_deg=args.orbit_raan_deg,
+        orbit_arg_latitude0_deg=args.orbit_u0_deg,
+        mag_field_model=args.mag_field_model,
+        gyro_sigma_v=args.gyro_sigma_v,
+        gyro_sigma_u=args.gyro_sigma_u,
+        mag_sigma=args.mag_sigma,
+        sun_sigma=args.sun_sigma,
         seed=args.seed,
         plot=not args.no_plot,
         gif=not args.no_gif,

@@ -168,3 +168,23 @@ def test_cli_actuator_flags_smoke():
         )
         == 0
     )
+
+
+def test_pid_antiwindup_and_instantaneous_wheels_agree_on_box():
+    """PID tau_max (anti-windup box) matches the instantaneous actuator clip."""
+    from attitude_sim.actuators import clip_torque
+    from attitude_sim.controls import PIDAttitudeController
+    from attitude_sim.sim import make_sim_controller
+
+    lim = np.array([0.006, 0.004, 0.005])
+    cfg = _cfg(controller="pid", actuator_tau_max=lim, t_final=0.05)
+    ctrl = make_sim_controller(cfg)
+    assert isinstance(ctrl, PIDAttitudeController)
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = np.array([0.0, 0.0, 0.0, 1.0])  # 180° — saturates opening PD
+    tau = ctrl.command(q, np.zeros(3), q_des, dt=0.01)
+    np.testing.assert_allclose(tau, clip_torque(tau, lim))
+    assert np.max(np.abs(tau) - lim) <= 1e-12
+    act = make_actuator(tau_max=lim, time_constant=None)
+    act.reset()
+    np.testing.assert_allclose(act.apply(tau, 0.01), tau)

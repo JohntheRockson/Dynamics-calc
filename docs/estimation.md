@@ -91,6 +91,20 @@ The SimLab (`attitude_sim.sim.make_sim_estimator`) copies
 \(Q_d\) matches the truth gyro.  Changing those config fields used to
 retune only the sensor, not the estimator.
 
+CLI / harness knobs (same values on truth gyro **and** MEKF):
+
+| Flag | `SimConfig` / `MonteCarloConfig` | Default |
+| --- | --- | --- |
+| `--gyro-sigma-v` | `gyro_sigma_v` | \(5\times10^{-4}\) rad/s/√Hz |
+| `--gyro-sigma-u` | `gyro_sigma_u` | \(10^{-6}\) rad/s²/√Hz |
+| `--mag-sigma` | `mag_sigma` | \(3\times10^{-3}\) |
+| `--sun-sigma` | `sun_sigma` | \(2\times10^{-3}\) |
+
+Monte Carlo applies its log-uniform `--noise-scale-*` **after** these
+bases, still through `make_sim_estimator`.  Omit the flags to keep the
+table defaults.  Negative densities are rejected.  Controller Euclidean
+\(\tau_{\max}\) and inertia CLI remain deferred (harden #7).
+
 ## Vector measurements
 
 Magnetometer and sun-sensor stubs (`magnetometer`, `sun_sensor`) return
@@ -166,6 +180,15 @@ A prior-only check (`test_mekf_nees_honest_prior_matches_chi2`) confirms
 the \(\chi^2_6\) sampling of \(x\sim\mathcal{N}(0,P_0)\) before any
 updates.
 
+Closed-loop / short-slew NEES (`test_mekf_nees_closed_loop_slew_is_finite_and_bounded`)
+is a **smoke** gate only.  The controller torque \(\tau=u(\hat q,\hat\omega)\)
+couples the plant trajectory to the filter error, and Euler dynamics are
+not in Farrenkopf \(Q_d\).  Ensemble ANEES is therefore allowed to sit
+well outside the matched open-loop 99% interval \(\approx[4.54,\,7.69]\);
+the test only rejects non-finite or exploding NEES.  Do not treat that
+run as a \(\chi^2\) consistency proof, and do not rewrite the MEKF core
+to chase the open-loop bounds in closed loop.
+
 ## Mahony complementary filter
 
 Same sensors and error convention.  The **kinematics** rate includes the
@@ -184,6 +207,11 @@ vector innovation; the **controller** rate does not:
 \]
 
 Default gains \(k_p = 1.5\), \(k_i = 0.08\) (1/s).
+
+Mahony has no \(P\), so NEES does not apply.  Cheap smokes in
+`tests/test_estimation.py` check unit-norm estimates, that \(k_p=k_i=0\)
+dead-reckons \(\omega_m-\hat b\), and that \(k_i\) moves the bias from a
+vector innovation.  There is still no Mahony \(\chi^2\) / NIS suite.
 
 ## Running estimator tests
 

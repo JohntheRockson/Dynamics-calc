@@ -259,3 +259,28 @@ def test_inertial_body_roundtrip():
     v_I = np.array([3.0, -1.0, 4.0])
     v_b = inertial_to_body(q, v_I)
     np.testing.assert_allclose(body_to_inertial(q, v_b), v_I, atol=1e-12)
+
+
+def test_env_torque_is_double_cover_invariant():
+    """R(q) = R(−q): gravity-gradient and residual-dipole must not flip."""
+    J = np.diag([0.05, 0.06, 0.07])
+    circ = CircularOrbit(radius=_R, inclination=np.deg2rad(40.0))
+    q = quat_normalize([0.6, 0.1, -0.2, 0.7])
+    omega = np.array([0.02, -0.01, 0.03])
+    t = 8.0
+    env = EnvironmentalTorques(
+        gravity_gradient=GravityGradientTorque(J, orbit=circ),
+        residual_dipole=ResidualDipoleTorque([0.2, -0.05, 0.1], orbit=circ),
+    )
+    tau = env.tau_body(q, omega, t)
+    np.testing.assert_allclose(env.tau_body(-q, omega, t), tau, atol=1e-15)
+    np.testing.assert_allclose(env.tau_body(q, 10.0 * omega, t), tau, atol=1e-15)
+
+
+def test_make_sim_disturbances_rejects_unknown_mag_model():
+    from attitude_sim.sim import SimConfig, make_sim_disturbances
+
+    cfg = SimConfig(gravity_gradient=False, residual_dipole_m=np.array([0.1, 0.0, 0.0]))
+    cfg.mag_field_model = "igrf"
+    with pytest.raises(ValueError, match="mag_field_model"):
+        make_sim_disturbances(cfg)

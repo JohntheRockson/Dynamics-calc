@@ -120,7 +120,9 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
 
 `--tau-dist` is a constant body-frame disturbance added to the plant only; the
 logged \(\tau\) is the torque applied to the plant (controller command after the
-actuator stage below).
+actuator stage below).  Optional gravity-gradient / residual-dipole models
+(`--gravity-gradient`, `--residual-dipole`) default off and, when enabled, are
+ZOH at the sample and added with \(\tau_d\).
 
 ## Actuator (reaction wheels)
 
@@ -147,5 +149,9 @@ python -m attitude_sim --controller pid --estimator truth \
 right geometry for independent wheels; it is *not* the Euclidean ball used
 inside the controllers.  Both can be active: the controller still saturates
 in \(|\tau|\), then the wheels clip each axis and (optionally) lag.
-PID anti-windup can apply the same `clip_torque` box on the command (`tau_max`)
-so \(K_i\) sees per-axis saturation, not only the Euclidean ball.
+PID anti-windup applies the same `clip_torque` box on the command (`tau_max`).
+SimLab `make_sim_controller` forwards `--actuator-tau-max` / `SimConfig.actuator_tau_max`
+into PID `tau_max` so \(K_i\) sees per-axis saturation, not only the Euclidean
+ball.  LQR has no integrator; the wheel box stays actuator-only.
+Default `actuator_tau_max is None` leaves PID `tau_max` unset so prior demos
+match.

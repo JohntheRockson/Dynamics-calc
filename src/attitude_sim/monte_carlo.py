@@ -60,6 +60,13 @@ class MonteCarloConfig:
     gain_scale_max: float = 1.0
     use_mag: bool = True
     use_sun: bool = True
+    # Base sensor densities *before* the log-uniform noise_scale.  None keeps
+    # SimConfig defaults (5e-4 / 1e-6 / 3e-3 / 2e-3); make_sim_estimator
+    # still copies gyro σ_v / σ_u into the MEKF Qd.
+    gyro_sigma_v: float | None = None
+    gyro_sigma_u: float | None = None
+    mag_sigma: float | None = None
+    sun_sigma: float | None = None
 
 
 @dataclass
@@ -250,6 +257,10 @@ def sample_trial_config(
         angle_deg=mc.angle_deg,
         use_mag=mc.use_mag,
         use_sun=mc.use_sun,
+        gyro_sigma_v=mc.gyro_sigma_v,
+        gyro_sigma_u=mc.gyro_sigma_u,
+        mag_sigma=mc.mag_sigma,
+        sun_sigma=mc.sun_sigma,
         seed=trial_seed,
         plot=False,
         gif=False,
@@ -547,6 +558,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--noise-scale-min", type=float, default=0.5, help="min sensor-noise scale")
     p.add_argument("--noise-scale-max", type=float, default=2.0, help="max sensor-noise scale")
     p.add_argument(
+        "--gyro-sigma-v",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base gyro ARW σ_v [rad/s/√Hz] before --noise-scale (default: SimConfig 5e-4)",
+    )
+    p.add_argument(
+        "--gyro-sigma-u",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base gyro RRW σ_u [rad/s²/√Hz] before --noise-scale (default: SimConfig 1e-6)",
+    )
+    p.add_argument(
+        "--mag-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base magnetometer Cartesian σ before --noise-scale (default: SimConfig 3e-3)",
+    )
+    p.add_argument(
+        "--sun-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base sun-sensor Cartesian σ before --noise-scale (default: SimConfig 2e-3)",
+    )
+    p.add_argument(
         "--inertia-frac",
         type=float,
         default=0.05,
@@ -618,11 +657,25 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
         tau_dist_max=args.tau_dist_max,
         gain_scale_min=args.gain_scale_min,
         gain_scale_max=args.gain_scale_max,
+        gyro_sigma_v=args.gyro_sigma_v,
+        gyro_sigma_u=args.gyro_sigma_u,
+        mag_sigma=args.mag_sigma,
+        sun_sigma=args.sun_sigma,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.from_json is None:
+        for flag, value in (
+            ("--gyro-sigma-v", args.gyro_sigma_v),
+            ("--gyro-sigma-u", args.gyro_sigma_u),
+            ("--mag-sigma", args.mag_sigma),
+            ("--sun-sigma", args.sun_sigma),
+        ):
+            if value is not None and value < 0.0:
+                parser.error(f"{flag} must be >= 0")
     if args.from_json is not None:
         summary = summary_from_json(args.from_json)
     else:

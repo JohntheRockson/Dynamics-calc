@@ -1,7 +1,9 @@
 """Smoke tests for the closed-loop Monte Carlo harness (tiny N)."""
 
 import numpy as np
+import pytest
 
+from attitude_sim.estimation import MultiplicativeEKF
 from attitude_sim.monte_carlo import (
     FAIL_DIVERGED,
     FAIL_NAN,
@@ -16,6 +18,7 @@ from attitude_sim.monte_carlo import (
     perturb_inertia,
     run_monte_carlo,
     sample_bounded_attitude,
+    sample_trial_config,
     settle_time_s,
     summary_from_json,
     write_json,
@@ -27,7 +30,7 @@ from attitude_sim.plots import (
     plot_monte_carlo,
 )
 from attitude_sim.quaternions import geodesic_angle
-from attitude_sim.sim import SimLog, default_inertia
+from attitude_sim.sim import SimLog, default_inertia, make_sim_estimator
 
 
 def _log(**kwargs) -> SimLog:
@@ -69,6 +72,42 @@ def test_parser_defaults():
     assert args.tau_dist_max == 0.0
     assert args.gain_scale_min == 1.0
     assert args.gain_scale_max == 1.0
+    assert args.gyro_sigma_v is None
+    assert args.gyro_sigma_u is None
+    assert args.mag_sigma is None
+    assert args.sun_sigma is None
+
+
+def test_sample_trial_config_scales_base_sensor_noise():
+    """MC retunes truth gyro + MEKF together: base σ × noise_scale."""
+    mc = MonteCarloConfig(
+        n=1,
+        seed=0,
+        inertia_frac=0.0,
+        noise_scale_min=2.0,
+        noise_scale_max=2.0,
+        gyro_sigma_v=1.0e-3,
+        gyro_sigma_u=4.0e-6,
+        mag_sigma=0.01,
+        sun_sigma=0.008,
+    )
+    cfg, extras = sample_trial_config(mc, 0, np.random.default_rng(0))
+    assert extras["noise_scale"] == 2.0
+    assert cfg.gyro_sigma_v == pytest.approx(2.0e-3)
+    assert cfg.gyro_sigma_u == pytest.approx(8.0e-6)
+    assert cfg.mag_sigma == pytest.approx(0.02)
+    assert cfg.sun_sigma == pytest.approx(0.016)
+    est = make_sim_estimator(cfg, cfg.q0)
+    assert isinstance(est, MultiplicativeEKF)
+    assert est.sigma_v == pytest.approx(cfg.gyro_sigma_v)
+    assert est.sigma_u == pytest.approx(cfg.gyro_sigma_u)
+
+
+def test_main_rejects_negative_sensor_noise():
+    with pytest.raises(SystemExit):
+        main(["--gyro-sigma-v", "-1e-4", "--n", "1", "--t-final", "0.05"])
+    with pytest.raises(SystemExit):
+        main(["--sun-sigma", "-0.01", "--n", "1", "--t-final", "0.05"])
 
 
 def test_settle_time_proxy_finds_last_entry():

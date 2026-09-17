@@ -39,16 +39,24 @@ python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
 python -m attitude_sim --controller pid --estimator truth \
     --actuator-tau-max 0.02 --actuator-tau 0.05 --no-gif
 python -m attitude_sim --coarse-init --no-gif
+python -m attitude_sim --gyro-sigma-v 1e-3 --gyro-sigma-u 2e-6 \
+    --mag-sigma 0.01 --sun-sigma 0.005 --no-gif
+python -m attitude_sim --controller pid --estimator truth \
+    --gravity-gradient --residual-dipole 0.2,-0.1,0.5 \
+    --orbit-incl-deg 51.6 --no-gif
 python -m attitude_sim --help
 ```
 
-`--angle-deg` sets the commanded principal rotation for `--scenario slew` and is ignored for `detumble`. `--tau-dist` is a constant body-frame disturbance added to the plant only.
+`--angle-deg` sets the commanded principal rotation for `--scenario slew` and is ignored for `detumble`. `--tau-dist` is a constant body-frame disturbance added to the plant only. Gravity-gradient and residual-dipole models default **off**; when enabled they are ZOH at the sample and added with `--tau-dist`.
 
 | Flag | CLI behavior |
 | --- | --- |
 | `--dt` | Sample / RK4 step (s). Must be `> 0`; otherwise argparse exits with an error (not a traceback). |
 | `--tau-dist` | Three comma-separated body-frame disturbance torques `[N·m]` (e.g. `0.002,-0.001,0.0008`). Wrong arity or non-floats → argparse error. Logged `τ` is the control command; `τ_d` is plant-only. |
+| `--gravity-gradient` / `--residual-dipole MX,MY,MZ` | Optional environmental torques from `attitude_sim.disturbances` (default **off**). Both are ZOH at the sample and added to `--tau-dist`. `--orbit-radius` (m), `--orbit-incl-deg`, `--orbit-raan-deg`, `--orbit-u0-deg`, `--mag-field-model {tilted,orbit_normal}`. |
 | `--no-mag --no-sun` | Gyro-only. Allowed; `mekf` / `mahony` emit a `UserWarning` because full attitude is not observable from rate. `truth` does not sample sensors and does not warn. |
+| `--gyro-sigma-v` / `--gyro-sigma-u` | Truth-gyro ARW/RRW densities (rad/s/√Hz, rad/s²/√Hz). SimLab copies the same values into the MEKF Farrenkopf \(Q_d\) (`make_sim_estimator`). MC has the same flags as the *base* before `--noise-scale-*`. |
+| `--mag-sigma` / `--sun-sigma` | Vector-stub Cartesian σ; filter \(R\) follows via `vectors_from_sensors`. |
 
 Local runs write `{scenario}_summary.png` and `{scenario}_attitude.gif` under `outputs/` (gitignored). The recruiter-facing slew plot/GIF below are the committed copies in `docs/figures/`.
 
@@ -162,7 +170,7 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **lint** on Python 3.12: `ruff check src tests` and `mypy src`. Ruff rules live in `[tool.ruff]`: E/F/W/I/UP/B/RUF. `E501` (line length), `E741` (name `I` for principal inertia), and RUF001–003 (unicode minus/times/sigma in scientific comments) are ignored so CI does not mass-reformat the tree. Ruff does not run `format`. Mypy is scoped to `src/attitude_sim` on **Python 3.12** (`ignore_missing_imports` only for matplotlib and scipy) so current numpy stubs parse; runtime/pytest still cover 3.10–3.12.
 - **pytest + coverage** on Python **3.10, 3.11, and 3.12**. Line coverage of the `attitude_sim` package must stay at or above **80%** (`pytest-cov`, `[tool.coverage.report] fail_under = 80`). The 3.12 job also uploads `coverage.xml` as an artifact. Measured **91%** on `main` after Monte Carlo #6, harden #7, actuator #8, and plant #9 (Python 3.12); the floor is a modest buffer, not a freeze of that number. `plots.py` (GIF renderer) is the largest uncovered slice. `__main__.py` is omitted from the denominator.
 - **packaging**: `python -m build`, install the wheel, `import attitude_sim`.
-- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; detumble is not in the MC harness). Attitude GIF rendering is not a CI gate.
+- CLI smoke: no-plot / **no-GIF** SimLab slew, detumble, LQR+Mahony, PID hold with `--tau-dist`, actuator saturation/lag, gravity-gradient + residual-dipole, sensor-noise knobs, plus a tiny Monte Carlo entry (`python -m attitude_sim.monte_carlo --n 5`, short `t_final`, `--diverge-deg 180` so a 0.2 s run is scored for numerical health rather than settling; detumble is not in the MC harness). Attitude GIF rendering is not a CI gate.
 
 Behavioral coverage includes quaternion unit-norm and double-cover, 3-2-1 Euler principal-axis checks, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, a spherical-body constant-torque closed form, a work–energy trapezoid check, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, detumble rate-dump on truth and MEKF, a constant body-torque hold (PID nulls the bias and the logged command cancels \(\tau_d\); LQR holds a small proportional residual), per-axis reaction-wheel saturation (`tests/test_actuators.py`: applied \(|\tau_i|\) never exceeds \(\tau_{\max}\); unlimited/no-lag matches prior closed-loop torque), a tiny N=5 Monte Carlo harness smoke (`pytest tests/test_monte_carlo.py`), Agg-backend MC plot-helper coverage, and a check that committed `docs/figures/mc_*.png` plus slew figures exist (`tests/test_docs_figures.py`; missing copies regenerate Agg PNGs in tmp, never GIFs). Control-law design notes live in [`docs/controls.md`](docs/controls.md).
 
@@ -194,13 +202,13 @@ J \dot{\omega} = \tau - \omega \times (J\omega),\qquad
 
 Principal moments of \(J\) are required to satisfy the physical triangle inequalities \(I_i+I_j\ge I_k\).
 
-**Environmental torques** (`attitude_sim.disturbances`; optional plant inputs, not the SimLab `--tau-dist` bias). Orbit frame: \(\hat r\) zenith (Earth→s/c), \(\hat h\) orbit normal \(r\times v\), nadir \(-\hat r\). Body vectors are \(v_b=R(q)^{\top}v_I\). Gravity-gradient (circular or given orbit state)
+**Environmental torques** (`attitude_sim.disturbances`; optional SimLab plant inputs, default **off**). Orbit frame: \(\hat r\) zenith (Earth→s/c), \(\hat h\) orbit normal \(r\times v\), nadir \(-\hat r\). Body vectors are \(v_b=R(q)^{\top}v_I\). Gravity-gradient (circular or given orbit state)
 
 \[
 \tau_{\mathrm{gg}} = 3\frac{\mu}{r^{3}}\,(\hat r_b \times J\hat r_b)
 \]
 
-vanishes when a principal axis of \(J\) lies along nadir/zenith. Residual dipole \(\tau_m=m_b\times B_b\) with \(B_b=R(q)^{\top}B_I\) and \(B_I\) either a tilted Earth dipole or \(B_I=(\mu_m/r^{3})\hat h\) (orbit-normal / equatorial-dipole option). Parallel \(m\) and \(B\) give zero torque. Call `τ_body(q, ω, t)` with a bound `CircularOrbit`, or pass `orbit=OrbitState(...)`.
+vanishes when a principal axis of \(J\) lies along nadir/zenith. Residual dipole \(\tau_m=m_b\times B_b\) with \(B_b=R(q)^{\top}B_I\) and \(B_I\) either a tilted Earth dipole or \(B_I=(\mu_m/r^{3})\hat h\) (orbit-normal / equatorial-dipole option). Parallel \(m\) and \(B\) give zero torque. Call `τ_body(q, ω, t)` with a bound `CircularOrbit`, or pass `orbit=OrbitState(...)`. SimLab injects them in `run_slew` as a sample ZOH alongside `--tau-dist` when `--gravity-gradient` and/or `--residual-dipole` are set. Logged \(\tau\) remains the applied wheel torque; `SimLog.tau_env` is the environmental sample.
 
 **RK4** (classical fourth-order, step \(h\), zero-order-hold \(\tau\)):
 
@@ -248,7 +256,7 @@ See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
 
 **Estimation** (`--estimator`; see [docs/estimation.md](docs/estimation.md) for the noise / process-noise / NEES story):
 
-- `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates. SimLab forwards `SimConfig.gyro_sigma_v` / `gyro_sigma_u` into that \(Q_d\) so the filter process noise matches the truth gyro. Consistency: ensemble NEES should be \(\chi^2_6\) under matched noise (unit tests document the bounds).
+- `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates. SimLab forwards `SimConfig.gyro_sigma_v` / `gyro_sigma_u` into that \(Q_d\) so the filter process noise matches the truth gyro. Consistency: ensemble NEES should be \(\chi^2_6\) under matched *open-loop* noise (unit tests document the bounds). Closed-loop NEES is a looser smoke only — control coupling / unmatched \(\tau\) are not a \(\chi^2\) proof.
 - `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\). Also exported as `attitude_sim.MahonyFilter`.
 - `truth` — full-state feedback (no estimator), for plant/controller checkout. SimLab skips gyro and vector-sensor sampling on this path.
 
@@ -258,7 +266,7 @@ Gyro-only (`--no-mag --no-sun` with `mekf` / `mahony`) is allowed but warns: ful
 
 The controller always consumes \((\hat{q},\,\hat{\omega})\) from the selected source. The programmatic entry point is `attitude_sim.run_sim` (alias of `run_slew`).
 
-**Actuator** (optional; default unlimited / no lag so prior closed-loop runs match).  After the PID/LQR command, `attitude_sim.actuators` clips each axis to \(\pm\tau_{\max,i}\) (reaction-wheel limits) and can apply a first-order lag \(\dot\tau=(u-\tau)/T\).  Logged \(\tau\) is the applied wheel torque.  CLI: `--actuator-tau-max` (scalar or `x,y,z`) and `--actuator-tau` (seconds).  This is independent of the controller Euclidean \(|\tau|\le\tau_{\max}\) clamp; see [`docs/controls.md`](docs/controls.md).
+**Actuator** (optional; default unlimited / no lag so prior closed-loop runs match).  After the PID/LQR command, `attitude_sim.actuators` clips each axis to \(\pm\tau_{\max,i}\) (reaction-wheel limits) and can apply a first-order lag \(\dot\tau=(u-\tau)/T\).  Logged \(\tau\) is the applied wheel torque.  CLI: `--actuator-tau-max` (scalar or `x,y,z`) and `--actuator-tau` (seconds).  This is independent of the controller Euclidean \(|\tau|\le\tau_{\max}\) clamp; see [`docs/controls.md`](docs/controls.md).  For PID, SimLab also forwards `--actuator-tau-max` into `PIDAttitudeController.tau_max` so anti-windup sees the same per-axis box as the wheels.
 
 ## Architecture
 
@@ -268,6 +276,8 @@ sensors  →  estimator (MEKF / Mahony / truth)
             controller (PID | LQR)  →  τ_cmd
                  ↓
             actuator (per-axis clip, optional lag)  →  τ
+                 ↓
+            + τ_d (constant) + τ_env (optional GG / residual dipole, default off)
                  ↓
             rigid-body plant (RK4; optional RKMK4 is library-only)  →  q, ω
                  ↓
@@ -279,7 +289,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.mrp` | Modified Rodrigues Parameters: quat/DCM conversions, shadow-set switch, \(\dot\sigma=\tfrac14 B(\sigma)\omega\) |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers, Euler equation, RK4 (default); optional RKMK4 via `step_rigid_body(..., method="rkmk4")` — **not** a SimLab CLI flag |
-| `attitude_sim.disturbances` | Gravity-gradient and residual-dipole `τ_body(q, ω, t or orbit)`; not wired into the CLI |
+| `attitude_sim.disturbances` | Gravity-gradient and residual-dipole `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` (default off) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
 | `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, wheels |
@@ -298,6 +308,6 @@ Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06
 | --- | --- | --- |
 | `pid` | `truth` | Plant + quaternion PD/PID |
 | `lqr` | `truth` | Linearized LQR pointing |
-| `pid` or `lqr` | `truth` | Body-torque hold: `--angle-deg 0 --tau-dist …` |
+| `pid` or `lqr` | `truth` | Body-torque hold: `--angle-deg 0 --tau-dist …` and/or `--gravity-gradient` / `--residual-dipole` |
 | `pid` or `lqr` | `mekf` | Control on Kalman estimates (default) |
 | `pid` or `lqr` | `mahony` | Control on complementary-filter estimates |
