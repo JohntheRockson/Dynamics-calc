@@ -44,7 +44,7 @@ Artifacts land in `outputs/slew_summary.png` and `outputs/slew_attitude.gif`.
 pytest
 ```
 
-Coverage includes quaternion unit-norm, RK4 torque-free energy / inertial-momentum checks, and a closed-loop slew smoke test (true-state PID/LQR plus control on MEKF / Mahony estimates).
+Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), and a closed-loop slew smoke test (true-state PID/LQR plus control on MEKF / Mahony estimates).
 
 ## Equations
 
@@ -54,19 +54,34 @@ Scalar-first unit quaternions \(q = [q_{w},\,q_{x},\,q_{y},\,q_{z}]\) with the H
 v_{I} = R(q)\, v_{b}.
 \]
 
-**Kinematics** (body rate \(\omega\)):
+**Kinematics** (body rate \(\omega\), pure quaternion \(\hat{\omega}=[0,\,\omega]\)):
 
 \[
-\dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}.
+\dot{q} = \tfrac{1}{2}\, q \otimes \hat{\omega}.
 \]
 
-**Euler rotational dynamics** with body inertia \(J\) and external control torque \(\tau\):
+**Euler rotational dynamics** with body inertia \(J=J^{\top}\succ 0\) and external control torque \(\tau\):
 
 \[
-J \dot{\omega} = \tau - \omega \times (J\omega).
+J \dot{\omega} = \tau - \omega \times (J\omega),\qquad
+\dot{\omega} = J^{-1}\bigl(\tau - \omega \times (J\omega)\bigr).
 \]
 
-The plant is integrated with classical RK4 and \(q\) is renormalized after every step. Digital control holds \(\tau\) with a zero-order hold over each sample.
+Principal moments of \(J\) are required to satisfy the physical triangle inequalities \(I_i+I_j\ge I_k\).
+
+**RK4** (classical fourth-order, step \(h\), zero-order-hold \(\tau\)):
+
+\[
+\begin{aligned}
+k_1 &= f(t,\,y),\\
+k_2 &= f(t+h/2,\,y+(h/2)k_1),\\
+k_3 &= f(t+h/2,\,y+(h/2)k_2),\\
+k_4 &= f(t+h,\,y+h k_3),\\
+y^+ &= y + (h/6)\,(k_1+2k_2+2k_3+k_4).
+\end{aligned}
+\]
+
+After each step \(q\leftarrow q/\|q\|\). RK4 is not symplectic; torque-free first integrals are the rotational kinetic energy \(T=\tfrac12\omega\cdot(J\omega)\) and the inertial angular momentum \(h_I=R(q)\,J\omega\) (and \(|h_b|=|J\omega|\)). See `attitude_sim.plant` and `tests/test_plant.py` for the documented conservation tolerances.
 
 **Attitude error** used by both controllers:
 
@@ -119,7 +134,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | Module | Role |
 | --- | --- |
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
-| `attitude_sim.plant` | `RigidBody`, Euler equation, RK4 |
+| `attitude_sim.plant` | `RigidBody`, inertia helpers (principal axes / validation), Euler equation, RK4 |
 | `attitude_sim.controls` | PID and CARE LQR, `--controller` switch |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
