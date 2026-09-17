@@ -36,6 +36,7 @@ def test_parser_defaults_to_slew():
     assert args.aero_cd == 2.2
     assert args.srp_cr == 1.0
     assert args.srp_eclipse == "off"
+    assert args.log_innovations is None
 
 
 def test_parser_detumble_and_flags():
@@ -335,6 +336,52 @@ def test_main_rejects_bad_env_flags():
         main(["--srp-cr", "-1", "--srp", "--t-final", "0.05", "--no-plot", "--no-gif"])
     with pytest.raises(SystemExit):
         main(["--srp-eclipse", "penumbra", "--srp", "--t-final", "0.05", "--no-plot", "--no-gif"])
+
+
+def test_main_log_innovations_writes_csv(tmp_path):
+    dest = tmp_path / "nis.csv"
+    assert (
+        main(
+            [
+                "--estimator",
+                "mekf",
+                "--log-innovations",
+                str(dest),
+                "--t-final",
+                "0.05",
+                "--no-plot",
+                "--no-gif",
+            ]
+        )
+        == 0
+    )
+    assert dest.is_file()
+    lines = dest.read_text().strip().splitlines()
+    assert lines[0].startswith("index,t,sensor,nis")
+    assert len(lines) > 1
+    cfg = make_scenario_config("slew", plot=False, gif=False, log_innovations=dest)
+    assert cfg.log_innovations == dest
+
+
+def test_main_log_innovations_mahony_warns_and_skips(tmp_path):
+    dest = tmp_path / "skipped.csv"
+    with pytest.warns(UserWarning, match="MEKF-only"):
+        assert (
+            main(
+                [
+                    "--estimator",
+                    "mahony",
+                    "--log-innovations",
+                    str(dest),
+                    "--t-final",
+                    "0.05",
+                    "--no-plot",
+                    "--no-gif",
+                ]
+            )
+            == 0
+        )
+    assert not dest.exists()
 
 
 def test_main_rejects_bad_actuator_tau_max():

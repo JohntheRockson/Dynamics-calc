@@ -21,6 +21,7 @@ from attitude_sim.disturbances import (
 )
 from attitude_sim.estimation import (
     ComplementaryFilter,
+    InnovationLog,
     MultiplicativeEKF,
     make_estimator,
     triad_q0_from_sensors,
@@ -101,6 +102,7 @@ class SimConfig:
     plot: bool = True
     gif: bool = True
     out_dir: Path = field(default_factory=lambda: Path("outputs"))
+    log_innovations: Path | None = None
 
     @property
     def artifact_stem(self) -> str:
@@ -126,6 +128,8 @@ class SimLog:
     scenario: str = "slew"
     plot_path: Path | None = None
     gif_path: Path | None = None
+    innovation_csv: Path | None = None
+    mean_nis: float | None = None
 
     @property
     def final_att_error_deg(self) -> float:
@@ -168,6 +172,7 @@ def make_scenario_config(
     plot: bool = True,
     gif: bool = True,
     out_dir: Path = Path("outputs"),
+    log_innovations: Path | None = None,
 ) -> SimConfig:
     """Named SimLab presets. Plant / controller / estimator cores are unchanged.
 
@@ -259,6 +264,8 @@ def make_scenario_config(
         cfg.mag_sigma = float(mag_sigma)
     if sun_sigma is not None:
         cfg.sun_sigma = float(sun_sigma)
+    if log_innovations is not None:
+        cfg.log_innovations = Path(log_innovations)
     return cfg
 
 
@@ -441,6 +448,17 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
             UserWarning,
             stacklevel=2,
         )
+    if cfg.log_innovations is not None:
+        if isinstance(estimator, MultiplicativeEKF):
+            if estimator.innovation_log is None:
+                estimator.innovation_log = InnovationLog()
+        else:
+            warnings.warn(
+                "SimConfig.log_innovations is MEKF-only "
+                f"(estimator={cfg.estimator!r}); skipping",
+                UserWarning,
+                stacklevel=2,
+            )
 
     n = int(np.round(cfg.t_final / cfg.dt)) + 1
     t = np.arange(n, dtype=float) * cfg.dt
@@ -459,7 +477,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         else:
             omega_m = gyro.measure(omega, cfg.dt)
             vecs = vectors_from_sensors(q, sensors) if sensors else None
-            q_hat, omega_hat = estimator.step(omega_m, cfg.dt, vecs)
+            q_hat, omega_hat = estimator.step(omega_m, cfg.dt, vecs, t=float(t[k]))
 
         qh_hist[k] = q_hat
         wh_hist[k] = omega_hat
@@ -501,6 +519,15 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         estimator=cfg.estimator,
         scenario=cfg.scenario,
     )
+
+    if (
+        isinstance(estimator, MultiplicativeEKF)
+        and estimator.innovation_log is not None
+        and cfg.log_innovations is not None
+    ):
+        log.innovation_csv = estimator.innovation_log.write_csv(cfg.log_innovations)
+        if estimator.innovation_log.samples:
+            log.mean_nis = estimator.innovation_log.mean_nis()
 
     if cfg.plot or cfg.gif:
         from attitude_sim.plots import plot_slew, write_attitude_gif
@@ -713,6 +740,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SIGMA",
         help="sun-sensor Cartesian σ (default: SimConfig 2e-3)",
     )
+    p.add_argument(
+        "--log-innovations",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "write MEKF vector NIS / innovation CSV (default: off). "
+            "Mahony/truth skip with a warning"
+        ),
+    )
     return p
 
 
@@ -797,6 +834,7 @@ def main(argv: list[str] | None = None) -> int:
         plot=not args.no_plot,
         gif=not args.no_gif,
         out_dir=args.out_dir,
+        log_innovations=args.log_innovations,
     )
     log = run_slew(cfg)
     print(
@@ -808,6 +846,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"plot: {log.plot_path}")
     if log.gif_path is not None:
         print(f"gif:  {log.gif_path}")
+    if log.innovation_csv is not None:
+        nis_txt = ""
+        if log.mean_nis is not None:
+            nis_txt = f"  mean_NIS={log.mean_nis:.3f} (χ²_2, E=2)"
+        print(f"innovations: {log.innovation_csv}{nis_txt}")
     return 0
 
 
