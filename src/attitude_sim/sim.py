@@ -113,18 +113,27 @@ def make_scenario_config(
     use_mag: bool = True,
     use_sun: bool = True,
     coarse_init: bool = False,
+    gyro_sigma_v: float | None = None,
+    gyro_sigma_u: float | None = None,
+    mag_sigma: float | None = None,
+    sun_sigma: float | None = None,
     seed: int = 1,
     plot: bool = True,
     gif: bool = True,
     out_dir: Path = Path("outputs"),
 ) -> SimConfig:
-    """Named SimLab presets. Plant / controller / estimator cores are unchanged."""
+    """Named SimLab presets. Plant / controller / estimator cores are unchanged.
+
+    ``gyro_sigma_v`` / ``gyro_sigma_u`` (and mag/sun ``sigma``) retune the
+    truth sensors *and* — via ``make_sim_estimator`` — the MEKF Farrenkopf
+    ``Q_d``.  ``None`` keeps the ``SimConfig`` defaults.
+    """
     name = scenario.lower()
     if name not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}; expected one of {SCENARIOS}")
     dist = np.zeros(3) if tau_dist is None else np.asarray(tau_dist, dtype=float).reshape(3)
     if name == "detumble":
-        return SimConfig(
+        cfg = SimConfig(
             dt=dt,
             t_final=30.0 if t_final is None else t_final,
             controller=controller,
@@ -144,24 +153,34 @@ def make_scenario_config(
             gif=gif,
             out_dir=out_dir,
         )
-    return SimConfig(
-        dt=dt,
-        t_final=40.0 if t_final is None else t_final,
-        controller=controller,
-        estimator=estimator,
-        scenario="slew",
-        q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
-        tau_dist=dist,
-        actuator_tau_max=actuator_tau_max,
-        actuator_tau=actuator_tau,
-        use_mag=use_mag,
-        use_sun=use_sun,
-        coarse_init=coarse_init,
-        seed=seed,
-        plot=plot,
-        gif=gif,
-        out_dir=out_dir,
-    )
+    else:
+        cfg = SimConfig(
+            dt=dt,
+            t_final=40.0 if t_final is None else t_final,
+            controller=controller,
+            estimator=estimator,
+            scenario="slew",
+            q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
+            tau_dist=dist,
+            actuator_tau_max=actuator_tau_max,
+            actuator_tau=actuator_tau,
+            use_mag=use_mag,
+            use_sun=use_sun,
+            coarse_init=coarse_init,
+            seed=seed,
+            plot=plot,
+            gif=gif,
+            out_dir=out_dir,
+        )
+    if gyro_sigma_v is not None:
+        cfg.gyro_sigma_v = float(gyro_sigma_v)
+    if gyro_sigma_u is not None:
+        cfg.gyro_sigma_u = float(gyro_sigma_u)
+    if mag_sigma is not None:
+        cfg.mag_sigma = float(mag_sigma)
+    if sun_sigma is not None:
+        cfg.sun_sigma = float(sun_sigma)
+    return cfg
 
 
 def make_sim_estimator(
@@ -402,6 +421,38 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="first-order actuator lag time constant [s] (default: none / instantaneous)",
     )
+    p.add_argument(
+        "--gyro-sigma-v",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help=(
+            "gyro ARW density σ_v [rad/s/√Hz]; also MEKF Farrenkopf Qd (default: SimConfig 5e-4)"
+        ),
+    )
+    p.add_argument(
+        "--gyro-sigma-u",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help=(
+            "gyro RRW density σ_u [rad/s²/√Hz]; also MEKF Farrenkopf Qd (default: SimConfig 1e-6)"
+        ),
+    )
+    p.add_argument(
+        "--mag-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="magnetometer Cartesian σ (default: SimConfig 3e-3)",
+    )
+    p.add_argument(
+        "--sun-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="sun-sensor Cartesian σ (default: SimConfig 2e-3)",
+    )
     return p
 
 
@@ -427,6 +478,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--dt must be positive")
     if args.actuator_tau is not None and args.actuator_tau < 0.0:
         parser.error("--actuator-tau must be >= 0")
+    for flag, value in (
+        ("--gyro-sigma-v", args.gyro_sigma_v),
+        ("--gyro-sigma-u", args.gyro_sigma_u),
+        ("--mag-sigma", args.mag_sigma),
+        ("--sun-sigma", args.sun_sigma),
+    ):
+        if value is not None and value < 0.0:
+            parser.error(f"{flag} must be >= 0")
     cfg = make_scenario_config(
         args.scenario,
         dt=args.dt,
@@ -440,6 +499,10 @@ def main(argv: list[str] | None = None) -> int:
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         coarse_init=args.coarse_init,
+        gyro_sigma_v=args.gyro_sigma_v,
+        gyro_sigma_u=args.gyro_sigma_u,
+        mag_sigma=args.mag_sigma,
+        sun_sigma=args.sun_sigma,
         seed=args.seed,
         plot=not args.no_plot,
         gif=not args.no_gif,

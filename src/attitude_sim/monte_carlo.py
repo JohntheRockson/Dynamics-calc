@@ -60,6 +60,13 @@ class MonteCarloConfig:
     gain_scale_max: float = 1.0
     use_mag: bool = True
     use_sun: bool = True
+    # Base sensor densities *before* the log-uniform noise_scale.  None keeps
+    # SimConfig defaults (5e-4 / 1e-6 / 3e-3 / 2e-3); make_sim_estimator
+    # still copies gyro σ_v / σ_u into the MEKF Qd.
+    gyro_sigma_v: float | None = None
+    gyro_sigma_u: float | None = None
+    mag_sigma: float | None = None
+    sun_sigma: float | None = None
 
 
 @dataclass
@@ -219,7 +226,11 @@ def classify_failure(
         return True, FAIL_NON_UNIT, q_norm_err
     final_deg = float(np.rad2deg(log.att_error[-1]))
     w_max = float(np.max(np.linalg.norm(log.omega, axis=1)))
-    if (not math.isfinite(final_deg)) or final_deg > float(diverge_deg) or w_max > float(diverge_omega):
+    if (
+        (not math.isfinite(final_deg))
+        or final_deg > float(diverge_deg)
+        or w_max > float(diverge_omega)
+    ):
         return True, FAIL_DIVERGED, q_norm_err
     return False, "", q_norm_err
 
@@ -250,6 +261,10 @@ def sample_trial_config(
         angle_deg=mc.angle_deg,
         use_mag=mc.use_mag,
         use_sun=mc.use_sun,
+        gyro_sigma_v=mc.gyro_sigma_v,
+        gyro_sigma_u=mc.gyro_sigma_u,
+        mag_sigma=mc.mag_sigma,
+        sun_sigma=mc.sun_sigma,
         seed=trial_seed,
         plot=False,
         gif=False,
@@ -283,14 +298,18 @@ def sample_trial_config(
     extras = {
         "noise_scale": float(noise_scale),
         "omega0_norm": float(np.linalg.norm(omega0)),
-        "q0_from_identity_deg": float(np.rad2deg(geodesic_angle(q0, np.array([1.0, 0.0, 0.0, 0.0])))),
+        "q0_from_identity_deg": float(
+            np.rad2deg(geodesic_angle(q0, np.array([1.0, 0.0, 0.0, 0.0])))
+        ),
         "gain_scale": float(gain_scale),
         "tau_dist_norm": float(tau_dist_norm),
     }
     return cfg, extras
 
 
-def score_trial(log: SimLog, mc: MonteCarloConfig, extras: dict[str, float], trial: int, seed: int) -> TrialResult:
+def score_trial(
+    log: SimLog, mc: MonteCarloConfig, extras: dict[str, float], trial: int, seed: int
+) -> TrialResult:
     failed, reason, q_norm_err = classify_failure(
         log, diverge_deg=mc.diverge_deg, diverge_omega=mc.diverge_omega
     )
@@ -299,7 +318,11 @@ def score_trial(log: SimLog, mc: MonteCarloConfig, extras: dict[str, float], tri
         if log.tau.size == 0 or not np.all(np.isfinite(log.tau))
         else float(np.max(np.linalg.norm(log.tau, axis=1)))
     )
-    final_deg = float("nan") if not np.all(np.isfinite(log.att_error)) else float(np.rad2deg(log.att_error[-1]))
+    final_deg = (
+        float("nan")
+        if not np.all(np.isfinite(log.att_error))
+        else float(np.rad2deg(log.att_error[-1]))
+    )
     settle = settle_time_s(log.t, log.att_error, np.deg2rad(mc.settle_deg))
     return TrialResult(
         trial=trial,
@@ -483,8 +506,12 @@ def trial_from_row(row: dict) -> TrialResult:
         noise_scale=_as_float(row.get("noise_scale")),
         failed=bool(row.get("failed", False)),
         fail_reason=str(row.get("fail_reason") or ""),
-        gain_scale=_as_float(row.get("gain_scale")) if row.get("gain_scale") not in (None, "") else 1.0,
-        tau_dist_norm=_as_float(row.get("tau_dist_norm")) if row.get("tau_dist_norm") not in (None, "") else 0.0,
+        gain_scale=_as_float(row.get("gain_scale"))
+        if row.get("gain_scale") not in (None, "")
+        else 1.0,
+        tau_dist_norm=_as_float(row.get("tau_dist_norm"))
+        if row.get("tau_dist_norm") not in (None, "")
+        else 0.0,
     )
 
 
@@ -546,6 +573,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--noise-scale-min", type=float, default=0.5, help="min sensor-noise scale")
     p.add_argument("--noise-scale-max", type=float, default=2.0, help="max sensor-noise scale")
+    p.add_argument(
+        "--gyro-sigma-v",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base gyro ARW σ_v [rad/s/√Hz] before --noise-scale (default: SimConfig 5e-4)",
+    )
+    p.add_argument(
+        "--gyro-sigma-u",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base gyro RRW σ_u [rad/s²/√Hz] before --noise-scale (default: SimConfig 1e-6)",
+    )
+    p.add_argument(
+        "--mag-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base magnetometer Cartesian σ before --noise-scale (default: SimConfig 3e-3)",
+    )
+    p.add_argument(
+        "--sun-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="base sun-sensor Cartesian σ before --noise-scale (default: SimConfig 2e-3)",
+    )
     p.add_argument(
         "--inertia-frac",
         type=float,
@@ -618,11 +673,25 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
         tau_dist_max=args.tau_dist_max,
         gain_scale_min=args.gain_scale_min,
         gain_scale_max=args.gain_scale_max,
+        gyro_sigma_v=args.gyro_sigma_v,
+        gyro_sigma_u=args.gyro_sigma_u,
+        mag_sigma=args.mag_sigma,
+        sun_sigma=args.sun_sigma,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.from_json is None:
+        for flag, value in (
+            ("--gyro-sigma-v", args.gyro_sigma_v),
+            ("--gyro-sigma-u", args.gyro_sigma_u),
+            ("--mag-sigma", args.mag_sigma),
+            ("--sun-sigma", args.sun_sigma),
+        ):
+            if value is not None and value < 0.0:
+                parser.error(f"{flag} must be >= 0")
     if args.from_json is not None:
         summary = summary_from_json(args.from_json)
     else:
