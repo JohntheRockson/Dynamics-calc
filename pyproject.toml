@@ -30,6 +30,10 @@ Homepage = "https://github.com/JohntheRockson/Dynamics-calc"
 where = ["src"]
 
 [tool.pytest.ini_options]
+minversion = "7.4"
 testpaths = ["tests"]
-addopts = "-q"
 pythonpath = ["src"]
+addopts = "--tb=short -ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

@@ -1,4 +1,4 @@
-"""Matplotlib figures and an optional 3-D attitude GIF for a slew run."""
+"""Matplotlib figures and an optional 3-D attitude GIF for a SimLab run."""
 
 from __future__ import annotations
 
@@ -14,6 +14,16 @@ from matplotlib import animation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from attitude_sim.quaternions import quat_to_rotation
+
+_SCENARIO_TITLES = {
+    "slew": "Rest-to-rest slew",
+    "detumble": "Detumble to rest",
+}
+
+
+def _scenario_title(log) -> str:
+    name = getattr(log, "scenario", "slew")
+    return _SCENARIO_TITLES.get(name, name)
 
 
 def _style() -> None:
@@ -99,7 +109,7 @@ def plot_slew(log, path: Path) -> Path:
     ax.set_xlabel("t (s)")
 
     fig.suptitle(
-        f"Rest-to-rest slew  |  controller={log.controller}  estimator={log.estimator}",
+        f"{_scenario_title(log)}  |  controller={log.controller}  estimator={log.estimator}",
         fontsize=13,
     )
     path = Path(path)
@@ -110,7 +120,7 @@ def plot_slew(log, path: Path) -> Path:
 
 
 def write_attitude_gif(log, path: Path, fps: int = 20, max_frames: int = 80) -> Path:
-    """Animate a body-fixed box + body axes through the slew."""
+    """Animate a body-fixed box + body axes (inertial frame: X red, Y green, Z blue)."""
     _style()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

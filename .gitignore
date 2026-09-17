@@ -15,4 +15,6 @@ outputs/
 .DS_Store
 *.png
 *.gif
-!docs/figures/**
+!docs/figures/
+!docs/figures/*.png
+!docs/figures/*.gif

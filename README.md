@@ -1,6 +1,6 @@
 # Dynamics-calc
 
-Milestone 1 of a GitHub-ready **rigid-body attitude** simulator: quaternion kinematics, Euler rotational dynamics, PID / LQR pointing control, and a gyro + vector-sensor estimator. Clone, install, run a rest-to-rest slew.
+Milestone 1 of a GitHub-ready **rigid-body attitude** simulator: quaternion kinematics, Euler rotational dynamics, PID / LQR pointing control, and a gyro + vector-sensor estimator.
 
 This repo is the rotational half of a 6DOF rigid-body GNC stack (state \(x = [q_{4},\,\omega_{3}]\)). Translation / rover / terrain work is out of scope.
 
@@ -16,43 +16,64 @@ pip install -e ".[dev]"
 
 Or `pip install -r requirements.txt` and keep `src/` on `PYTHONPATH`.
 
-## Run a slew
+## SimLab usage
 
-One command writes a summary PNG and a short attitude GIF:
+`python -m attitude_sim` is the SimLab entry point (`attitude_sim.sim`). It closes the loop
+
+sensors → estimator → controller → plant (RK4)
+
+and writes a summary PNG plus a short attitude GIF. Two named scenarios:
+
+| `--scenario` | What it is | Default duration |
+| --- | --- | --- |
+| `slew` (default) | 75° rest-to-rest slew about a skewed body axis | 40 s |
+| `detumble` | Tumbling initial rate, dump \(\omega\) and recover identity attitude | 30 s |
 
 ```bash
 python -m attitude_sim
-```
-
-Useful flags:
-
-```bash
+python -m attitude_sim --scenario detumble
 python -m attitude_sim --controller lqr --estimator mekf --t-final 40
 python -m attitude_sim --controller pid --estimator truth --no-gif
 python -m attitude_sim --help
 ```
 
-Artifacts land in `outputs/slew_summary.png` and `outputs/slew_attitude.gif`.
+Local runs write `{scenario}_summary.png` and `{scenario}_attitude.gif` under `outputs/` (gitignored). The recruiter-facing slew plot/GIF below are the committed copies in `docs/figures/`.
 
-![Rest-to-rest slew](docs/figures/slew_summary.png)
+## Slew plot and GIF
 
-![Attitude animation](docs/figures/slew_attitude.gif)
+**Figure: rest-to-rest slew summary** (`docs/figures/slew_summary.png`). Default stack `pid` + `mekf`, 75°, 40 s, 10 ms sample. Panels are quaternion, 3-2-1 Euler, body rate, control torque, geodesic attitude error, and estimator error.
 
-## Tests
+![Rest-to-rest slew summary (pid + mekf)](docs/figures/slew_summary.png)
+
+**Figure: attitude GIF** (`docs/figures/slew_attitude.gif`). Body-fixed smallsat box in the inertial frame; body axes are X red, Y green, Z blue. Frame title is simulation time \(t\).
+
+![Rest-to-rest slew attitude animation](docs/figures/slew_attitude.gif)
+
+Regenerate the committed slew artifacts (overwrites the files in `docs/figures/`):
+
+```bash
+python -m attitude_sim --scenario slew --out-dir docs/figures
+```
+
+Detumble summary (optional; not committed by default):
+
+```bash
+python -m attitude_sim --scenario detumble --out-dir outputs --no-gif
+```
+
+## Tests and CI
 
 ```bash
 pytest
 ```
 
-Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), and a closed-loop slew smoke test (true-state PID/LQR plus control on MEKF / Mahony estimates).
+GitHub Actions (`.github/workflows/ci.yml`) installs `.[dev]`, runs `pytest -v`, then a no-plot CLI smoke of both scenarios. Coverage includes quaternion unit-norm, RK4 fourth-order scalar checks, torque-free energy / inertial-momentum invariants with documented tolerances, axisymmetric closed-form precession, inertia validation (principal axes, triangle inequalities), estimator noise-model and filter-vs-plant checks (`pytest tests/test_estimation.py tests/test_sensors.py`), closed-loop slew on truth and on MEKF / Mahony estimates, and a detumble rate-dump smoke test.
 
-## Equations
+## Equations (what the SimLab integrates)
 
-Scalar-first unit quaternions \(q = [q_{w},\,q_{x},\,q_{y},\,q_{z}]\) with the Hamilton product. The attitude of the body relative to an inertial frame maps body vectors into inertial coordinates,
+These are the rigid-body equations stepped by `attitude_sim.plant` and the error used by `attitude_sim.controls`. The CLI does not re-derive them; `--controller` / `--estimator` only switch which module produces \(\tau\) and \((\hat{q},\hat{\omega})\).
 
-\[
-v_{I} = R(q)\, v_{b}.
-\]
+Scalar-first unit quaternions \(q = [q_{w},\,q_{x},\,q_{y},\,q_{z}]\) with the Hamilton product. Body vectors map to inertial coordinates as \(v_{I} = R(q)\, v_{b}\).
 
 **Kinematics** (body rate \(\omega\), pure quaternion \(\hat{\omega}=[0,\,\omega]\)):
 
@@ -81,9 +102,9 @@ y^+ &= y + (h/6)\,(k_1+2k_2+2k_3+k_4).
 \end{aligned}
 \]
 
-After each step \(q\leftarrow q/\|q\|\). RK4 is not symplectic; torque-free first integrals are the rotational kinetic energy \(T=\tfrac12\omega\cdot(J\omega)\) and the inertial angular momentum \(h_I=R(q)\,J\omega\) (and \(|h_b|=|J\omega|\)). See `attitude_sim.plant` and `tests/test_plant.py` for the documented conservation tolerances.
+After each step \(q\leftarrow q/\|q\|\). RK4 is not symplectic; torque-free first integrals are the rotational kinetic energy \(T=\tfrac12\omega\cdot(J\omega)\) and the inertial angular momentum \(h_I=R(q)\,J\omega\) (and \(|h_b|=|J\omega|\)). See `attitude_sim.plant` and `tests/test_plant.py` for the documented conservation tolerances. The SimLab CLI holds \(\tau\) ZOH over each sample.
 
-**Attitude error** used by both controllers:
+**Attitude error** (both controllers):
 
 \[
 q_{e} = q_{\mathrm{des}}^{\ast} \otimes \hat{q},\qquad
@@ -91,13 +112,13 @@ e_{q} = \operatorname{sign}(q_{e0})\, q_{e,1:3},\qquad
 \delta\theta \approx 2 e_{q}.
 \]
 
-**PID** (inertia-scaled PD plus a small integral term, optional gyroscopic cancellation, torque saturation and anti-windup):
+**PID** (inertia-scaled PD, small integral, optional gyroscopic cancellation, saturation / anti-windup):
 
 \[
-\tau = -K_{p} e_{q} - K_{d}(\hat{\omega}-\omega_{\mathrm{des}}) - K_{i} z + \omega \times J\omega.
+\tau = -K_{p} e_{q} - K_{d}(\hat{\omega}-\omega_{\mathrm{des}}) - K_{i} z + \omega \times J\omega,
 \]
 
-Default gains come from a target \(\omega_{n},\,\zeta\) using \(e_{q}\approx\theta/2\): \(K_{p} = 2\omega_{n}^{2} J\), \(K_{d} = 2\zeta\omega_{n} J\).
+with default \(K_{p} = 2\omega_{n}^{2} J\), \(K_{d} = 2\zeta\omega_{n} J\).
 
 **LQR** on the rest linearization \(x=[\delta\theta,\,\omega]\), \(u=\tau\):
 
@@ -107,11 +128,11 @@ B = \begin{bmatrix} 0 \\ J^{-1} \end{bmatrix},\qquad
 \tau = -K x + \omega \times J\omega,
 \]
 
-where \(K\) is the CARE gain from `scipy.linalg.solve_continuous_are`.
+\(K\) from `scipy.linalg.solve_continuous_are`.
 
 **Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\).
 
-**Estimation.** Switchable (see [docs/estimation.md](docs/estimation.md) for the noise / process-noise story):
+**Estimation** (`--estimator`; see [docs/estimation.md](docs/estimation.md) for the noise / process-noise story):
 
 - `mekf` — 6-state multiplicative EKF (\(\delta\alpha\), gyro bias) with Farrenkopf \(Q_d\) and sequential vector updates.
 - `mahony` — complementary SO(3) observer with the same sensors; controller rate is \(\hat\omega=\omega_m-\hat b\).
@@ -138,10 +159,10 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.controls` | PID and CARE LQR, `--controller` switch |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
-| `attitude_sim.sim` | Rest-to-rest SimLab + CLI |
-| `attitude_sim.plots` | Quaternion / Euler / rate figure and GIF |
+| `attitude_sim.sim` | SimLab scenarios + CLI (`slew`, `detumble`) |
+| `attitude_sim.plots` | `{scenario}_summary.png` and `{scenario}_attitude.gif` |
 
-Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2}\). The stock scenario is a 75° rest-to-rest slew about a skewed body axis, 40 s long, 10 ms sample.
+Default inertia is a smallsat-class principal tensor \(\mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2}\). Sample is 10 ms.
 
 ## Controller / estimator matrix
 

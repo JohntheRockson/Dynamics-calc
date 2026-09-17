@@ -1,4 +1,4 @@
-"""SimLab: rest-to-rest slew scenario, CLI, and ``python -m attitude_sim``."""
+"""SimLab: closed-loop scenarios, CLI, and ``python -m attitude_sim``."""
 
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ from attitude_sim.quaternions import (
 )
 from attitude_sim.sensors import GyroModel, VectorSensor
 
+SCENARIOS = ("slew", "detumble")
+SLEW_AXIS = np.array([0.2, 0.5, 0.84])
+DETUMBLE_Q0_AXIS = np.array([0.4, 0.2, 0.9])
+DETUMBLE_OMEGA0 = np.array([0.55, -0.40, 0.30])
+
 
 def default_inertia() -> np.ndarray:
     """Principal inertia of a smallsat-class rigid body (kg·m²)."""
@@ -32,10 +37,11 @@ class SimConfig:
     t_final: float = 40.0
     controller: str = "pid"
     estimator: str = "mekf"
+    scenario: str = "slew"
     q0: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0]))
     omega0: np.ndarray = field(default_factory=lambda: np.zeros(3))
     q_des: np.ndarray = field(
-        default_factory=lambda: axis_angle_to_quat(np.array([0.2, 0.5, 0.84]), np.deg2rad(75.0))
+        default_factory=lambda: axis_angle_to_quat(SLEW_AXIS, np.deg2rad(75.0))
     )
     torque_limit: float = 0.02
     gyro_sigma_v: float = 5e-4
@@ -49,6 +55,10 @@ class SimConfig:
     plot: bool = True
     gif: bool = True
     out_dir: Path = field(default_factory=lambda: Path("outputs"))
+
+    @property
+    def artifact_stem(self) -> str:
+        return self.scenario
 
 
 @dataclass
@@ -67,6 +77,7 @@ class SimLog:
     est_att_error: np.ndarray | None
     controller: str
     estimator: str
+    scenario: str = "slew"
     plot_path: Path | None = None
     gif_path: Path | None = None
 
@@ -75,8 +86,60 @@ class SimLog:
         return float(np.rad2deg(self.att_error[-1]))
 
 
+def make_scenario_config(
+    scenario: str = "slew",
+    *,
+    dt: float = 0.01,
+    t_final: float | None = None,
+    controller: str = "pid",
+    estimator: str = "mekf",
+    angle_deg: float = 75.0,
+    use_mag: bool = True,
+    use_sun: bool = True,
+    seed: int = 1,
+    plot: bool = True,
+    gif: bool = True,
+    out_dir: Path = Path("outputs"),
+) -> SimConfig:
+    """Named SimLab presets. Plant / controller / estimator cores are unchanged."""
+    name = scenario.lower()
+    if name not in SCENARIOS:
+        raise ValueError(f"unknown scenario {scenario!r}; expected one of {SCENARIOS}")
+    if name == "detumble":
+        return SimConfig(
+            dt=dt,
+            t_final=30.0 if t_final is None else t_final,
+            controller=controller,
+            estimator=estimator,
+            scenario="detumble",
+            q0=axis_angle_to_quat(DETUMBLE_Q0_AXIS, np.deg2rad(40.0)),
+            omega0=DETUMBLE_OMEGA0.copy(),
+            q_des=np.array([1.0, 0.0, 0.0, 0.0]),
+            use_mag=use_mag,
+            use_sun=use_sun,
+            seed=seed,
+            plot=plot,
+            gif=gif,
+            out_dir=out_dir,
+        )
+    return SimConfig(
+        dt=dt,
+        t_final=40.0 if t_final is None else t_final,
+        controller=controller,
+        estimator=estimator,
+        scenario="slew",
+        q_des=axis_angle_to_quat(SLEW_AXIS, np.deg2rad(angle_deg)),
+        use_mag=use_mag,
+        use_sun=use_sun,
+        seed=seed,
+        plot=plot,
+        gif=gif,
+        out_dir=out_dir,
+    )
+
+
 def run_slew(cfg: SimConfig | None = None) -> SimLog:
-    """Closed-loop rest-to-rest slew; optionally writes plot/GIF under ``out_dir``."""
+    """Closed-loop SimLab run (slew or detumble); optionally writes plot/GIF."""
     cfg = cfg if cfg is not None else SimConfig()
     rng = np.random.default_rng(cfg.seed)
     body = RigidBody(cfg.inertia)
@@ -165,6 +228,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         est_att_error=est_att_error,
         controller=cfg.controller,
         estimator=cfg.estimator,
+        scenario=cfg.scenario,
     )
 
     if cfg.plot or cfg.gif:
@@ -172,17 +236,27 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
 
         out = Path(cfg.out_dir)
         out.mkdir(parents=True, exist_ok=True)
+        stem = cfg.artifact_stem
         if cfg.plot:
-            log.plot_path = plot_slew(log, out / "slew_summary.png")
+            log.plot_path = plot_slew(log, out / f"{stem}_summary.png")
         if cfg.gif:
-            log.gif_path = write_attitude_gif(log, out / "slew_attitude.gif")
+            log.gif_path = write_attitude_gif(log, out / f"{stem}_attitude.gif")
     return log
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m attitude_sim",
-        description="Milestone 1 rest-to-rest rigid-body attitude slew (dynamics + control + estimation).",
+        description=(
+            "Milestone 1 SimLab: closed-loop rigid-body attitude scenarios "
+            "(dynamics + control + estimation)."
+        ),
+    )
+    p.add_argument(
+        "--scenario",
+        choices=SCENARIOS,
+        default="slew",
+        help="slew = 75° rest-to-rest; detumble = dump body rate then recover identity",
     )
     p.add_argument("--controller", choices=("pid", "lqr"), default="pid", help="feedback law")
     p.add_argument(
@@ -191,7 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="mekf",
         help="controller measurement source (truth = full-state feedback)",
     )
-    p.add_argument("--t-final", type=float, default=40.0, help="slew duration (s)")
+    p.add_argument(
+        "--t-final",
+        type=float,
+        default=None,
+        help="run duration (s); default 40 slew / 30 detumble",
+    )
     p.add_argument("--dt", type=float, default=0.01, help="sample / RK4 step (s)")
     p.add_argument("--out-dir", type=Path, default=Path("outputs"), help="plot/GIF directory")
     p.add_argument("--no-plot", action="store_true", help="skip PNG summary")
@@ -199,19 +278,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-mag", action="store_true", help="disable magnetometer")
     p.add_argument("--no-sun", action="store_true", help="disable sun sensor")
     p.add_argument("--seed", type=int, default=1, help="RNG seed for sensors")
-    p.add_argument("--angle-deg", type=float, default=75.0, help="commanded principal rotation (deg)")
+    p.add_argument(
+        "--angle-deg",
+        type=float,
+        default=75.0,
+        help="commanded principal rotation for --scenario slew (deg)",
+    )
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    q_des = axis_angle_to_quat(np.array([0.2, 0.5, 0.84]), np.deg2rad(args.angle_deg))
-    cfg = SimConfig(
+    cfg = make_scenario_config(
+        args.scenario,
         dt=args.dt,
         t_final=args.t_final,
         controller=args.controller,
         estimator=args.estimator,
-        q_des=q_des,
+        angle_deg=args.angle_deg,
         use_mag=not args.no_mag,
         use_sun=not args.no_sun,
         seed=args.seed,
@@ -221,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = run_slew(cfg)
     print(
-        f"slew complete: controller={log.controller} estimator={log.estimator} "
+        f"{log.scenario} complete: controller={log.controller} estimator={log.estimator} "
         f"final_att_error={log.final_att_error_deg:.3f} deg  "
         f"final_||omega||={np.linalg.norm(log.omega[-1]):.4f} rad/s"
     )
