@@ -6,12 +6,16 @@ import pytest
 from attitude_sim.controls import (
     DEFAULT_TORQUE_LIMIT,
     LQR_THETA_REF,
+    AttitudeLQR,
     LQRAttitudeController,
     PIDAttitudeController,
     bryson_lqr_weights,
+    care_residual,
+    design_attitude_lqr,
     linearize_attitude,
     make_controller,
     pid_gains_from_wn,
+    solve_care,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
@@ -133,6 +137,89 @@ def test_lqr_holds_against_constant_body_disturbance():
 def test_make_controller_unknown_mode():
     with pytest.raises(ValueError, match="unknown controller"):
         make_controller("sliding", _inertia())
+
+
+def test_attitude_lqr_alias_and_mode():
+    J = _inertia()
+    assert AttitudeLQR is LQRAttitudeController
+    a = make_controller("lqr", J)
+    b = make_controller("attitude-lqr", J)
+    np.testing.assert_allclose(a.K, b.K)
+
+
+def test_solve_care_residual_and_numpy_path():
+    J = _inertia()
+    A, B = linearize_attitude(J)
+    ctrl = LQRAttitudeController(J, care_method="scipy")
+    K, P, A2, B2 = design_attitude_lqr(J, Q=ctrl.Q, R=ctrl.R, method="scipy")
+    np.testing.assert_allclose(A2, A)
+    np.testing.assert_allclose(B2, B)
+    np.testing.assert_allclose(K, ctrl.K, rtol=1e-8)
+    resid = care_residual(A, B, ctrl.Q, ctrl.R, P)
+    assert np.linalg.norm(resid, ord="fro") < 1e-8
+    assert np.all(np.linalg.eigvalsh(P) > 0.0)
+    np.testing.assert_allclose(K, np.linalg.solve(ctrl.R, B.T @ P), rtol=1e-8)
+    P_np = solve_care(A, B, ctrl.Q, ctrl.R, method="numpy")
+    P_sp = solve_care(A, B, ctrl.Q, ctrl.R, method="scipy")
+    np.testing.assert_allclose(P_np, P_sp, rtol=1e-6, atol=1e-8)
+    with pytest.raises(ValueError, match="positive definite"):
+        solve_care(A, B, np.eye(6), np.zeros((3, 3)))
+    with pytest.raises(ValueError, match="unknown CARE method"):
+        solve_care(A, B, np.eye(6), np.eye(3), method="kleinman")
+
+
+def test_lqr_gain_scale_keeps_hurwitz():
+    J = _inertia()
+    A, B = linearize_attitude(J)
+    nominal = LQRAttitudeController(J)
+    scaled = LQRAttitudeController(J, gain_scale=0.7)
+    np.testing.assert_allclose(scaled.K, 0.7 * nominal.K)
+    eigs = np.linalg.eigvals(A - B @ scaled.K)
+    assert np.all(np.real(eigs) < -1e-6)
+    pid0 = PIDAttitudeController(J)
+    pid = PIDAttitudeController(J, gain_scale=1.3)
+    np.testing.assert_allclose(pid.kp, 1.3 * pid0.kp)
+    with pytest.raises(ValueError, match="gain_scale"):
+        LQRAttitudeController(J, gain_scale=0.0)
+
+
+def _eigenaxis_slew(ctrl, inertia, angle_rad, axis, t_final=12.0, dt=0.01):
+    """True-state rest-to-rest eigenaxis slew (identity → axis-angle)."""
+    body = RigidBody(inertia)
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q_des = axis_angle_to_quat(np.asarray(axis, dtype=float), float(angle_rad))
+    omega = np.zeros(3)
+    ctrl.reset()
+    errors = []
+    for _ in range(int(np.round(t_final / dt))):
+        tau = ctrl.command(q, omega, q_des, dt=dt)
+        q, omega = step_rigid_body(body, q, omega, tau, dt)
+        errors.append(geodesic_angle(q, q_des))
+    return q, omega, np.asarray(errors)
+
+
+def test_lqr_settles_small_eigenaxis_vs_pid():
+    """Linear-region eigenaxis (~8°) must settle; LQR competitive with PID."""
+    J = _inertia()
+    axis = np.array([0.2, 0.5, 0.84])
+    angle = np.deg2rad(8.0)
+    lqr = LQRAttitudeController(J)
+    pid = PIDAttitudeController(J)
+    pd = PIDAttitudeController(J, ki=0.0)
+    _, w_lqr, err_lqr = _eigenaxis_slew(lqr, J, angle, axis, t_final=12.0)
+    _, w_pd, err_pd = _eigenaxis_slew(pd, J, axis=axis, angle_rad=angle, t_final=12.0)
+    _, _, err_pid = _eigenaxis_slew(pid, J, angle, axis, t_final=12.0)
+    assert np.rad2deg(err_lqr[0]) == pytest.approx(8.0, abs=0.05)
+    assert np.rad2deg(err_lqr[-1]) < 0.25
+    assert np.rad2deg(err_pd[-1]) < 0.5
+    assert np.linalg.norm(w_lqr) < 0.01
+    assert np.linalg.norm(w_pd) < 0.02
+    assert err_lqr[-1] < 0.05 * err_lqr[0]
+    # Same plant / IC: LQR matches PD and is at least as tight as full PID
+    # (PID's slow integral mode is still moving at 12 s).
+    assert err_lqr[-1] < 5.0 * err_pd[-1] + 1e-6
+    assert err_lqr[-1] < err_pid[-1]
+    assert err_pid[-1] < 0.5 * err_pid[0]
 
 
 def test_controllers_are_double_cover_invariant():

@@ -55,6 +55,9 @@ class MonteCarloConfig:
     diverge_deg: float = 25.0
     diverge_omega: float = 5.0
     torque_limit: float = 0.02
+    tau_dist_max: float = 0.0
+    gain_scale_min: float = 1.0
+    gain_scale_max: float = 1.0
     use_mag: bool = True
     use_sun: bool = True
 
@@ -72,6 +75,8 @@ class TrialResult:
     noise_scale: float
     failed: bool
     fail_reason: str = ""
+    gain_scale: float = 1.0
+    tau_dist_norm: float = 0.0
 
     def as_row(self) -> dict[str, object]:
         row = asdict(self)
@@ -258,10 +263,29 @@ def sample_trial_config(
     cfg.mag_sigma = cfg.mag_sigma * noise_scale
     cfg.sun_sigma = cfg.sun_sigma * noise_scale
 
+    tau_dist_norm = 0.0
+    if mc.tau_dist_max > 0.0:
+        mag = float(rng.uniform(0.0, mc.tau_dist_max))
+        tau_dist = mag * random_unit(rng)
+        cfg.tau_dist = tau_dist
+        tau_dist_norm = mag
+
+    lo = float(mc.gain_scale_min)
+    hi = float(mc.gain_scale_max)
+    if lo <= 0.0 or hi <= 0.0:
+        raise ValueError("gain_scale bounds must be positive")
+    if math.isclose(lo, hi):
+        gain_scale = lo
+    else:
+        gain_scale = log_uniform(rng, lo, hi)
+    cfg.gain_scale = gain_scale
+
     extras = {
         "noise_scale": float(noise_scale),
         "omega0_norm": float(np.linalg.norm(omega0)),
         "q0_from_identity_deg": float(np.rad2deg(geodesic_angle(q0, np.array([1.0, 0.0, 0.0, 0.0])))),
+        "gain_scale": float(gain_scale),
+        "tau_dist_norm": float(tau_dist_norm),
     }
     return cfg, extras
 
@@ -287,6 +311,8 @@ def score_trial(log: SimLog, mc: MonteCarloConfig, extras: dict[str, float], tri
         omega0_norm=extras["omega0_norm"],
         q0_from_identity_deg=extras["q0_from_identity_deg"],
         noise_scale=extras["noise_scale"],
+        gain_scale=float(extras.get("gain_scale", 1.0)),
+        tau_dist_norm=float(extras.get("tau_dist_norm", 0.0)),
         failed=failed,
         fail_reason=reason,
     )
@@ -457,6 +483,8 @@ def trial_from_row(row: dict) -> TrialResult:
         noise_scale=_as_float(row.get("noise_scale")),
         failed=bool(row.get("failed", False)),
         fail_reason=str(row.get("fail_reason") or ""),
+        gain_scale=_as_float(row.get("gain_scale")) if row.get("gain_scale") not in (None, "") else 1.0,
+        tau_dist_norm=_as_float(row.get("tau_dist_norm")) if row.get("tau_dist_norm") not in (None, "") else 0.0,
     )
 
 
@@ -493,7 +521,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m attitude_sim.monte_carlo",
         description=(
             "Monte Carlo robustness sweep of closed-loop slews "
-            "(randomized IC, sensor noise, optional inertia perturbation). "
+            "(randomized IC, sensor noise, optional inertia / gain / disturbance). "
             "Slew-only: detumble is a SimLab scenario, not part of this harness."
         ),
     )
@@ -523,6 +551,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.05,
         help="principal-moment perturbation |ε| (0 disables)",
+    )
+    p.add_argument(
+        "--tau-dist-max",
+        type=float,
+        default=0.0,
+        help="if >0, sample a constant body disturbance with ||τ_d|| ≤ this (N·m)",
+    )
+    p.add_argument(
+        "--gain-scale-min",
+        type=float,
+        default=1.0,
+        help="min implemented-gain scale (PID Kp/Kd/Ki or LQR K)",
+    )
+    p.add_argument(
+        "--gain-scale-max",
+        type=float,
+        default=1.0,
+        help="max implemented-gain scale (log-uniform with --gain-scale-min)",
     )
     p.add_argument("--settle-deg", type=float, default=2.0, help="settle-time error band (deg)")
     p.add_argument(
@@ -569,6 +615,9 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
         inertia_frac=args.inertia_frac,
         settle_deg=args.settle_deg,
         diverge_deg=args.diverge_deg,
+        tau_dist_max=args.tau_dist_max,
+        gain_scale_min=args.gain_scale_min,
+        gain_scale_max=args.gain_scale_max,
     )
 
 

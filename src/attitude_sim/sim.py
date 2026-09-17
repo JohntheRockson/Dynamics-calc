@@ -51,6 +51,7 @@ class SimConfig:
         default_factory=lambda: axis_angle_to_quat(SLEW_AXIS, np.deg2rad(75.0))
     )
     torque_limit: float | None = 0.02
+    gain_scale: float = 1.0
     actuator_tau_max: float | np.ndarray | None = None
     actuator_tau: float | None = None
     tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
@@ -191,7 +192,12 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         raise ValueError("t_final must be non-negative")
     rng = np.random.default_rng(cfg.seed)
     body = RigidBody(cfg.inertia)
-    ctrl = make_controller(cfg.controller, cfg.inertia, torque_limit=cfg.torque_limit)
+    ctrl = make_controller(
+        cfg.controller,
+        cfg.inertia,
+        torque_limit=cfg.torque_limit,
+        gain_scale=cfg.gain_scale,
+    )
     ctrl.reset()
     actuator = make_actuator(tau_max=cfg.actuator_tau_max, time_constant=cfg.actuator_tau)
     actuator.reset()

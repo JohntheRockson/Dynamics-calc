@@ -13,6 +13,9 @@ def test_version_and_public_exports():
         "SimConfig",
         "SimLog",
         "make_controller",
+        "AttitudeLQR",
+        "design_attitude_lqr",
+        "solve_care",
         "make_estimator",
         "geodesic_angle",
         "axis_angle_to_quat",
@@ -24,7 +27,9 @@ def test_version_and_public_exports():
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
+    assert attitude_sim.AttitudeLQR is attitude_sim.LQRAttitudeController
     assert attitude_sim.run_sim is attitude_sim.run_slew
     assert "MahonyFilter" in attitude_sim.__all__
+    assert "AttitudeLQR" in attitude_sim.__all__
     assert "run_sim" in attitude_sim.__all__
     assert "TorqueActuator" in attitude_sim.__all__

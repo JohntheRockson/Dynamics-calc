@@ -83,7 +83,7 @@ Each trial randomizes, within bounds:
 - sensor noise **seed** (per trial) and a log-uniform **scale** on gyro ARW/RRW and mag/sun σ
 - optional principal-inertia perturbation (`--inertia-frac`, default ±5%; `0` disables)
 
-It does not rewrite the plant, controllers, or estimators. Failures are counted, not treated as a process error (the command still exits 0 after printing the table). `--help` lists the IC / noise / inertia knobs.
+It does not rewrite the plant, controllers, or estimators. Failures are counted, not treated as a process error (the command still exits 0 after printing the table). `--help` lists the IC / noise / inertia knobs. Optional Controls knobs on the **same** harness (defaults off): `--tau-dist-max` samples a constant body disturbance, and `--gain-scale-min` / `--gain-scale-max` log-uniformly scale the implemented PID gains or LQR \(K\).
 
 ### Metrics
 
@@ -110,6 +110,10 @@ python -m attitude_sim.monte_carlo --n 200 --seed 1 --estimator mekf \
 
 # faster checkout (truth-state feedback, shorter runs)
 python -m attitude_sim.monte_carlo --n 50 --estimator truth --t-final 22
+
+# LQR gain / disturbance robustness (same harness)
+python -m attitude_sim.monte_carlo --n 50 --controller lqr --estimator truth \
+    --gain-scale-min 0.8 --gain-scale-max 1.25 --tau-dist-max 0.002
 ```
 
 ### MC figures
@@ -216,7 +220,7 @@ B = \begin{bmatrix} 0 \\ J^{-1} \end{bmatrix},\qquad
 \tau = -K x + \omega \times J\omega,\qquad |\tau|\le\tau_{\max}.
 \]
 
-Default \(Q,R\) are Bryson placeholders (\(1/\theta_{\mathrm{ref}}^{2}\), \(1/\omega_{\mathrm{ref}}^{2}\), \(1/\tau_{\max}^{2}\) with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\)). \(K\) is the CARE gain from `scipy.linalg.solve_continuous_are`, or a supplied \(3\times 6\) matrix. No integrator: a constant disturbance leaves \(\delta\theta_{\mathrm{ss}}\approx K_{\theta}^{-1}\tau_{d}\).
+Default \(Q,R\) are Bryson placeholders (\(1/\theta_{\mathrm{ref}}^{2}\), \(1/\omega_{\mathrm{ref}}^{2}\), \(1/\tau_{\max}^{2}\) with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\)). \(K\) is the CARE gain from `attitude_sim.controls.solve_care` (`scipy.linalg.solve_continuous_are`, numpy Hamiltonian fallback at `method="numpy"`), or a supplied \(3\times 6\) matrix. `design_attitude_lqr` is the one-shot linearize-and-solve helper; `AttitudeLQR` is an alias of `LQRAttitudeController`. No integrator: a constant disturbance leaves \(\delta\theta_{\mathrm{ss}}\approx K_{\theta}^{-1}\tau_{d}\).
 
 See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
 
@@ -252,7 +256,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | --- | --- |
 | `attitude_sim.quaternions` | Hamilton product, kinematics, DCM, 3-2-1 Euler |
 | `attitude_sim.plant` | `RigidBody`, inertia helpers (principal axes / validation), Euler equation, RK4 |
-| `attitude_sim.controls` | PID and CARE LQR, `--controller` switch |
+| `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
 | `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, wheels |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
