@@ -9,6 +9,16 @@ from attitude_sim.controls import (
     make_controller,
     solve_care,
 )
+from attitude_sim.disturbances import (
+    CircularOrbit,
+    EnvironmentalTorques,
+    GravityGradientTorque,
+    OrbitState,
+    ResidualDipoleTorque,
+    gravity_gradient_torque,
+    magnetic_dipole_torque,
+    magnetic_field_body,
+)
 from attitude_sim.estimation import (
     ComplementaryFilter,
     MultiplicativeEKF,
@@ -42,11 +52,16 @@ MahonyFilter = ComplementaryFilter
 
 __all__ = [
     "AttitudeLQR",
+    "CircularOrbit",
     "ComplementaryFilter",
+    "EnvironmentalTorques",
+    "GravityGradientTorque",
     "LQRAttitudeController",
     "MahonyFilter",
     "MultiplicativeEKF",
+    "OrbitState",
     "PIDAttitudeController",
+    "ResidualDipoleTorque",
     "RigidBody",
     "SimConfig",
     "SimLog",
@@ -55,8 +70,11 @@ __all__ = [
     "clip_torque",
     "design_attitude_lqr",
     "geodesic_angle",
+    "gravity_gradient_torque",
     "inertia_from_principal",
     "is_principal",
+    "magnetic_dipole_torque",
+    "magnetic_field_body",
     "make_actuator",
     "make_controller",
     "make_estimator",
