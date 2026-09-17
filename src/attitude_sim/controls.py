@@ -350,13 +350,15 @@ def _backcalc_z_dot(ki: np.ndarray, tau_unsat: np.ndarray, tau_sat: np.ndarray, 
 class PIDAttitudeController:
     """PID on quaternion vector error + body rate, with anti-windup.
 
-    ``τ = −Kp e_q − Kd (ω − ω_des) − Ki z`` plus optional gyroscopic
-    cancellation ``ω × Jω``.  Optional ``torque_limit`` is the Euclidean
-    ball; optional ``tau_max`` is the per-axis wheel box via
+    ``τ = −Kp e_q − Kd (ω − ω_des) − Ki z + J α_des`` plus optional
+    gyroscopic cancellation ``ω × Jω``.  Optional ``torque_limit`` is the
+    Euclidean ball; optional ``tau_max`` is the per-axis wheel box via
     ``clip_torque``.  Optional Ki uses gated conditional integration and,
     when ``kaw > 0``, back-calculation on saturation.  Optional
     ``omega_slew_max`` / ``tau_rate_max`` run ``shape_pid_command``.
-    Gains default to inertia-scaled PD for a target ``wn``, ``zeta``.
+    ``omega_des`` / ``alpha_des`` are the slew-profile feedforward
+    (see ``rest_to_rest_eigenaxis``).  Gains default to inertia-scaled
+    PD for a target ``wn``, ``zeta``.
     """
 
     inertia: np.ndarray
@@ -421,6 +423,7 @@ class PIDAttitudeController:
         q_des: np.ndarray,
         omega_des: np.ndarray | None = None,
         dt: float = 0.01,
+        alpha_des: np.ndarray | None = None,
     ) -> np.ndarray:
         omega = np.asarray(omega, dtype=float).reshape(3)
         omega_des = np.zeros(3) if omega_des is None else np.asarray(omega_des, dtype=float).reshape(3)
@@ -430,6 +433,8 @@ class PIDAttitudeController:
         kd = np.asarray(self.kd)
         ki = np.asarray(self.ki)
         tau_unsat = -kp @ e_q - kd @ e_w - ki @ self._z
+        if alpha_des is not None:
+            tau_unsat = tau_unsat + self.inertia @ np.asarray(alpha_des, dtype=float).reshape(3)
         if self.gyroscopic_cancel:
             tau_unsat = tau_unsat + np.cross(omega, self.inertia @ omega)
         tau = self._limit_torque(tau_unsat)
@@ -483,12 +488,14 @@ class LQRAttitudeController:
     so ``A = [[0, I], [0, 0]]``, ``B = [[0], [J⁻¹]]``.  Default ``Q``, ``R``
     are Bryson placeholders; ``solve_care`` / ``design_attitude_lqr``
     produce ``K`` once unless a 3×6 ``K`` is supplied.  The online law
-    is ``τ = −K [δθ; ω]`` with optional gyroscopic cancellation.  Optional
-    ``torque_limit`` is the Euclidean ball; optional ``tau_max`` is the
-    per-axis wheel box via ``clip_torque`` / ``make_actuator`` — the same
-    ``apply_torque_limits`` helper as PID (LQR has no integrator, so no
-    anti-windup).  ``gain_scale`` multiplies the implemented ``K``
-    (robustness hook; 1 is the CARE gain).
+    is ``τ = −K [δθ; ω − ω_des] + J α_des`` with optional gyroscopic
+    cancellation.  Optional ``torque_limit`` is the Euclidean ball;
+    optional ``tau_max`` is the per-axis wheel box via ``clip_torque`` /
+    ``make_actuator`` — the same ``apply_torque_limits`` helper as PID
+    (LQR has no integrator, so no anti-windup).  ``omega_des`` /
+    ``alpha_des`` are the slew-profile feedforward
+    (see ``rest_to_rest_eigenaxis``).  ``gain_scale`` multiplies the
+    implemented ``K`` (robustness hook; 1 is the CARE gain).
     """
 
     inertia: np.ndarray
@@ -551,6 +558,7 @@ class LQRAttitudeController:
         q_des: np.ndarray,
         omega_des: np.ndarray | None = None,
         dt: float = 0.01,
+        alpha_des: np.ndarray | None = None,
     ) -> np.ndarray:
         del dt
         omega = np.asarray(omega, dtype=float).reshape(3)
@@ -558,6 +566,8 @@ class LQRAttitudeController:
         dtheta = rotation_vector_error(q, q_des)
         x = np.concatenate([dtheta, omega - omega_des])
         tau = -np.asarray(self.K) @ x
+        if alpha_des is not None:
+            tau = tau + self.inertia @ np.asarray(alpha_des, dtype=float).reshape(3)
         if self.gyroscopic_cancel:
             tau = tau + np.cross(omega, self.inertia @ omega)
         return self._limit_torque(tau)
