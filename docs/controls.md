@@ -10,7 +10,9 @@ J = \mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2}
 
 with actuator saturation \(|\tau|\le\tau_{\max}=0.02\,\mathrm{N\cdot m}\).  Gains
 below are sized to that scale so a 75° rest-to-rest slew stays stable and a
-few-mN·m body disturbance is rejectable.
+few-mN·m body disturbance is rejectable.  Numerical \(K_p,K_d,K_i,\tau_{\max}\)
+and \(Q,R\) for this plant, plus retune recipes, are in
+[Gain / cost tuning report](#gain--cost-tuning-report).
 
 ## Error quaternion
 
@@ -55,6 +57,9 @@ K_{i} = c\,\omega_{n}^{3} J
 \]
 
 with \(\omega_{n}=0.5\,\mathrm{rad/s}\), \(\zeta=1\), \(c=0.5\).
+`tune_pid_second_order(I_ref, wn, zeta)` is the helper (also used by
+`pid_gains_from_wn` / `PIDAttitudeController`).  Stock numbers are in the
+tuning report.
 
 **Why this \(\omega_{n}\).**  Peak PD torque on the stock 75° slew is
 \(|\tau|\approx \omega_{n}^{2} J\theta \approx 0.02\,\mathrm{N\cdot m}\), so the
@@ -87,7 +92,12 @@ R=(1/\tau_{\mathrm{ref}}^{2})I
 
 with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\),
 \(\omega_{\mathrm{ref}}=0.20\,\mathrm{rad/s}\),
-\(\tau_{\mathrm{ref}}=\tau_{\max}\).  The continuous algebraic Riccati
+\(\tau_{\mathrm{ref}}=\tau_{\max}\).
+`bryson_lqr_costs` returns the SPD matrices; `design_attitude_lqr`
+defaults call it (scalar path: `bryson_lqr_weights`).  Stock numbers are
+in the tuning report.
+
+The continuous algebraic Riccati
 equation
 
 \[
@@ -115,6 +125,91 @@ Online LQR torque uses the same Euclidean ball + per-axis `clip_torque`
 (`tau_max`) as PID (`apply_torque_limits`) before the plant step;
 instantaneous `make_actuator` is that same box.  There is no anti-windup
 because there is no \(K_i\).
+
+## Gain / cost tuning report
+
+This section is the cubesat-scale **numerical** table for the laws above
+(not a second derivation).  Helpers live in `attitude_sim.controls`:
+
+| Helper | Returns | Used by |
+| --- | --- | --- |
+| `tune_pid_second_order(I_ref, wn, zeta)` | \(K_p,K_d,K_i\) (SPD if \(J\succ 0\)) | `pid_gains_from_wn`, PID defaults |
+| `recommended_pid_wn(I_ref, τ_max, θ)` | \(\omega_n=\sqrt{\tau_{\max}/(I_{\mathrm{char}}\theta)}\) | report / retune |
+| `bryson_lqr_costs(θ_ref, ω_ref, τ_ref)` | SPD \(Q\in\mathbb{R}^{6\times6}\), \(R\in\mathbb{R}^{3\times3}\) | `design_attitude_lqr` defaults |
+| `cubesat_gain_report()` | snapshot of the rows below | unit tests (docs stay honest) |
+
+`I_ref` may be a scalar isotropic inertia, a principal 3-vector, or an
+SPD \(3\times 3\).  \(I_{\mathrm{char}}=\lambda_{\max}(J)\).
+
+### Stock plant
+
+\[
+J=\mathrm{diag}(0.05,\,0.06,\,0.07)\,\mathrm{kg\,m}^{2},\qquad
+\tau_{\max}=\tau_{\mathrm{ref}}=0.02\,\mathrm{N\cdot m}.
+\]
+
+| PID design | Value | Why |
+| --- | --- | --- |
+| \(\omega_n\) | \(0.5\,\mathrm{rad/s}\) | `recommended_pid_wn` on this \(J\) is \(\approx 0.467\,\mathrm{rad/s}\) (\(75°\) opening PD on \(\tau_{\max}\)); \(0.5\) is the rounded design value |
+| \(\zeta\) | \(1\) | critical damping; 2% settle \(\sim 4/(\zeta\omega_n)\approx 8\,\mathrm{s}\) |
+| \(c\) (`ki_wn_coeff`) | \(0.5\) | PI zero near \(\omega_n/4\) |
+| \(\tau_{\max}\) | \(0.02\,\mathrm{N\cdot m}\) | Euclidean controller ball (20 mN·m wheels) |
+
+Recommended PID matrices (\(\mathrm{N\cdot m}\), \(\mathrm{N\cdot m\cdot s}\), \(\mathrm{N\cdot m}\)):
+
+\[
+K_p=2\omega_n^{2}J=\mathrm{diag}(0.025,\,0.030,\,0.035),\quad
+K_d=2\zeta\omega_n J=J,\quad
+K_i=c\,\omega_n^{3}J=\mathrm{diag}(0.003125,\,0.00375,\,0.004375).
+\]
+
+| LQR Bryson | Value | Why |
+| --- | --- | --- |
+| \(\theta_{\mathrm{ref}}\) | \(0.25\,\mathrm{rad}\) (\(\sim 14°\)) | linear region, not a \(1°\) bang-bang |
+| \(\omega_{\mathrm{ref}}\) | \(0.20\,\mathrm{rad/s}\) | rate cost near the PID slew rate |
+| \(\tau_{\mathrm{ref}}\) | \(\tau_{\max}=0.02\,\mathrm{N\cdot m}\) | command cost matches the wheel |
+
+\[
+Q=\mathrm{diag}(16,16,16,\,25,25,25),\qquad
+R=2500\,I_3.
+\]
+
+On this plant those weights give \(K_\theta\approx\tau_{\mathrm{ref}}/\theta_{\mathrm{ref}}=0.08\)
+and a per-axis equivalent second-order pair
+\(\omega_{n,\mathrm{LQR}}=\sqrt{K_\theta/J_{ii}}\approx(1.26,\,1.15,\,1.07)\,\mathrm{rad/s}\),
+\(\zeta\approx 1\) (`lqr_second_order_equiv`).  That is stiffer than PID
+\(\omega_n=0.5\) but still inside the same actuator; it is the CARE
+gain, not a second PID.
+
+### Retune (do not copy the stock numbers onto a new plant)
+
+- **Inertia scales by \(\alpha\).**  `tune_pid_second_order(αJ)` scales
+  \(K_p,K_d,K_i\) by \(\alpha\).  Keep \(\omega_n\) if \(\tau_{\max}\)
+  also scales by \(\alpha\); otherwise drop \(\omega_n\) with
+  `recommended_pid_wn` so the opening 75° command stays on the wheel.
+- **Wheel \(\tau_{\max}\) changes.**  Recompute \(\omega_n\) from
+  `recommended_pid_wn`.  Set LQR \(\tau_{\mathrm{ref}}=\tau_{\max}\) so
+  \(R=1/\tau_{\max}^{2}\) (pass `tau_max=` into `cubesat_gain_report`).
+- **Want a slower hold.**  Lower \(\omega_n\) or raise \(\theta_{\mathrm{ref}}\)
+  (softer \(K_\theta\)).  Do not raise \(Q_\theta\) back toward the old
+  placeholder \(6\) — that again saturates a 20 mN·m wheel at \(\sim 1°\).
+- **PD only.**  `tune_pid_second_order(..., ki_wn_coeff=0)` or `ki=0` on
+  the controller.  Steady-state under a bias is then
+  \(\theta_{\mathrm{ss}}\approx\tau_d/(\omega_n^{2} J)\).
+
+```python
+from attitude_sim.controls import (
+    cubesat_gain_report,
+    design_attitude_lqr,
+    make_controller,
+    tune_pid_second_order,
+)
+
+rep = cubesat_gain_report()          # stock J, τ_max
+Kp, Kd, Ki = tune_pid_second_order(rep.inertia, rep.wn, rep.zeta)
+pid = make_controller("pid", rep.inertia, kp=Kp, kd=Kd, ki=Ki)
+K, P, A, B = design_attitude_lqr(rep.inertia)   # default Q, R = bryson_lqr_costs()
+```
 
 ## Scenario
 

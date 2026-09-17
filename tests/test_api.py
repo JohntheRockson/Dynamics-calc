@@ -16,6 +16,9 @@ def test_version_and_public_exports():
         "AttitudeLQR",
         "design_attitude_lqr",
         "solve_care",
+        "tune_pid_second_order",
+        "bryson_lqr_costs",
+        "cubesat_gain_report",
         "make_estimator",
         "geodesic_angle",
         "axis_angle_to_quat",
@@ -67,6 +70,9 @@ def test_version_and_public_exports():
     assert "triad_attitude" in attitude_sim.__all__
     assert "InnovationLog" in attitude_sim.__all__
     assert "shape_pid_command" in attitude_sim.__all__
+    assert "tune_pid_second_order" in attitude_sim.__all__
+    assert "bryson_lqr_costs" in attitude_sim.__all__
+    assert "cubesat_gain_report" in attitude_sim.__all__
     assert "inertial_torque" in attitude_sim.__all__
     assert "trapezoid_inertial_impulse" in attitude_sim.__all__
     assert "SCENARIOS" in attitude_sim.__all__

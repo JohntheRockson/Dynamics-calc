@@ -5,10 +5,13 @@ from attitude_sim.controls import (
     AttitudeLQR,
     LQRAttitudeController,
     PIDAttitudeController,
+    bryson_lqr_costs,
+    cubesat_gain_report,
     design_attitude_lqr,
     make_controller,
     shape_pid_command,
     solve_care,
+    tune_pid_second_order,
 )
 from attitude_sim.disturbances import (
     AerodynamicTorque,
@@ -104,7 +107,9 @@ __all__ = [
     "aerodynamic_torque",
     "attitude_error_mrp",
     "axis_angle_to_quat",
+    "bryson_lqr_costs",
     "clip_torque",
+    "cubesat_gain_report",
     "design_attitude_lqr",
     "energy_casimir",
     "geodesic_angle",
@@ -149,6 +154,7 @@ __all__ = [
     "step_rigid_body",
     "trapezoid_inertial_impulse",
     "triad_attitude",
+    "tune_pid_second_order",
     "validate_inertia",
 ]
 

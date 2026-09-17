@@ -304,7 +304,7 @@ B = \begin{bmatrix} 0 \\ J^{-1} \end{bmatrix},\qquad
 
 Default \(Q,R\) are Bryson placeholders (\(1/\theta_{\mathrm{ref}}^{2}\), \(1/\omega_{\mathrm{ref}}^{2}\), \(1/\tau_{\max}^{2}\) with \(\theta_{\mathrm{ref}}=0.25\,\mathrm{rad}\)). \(K\) is the CARE gain from `attitude_sim.controls.solve_care` (`scipy.linalg.solve_continuous_are`, numpy Hamiltonian fallback at `method="numpy"`), or a supplied \(3\times 6\) matrix. `design_attitude_lqr` is the one-shot linearize-and-solve helper; `AttitudeLQR` is an alias of `LQRAttitudeController`. No integrator: a constant disturbance leaves \(\delta\theta_{\mathrm{ss}}\approx K_{\theta}^{-1}\tau_{d}\).
 
-See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument.
+See [`docs/controls.md`](docs/controls.md) for the gain-vs-inertia argument and the cubesat-scale **gain / cost tuning report** (`tune_pid_second_order`, `bryson_lqr_costs`, `cubesat_gain_report`).
 
 **Sensors.** Rate gyro \(\omega_{m} = \omega + b + \eta_{v}\) with bias random walk \(\dot{b}=\eta_{u}\) (ARW density \(\sigma_{v}\), RRW density \(\sigma_{u}\); optional readout \(\eta_{n}\)). Optional magnetometer / sun stubs return noisy unit vectors \(v_{b} = R(q)^{\top} v_{I} + \eta\). Inertial references stay constant (no IGRF). Optional stub flags: sun `eclipse` / `occulted`, and a FOV half-angle cone about `boresight_body` (`measure` returns `None` when unavailable).
 
@@ -346,9 +346,9 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.polhode` | Torque-free energy / Casimir, polhode & herpolhode sampling, tennis-racket stability — **not** a SimLab CLI flag |
 | `attitude_sim.disturbances` | Gravity-gradient, residual-dipole, aero, and SRP `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` (GG/dipole default off except `--scenario hold` / `--env`) |
 | `attitude_sim.scenarios` | Named closed-loop pack (`slew`, `detumble`, `hold`, `eigenaxis`) |
-| `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch |
+| `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch; `tune_pid_second_order` / `bryson_lqr_costs` |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
-| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, wheels |
+| `docs/controls.md` | Error quaternion, PID/LQR equations, gain-vs-inertia, cubesat tuning report, wheels |
 | `attitude_sim.sensors` | Gyro + unit-vector mag/sun models |
 | `attitude_sim.estimation` | MEKF and Mahony complementary filter |
 | `attitude_sim.sim` | SimLab CLI + `run_sim` / `run_slew`; `--scenario` / `--list-scenarios` |
