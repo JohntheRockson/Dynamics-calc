@@ -419,22 +419,28 @@ def write_json(path: Path, summary: MonteCarloSummary) -> None:
     path.write_text(json.dumps(summary.as_dict(), indent=2) + "\n")
 
 
-_SUMMARY_FLOATS = (
-    "final_err_mean_deg",
-    "final_err_median_deg",
-    "final_err_p95_deg",
-    "settle_mean_s",
-    "peak_torque_max",
-    "peak_torque_mean",
-    "t_final",
-    "settle_deg",
-)
-
-
 def _as_float(value: object) -> float:
     if value is None or value == "":
         return float("nan")
-    return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise TypeError(f"cannot convert {type(value).__name__} to float")
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    raise TypeError(f"cannot convert {type(value).__name__} to int")
 
 
 def trial_from_row(row: dict) -> TrialResult:
@@ -457,16 +463,25 @@ def trial_from_row(row: dict) -> TrialResult:
 def summary_from_dict(payload: dict) -> MonteCarloSummary:
     """Rebuild a summary from ``MonteCarloSummary.as_dict`` / JSON."""
     trials = [trial_from_row(row) for row in payload.get("trials") or []]
-    kwargs = {
-        key: (_as_float(payload[key]) if key in _SUMMARY_FLOATS else payload[key])
-        for key in payload
-        if key != "trials"
-    }
-    for key in ("n", "n_fail", "n_nan", "n_non_unit", "n_diverged", "n_settled"):
-        if key in kwargs and kwargs[key] is not None:
-            kwargs[key] = int(kwargs[key])
-    kwargs["trials"] = trials
-    return MonteCarloSummary(**kwargs)
+    return MonteCarloSummary(
+        n=_as_int(payload.get("n"), len(trials)),
+        n_fail=_as_int(payload.get("n_fail")),
+        n_nan=_as_int(payload.get("n_nan")),
+        n_non_unit=_as_int(payload.get("n_non_unit")),
+        n_diverged=_as_int(payload.get("n_diverged")),
+        n_settled=_as_int(payload.get("n_settled")),
+        final_err_mean_deg=_as_float(payload.get("final_err_mean_deg")),
+        final_err_median_deg=_as_float(payload.get("final_err_median_deg")),
+        final_err_p95_deg=_as_float(payload.get("final_err_p95_deg")),
+        settle_mean_s=_as_float(payload.get("settle_mean_s")),
+        peak_torque_max=_as_float(payload.get("peak_torque_max")),
+        peak_torque_mean=_as_float(payload.get("peak_torque_mean")),
+        controller=str(payload.get("controller") or ""),
+        estimator=str(payload.get("estimator") or ""),
+        t_final=_as_float(payload.get("t_final")),
+        settle_deg=_as_float(payload.get("settle_deg")),
+        trials=trials,
+    )
 
 
 def summary_from_json(path: Path) -> MonteCarloSummary:
