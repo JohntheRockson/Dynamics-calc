@@ -287,6 +287,17 @@ J\dot\omega+\omega\times(J\omega+h_w)+\dot h_w=\tau,\qquad
 
 Constant-speed (or commanded constant \(h_w\)) has \(\dot h_w=0\). A variable-speed wheel uses \(I_w\dot\Omega=\tau_w\) and \(\dot h_w=\tau_w\hat a\). \(h_w=0\) reduces to Euler's equation on `RigidBody`. Torque-free first integrals at constant \(h_w\) are the carrier Hamiltonian \(T=\tfrac12\omega\cdot(J\omega)\) and \(H_I=R(q)(J\omega+h_w)\) (and \(|H|=|J\omega+h_w|\)). Spin about the rotor axis is an equilibrium; the transverse mode about a principal axis \(e_k\) is \(\lambda^2=-[(I_k-I_i)\Omega+h][(I_k-I_j)\Omega+h]/(I_i I_j)\) (large \(|h|\) can stabilize the intermediate axis). Optional RK4 steps `step_gyrostat` (\(\omega\), optional \(\Omega\)) and `step_gyrostat_attitude`. See `attitude_sim.gyrostat` and `tests/test_gyrostat.py`.
 
+**Fuel slosh / spherical pendulum** (`attitude_sim.slosh`; library plant, **not** a SimLab CLI flag). Rigid hub inertia \(J\) plus one slosh mass \(m\) on a rod of length \(\ell\) — the classical spherical-pendulum equivalent-mechanical tank model reduced to **planar** motion (one slosh mode, angle \(\theta\)). Body-fixed effective gravity \(g_{\mathrm{eff}}\) along the rest direction \(\hat u_0\) (tank / thrust acceleration). Optional hinge damping \(c\) and torsional spring \(k\). This is the pendulum form, not the default zero-g spring-mass model; fixed-hub small-angle frequency is \(\omega_n=\sqrt{g_{\mathrm{eff}}/\ell}\) (or \(\sqrt{k/(m\ell^2)}\) when \(g_{\mathrm{eff}}=0\) and \(k>0\)).
+
+Composite momentum \(H=J\omega+m\,r\times v\) with \(v=\omega\times r+\ell\dot\theta\,\hat u_\theta\) and \(r=r_h+\ell\hat u(\theta)\). Newton–Euler / Lagrange:
+
+\[
+\dot H+\omega\times H=\tau+m\,r\times g_{\mathrm{eff}}\hat u_0,\qquad
+m\ell(r\times\hat u_\theta)\cdot\dot\omega+m\ell^2\ddot\theta=m\ell\,g_{\mathrm{eff}}\hat u_0\cdot\hat u_\theta-m\ell[\omega\times(\omega\times r)]\cdot\hat u_\theta-k\theta-c\dot\theta.
+\]
+
+Slosh reaction on the dry hub: \(J\dot\omega+\omega\times(J\omega)=\tau+\tau_{\mathrm{slosh}}\). \(m\to 0\) is Euler on \(J\); a frozen pendulum at \(\theta=0\) is Euler on the locked inertia \(J_{\mathrm{eq}}=J+m(|r_0|^2 I-r_0 r_0^\top)\). Energy \(E=T+V\) decays when \(c>0\). Optional RK4 steps `step_slosh` (\(\omega,\theta,\dot\theta\)) and `step_slosh_attitude`. See `attitude_sim.slosh` and `tests/test_slosh.py`.
+
 **Attitude error** (both controllers):
 
 \[
@@ -355,6 +366,7 @@ sensors  →  estimator (MEKF / Mahony / truth)
 | `attitude_sim.polhode` | Torque-free energy / Casimir, polhode & herpolhode sampling, tennis-racket stability — **not** a SimLab CLI flag |
 | `attitude_sim.disturbances` | Gravity-gradient, residual-dipole, aero, and SRP `τ_body(q, ω, t or orbit)`; SimLab `--gravity-gradient` / `--residual-dipole` / `--aerodynamic` / `--srp` (GG/dipole default off except `--scenario hold` / `--env`) |
 | `attitude_sim.gyrostat` | Dual-spin / one-rotor gyrostat: \(J\dot\omega+\omega\times(J\omega+h_w)=\tau\) (constant or commanded \(h_w\)); optional RK4 of \(\omega\) / \(\Omega\) — **not** a SimLab CLI flag |
+| `attitude_sim.slosh` | Fuel slosh / spherical-pendulum mode (planar slice): hub \(J\) + mass \(m\), length \(\ell\), \(g_{\mathrm{eff}}\); \(\tau_{\mathrm{slosh}}\) on the hub; \(\omega_n\approx\sqrt{g_{\mathrm{eff}}/\ell}\) — **not** a SimLab CLI flag |
 | `attitude_sim.scenarios` | Named closed-loop pack (`slew`, `detumble`, `hold`, `eigenaxis`) |
 | `attitude_sim.controls` | PID and CARE LQR (`solve_care` / `AttitudeLQR`), `--controller` switch; `tune_pid_second_order` / `bryson_lqr_costs` |
 | `attitude_sim.actuators` | Per-axis \(\pm\tau_{\max}\) clip + optional first-order lag |
