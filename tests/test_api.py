@@ -55,6 +55,10 @@ def test_version_and_public_exports():
         "sample_herpolhode",
         "principal_spin_stability",
         "SpinStability",
+        "Gyrostat",
+        "gyrostat_omega_dot",
+        "step_gyrostat",
+        "step_gyrostat_attitude",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
@@ -75,3 +79,5 @@ def test_version_and_public_exports():
     assert "eigenaxis" in attitude_sim.SCENARIOS
     assert "sample_polhode" in attitude_sim.__all__
     assert "SpinStability" in attitude_sim.__all__
+    assert "Gyrostat" in attitude_sim.__all__
+    assert "step_gyrostat" in attitude_sim.__all__
