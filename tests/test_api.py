@@ -49,6 +49,12 @@ def test_version_and_public_exports():
         "plot_env_torque",
         "attitude_error_mrp",
         "scenario_catalog_text",
+        "kinetic_energy",
+        "energy_casimir",
+        "sample_polhode",
+        "sample_herpolhode",
+        "principal_spin_stability",
+        "SpinStability",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
@@ -67,3 +73,5 @@ def test_version_and_public_exports():
     assert "make_scenario_config" in attitude_sim.__all__
     assert "hold" in attitude_sim.SCENARIOS
     assert "eigenaxis" in attitude_sim.SCENARIOS
+    assert "sample_polhode" in attitude_sim.__all__
+    assert "SpinStability" in attitude_sim.__all__
