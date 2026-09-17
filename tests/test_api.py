@@ -62,6 +62,10 @@ def test_version_and_public_exports():
         "gyrostat_omega_dot",
         "step_gyrostat",
         "step_gyrostat_attitude",
+        "HingedAppendage",
+        "linearized_flex_state_space",
+        "step_flex",
+        "step_flex_attitude",
     ):
         assert hasattr(attitude_sim, name)
     assert attitude_sim.MahonyFilter is attitude_sim.ComplementaryFilter
@@ -87,3 +91,5 @@ def test_version_and_public_exports():
     assert "SpinStability" in attitude_sim.__all__
     assert "Gyrostat" in attitude_sim.__all__
     assert "step_gyrostat" in attitude_sim.__all__
+    assert "HingedAppendage" in attitude_sim.__all__
+    assert "step_flex" in attitude_sim.__all__
