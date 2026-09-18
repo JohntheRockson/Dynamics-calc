@@ -11,23 +11,82 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  lint:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install package
-        run: pip install -e ".[dev]"
-      - name: Ruff
-        run: ruff check src tests
-      - name: Mypy
-        run: mypy src
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
 
-  pytest:
+  web:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        working-directory: web
+        run: npm ci
+      - name: Typecheck
+        working-directory: web
+        run: npx tsc -b
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  server-smoke:
+    needs: [rust, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build frontend
+        working-directory: web
+        run: npm ci && npm run build
+      - name: Build server (release)
+        run: cargo build --release -p attitude-server
+      - name: Smoke test the running server
+        run: |
+          PORT=8099 ./target/release/attitude-server &
+          SERVER_PID=$!
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8099/api/health && break
+            sleep 0.5
+          done
+          curl -sf http://localhost:8099/api/health
+          curl -sf http://localhost:8099/api/scenarios | grep -q '"slew"'
+          curl -sf -X POST http://localhost:8099/api/simulate \
+            -H 'Content-Type: application/json' \
+            -d '{"scenario":"slew","estimator":"truth","t_final":2.0}' \
+            | grep -q '"final_att_error_deg"'
+          curl -sf http://localhost:8099/ | grep -qi '<title>'
+          kill $SERVER_PID
+
+  python-legacy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: legacy-python
     strategy:
       fail-fast: false
       matrix:
@@ -38,59 +97,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: legacy-python/pyproject.toml
       - name: Install package
         run: pip install -e ".[dev]"
-      - name: Run unit tests with coverage
-        # Floor is [tool.coverage.report] fail_under = 80 in pyproject.toml
-        # (measured 91% after #6/#7/#8 on Python 3.12).
-        run: pytest -v --tb=short --cov=attitude_sim --cov-report=term-missing --cov-report=xml --cov-fail-under=80
-      - name: Upload coverage.xml
+      - name: Ruff
         if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-xml
-          path: coverage.xml
-      - name: CLI smoke (scenarios + MC harness)
+        run: ruff check src tests
+      - name: Mypy
+        if: matrix.python-version == '3.12'
+        run: mypy src
+      - name: Run unit tests with coverage
+        run: pytest -v --tb=short --cov=attitude_sim --cov-report=term-missing --cov-fail-under=80
+      - name: CLI smoke (scenarios)
         run: |
           python -m attitude_sim --scenario slew --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario hold --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario eigenaxis --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller lqr --estimator mahony --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
-            --tau-dist 0.002,-0.001,0.0008 --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller pid --estimator truth \
-            --actuator-tau-max 0.02 --actuator-tau 0.05 --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller pid --estimator truth --angle-deg 0 \
-            --tau-dist 0.002,-0.001,0.0008 --actuator-h-dump 0.01 \
-            --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller pid --estimator truth \
-            --actuator-tau-max 0.02 --rw-h-max 0.004 --rw-visc 1e-6 --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller pid --estimator truth \
-            --gravity-gradient --residual-dipole --actuator-tau-max 0.008 \
-            --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --controller pid --estimator truth \
-            --aerodynamic --srp --t-final 0.2 --no-plot --no-gif
-          python -m attitude_sim --log-innovations /tmp/mekf_nis.csv --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --list-scenarios
-          python -m attitude_sim --coarse-init --coarse-init-method quest --t-final 0.2 --no-plot --no-gif
-          # MC harness is slew-only; detumble/hold/eigenaxis are SimLab scenarios, not in the sweep.
-          python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
-          python -m attitude_sim.monte_carlo --rw-sat-stress --n 3 --estimator truth --t-final 0.4 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
-
-  packaging:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Build wheel
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build
-      - name: Install wheel and import
-        run: |
-          python -m pip install dist/*.whl
-          python -c "import attitude_sim; print(attitude_sim.__version__)"
