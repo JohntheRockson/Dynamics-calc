@@ -1,4 +1,6 @@
-# Dynamics-calc
+# Dynamics-calc (Python reference implementation)
+
+> **This is the original Python/NumPy implementation.** The primary product is now the Rust + web app at the repository root (see the [top-level README](../README.md)) — a from-scratch rewrite validated against this package (`engine/tests/python_parity.rs`). This directory is kept as the correctness oracle, the source of the golden test fixtures, and a complete, independently useful CLI/library in its own right; it is not being actively extended going forward.
 
 Milestone 1 of a GitHub-ready **rigid-body attitude** simulator: quaternion kinematics, Euler rotational dynamics, PID / LQR pointing control, and a gyro + vector-sensor estimator.
 
