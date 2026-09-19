@@ -95,7 +95,9 @@ async fn main() {
     // (very compressible) and the frontend bundle is a few hundred KB of
     // JS/CSS; gzip shrinks both substantially for a snappier first paint
     // and simulate-request round trip.
-    let app = app.layer(CompressionLayer::new()).layer(TraceLayer::new_for_http());
+    let app = app
+        .layer(CompressionLayer::new())
+        .layer(TraceLayer::new_for_http());
 
     let port: u16 = std::env::var("PORT")
         .ok()
