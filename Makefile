@@ -1,21 +1,49 @@
-# Lightweight local stand-ins for the GitHub Actions jobs in .github/workflows/ci.yml
-PYTHON ?= python3
+# Convenience targets for the Rust engine/server + web frontend.
+# See README.md for the full architecture and dev-workflow writeup.
 
-.PHONY: test lint typecheck coverage build ci
+.PHONY: build run test engine-test server-test web-install web-build \
+        dev-server dev-web fmt clippy parity-golden
 
+# --- Production: one binary serving the API + built frontend on :8080 ---
+build: web-build
+	cargo build --release
+
+run: web-build
+	cargo run --release -p attitude-server
+
+# --- Tests ---
 test:
-	$(PYTHON) -m pytest -q
+	cargo test --workspace
 
-lint:
-	$(PYTHON) -m ruff check src tests
+engine-test:
+	cargo test -p attitude-engine
 
-typecheck:
-	$(PYTHON) -m mypy src
+server-test:
+	cargo test -p attitude-server
 
-coverage:
-	$(PYTHON) -m pytest --cov=attitude_sim --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+# --- Frontend ---
+web-install:
+	cd web && npm install
 
-build:
-	$(PYTHON) -m build
+web-build: web-install
+	cd web && npm run build
 
-ci: lint typecheck test
+# --- Dev loop: run these two in separate terminals ---
+# (Vite proxies /api to :8080; attitude-server ignores the missing web/dist.)
+dev-server:
+	cargo run -p attitude-server
+
+dev-web: web-install
+	cd web && npm run dev
+
+# --- Lint / format ---
+fmt:
+	cargo fmt --all
+
+clippy:
+	cargo clippy --workspace --all-targets
+
+# --- Regenerate the Python golden fixtures used by engine/tests/python_parity.rs ---
+parity-golden:
+	python3 -m pip install -e legacy-python[dev]
+	python3 engine/tests/golden/generate_golden.py

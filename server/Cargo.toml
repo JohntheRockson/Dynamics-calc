@@ -1,0 +1,16 @@
+[package]
+name = "attitude-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP API + static file server for the attitude-sim web app"
+
+[dependencies]
+attitude-engine = { path = "../engine" }
+axum = { version = "0.7", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "trace", "compression-gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
