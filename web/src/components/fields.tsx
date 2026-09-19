@@ -67,7 +67,27 @@ interface Vec3FieldProps {
 const AXIS_CLASSES = ['axis-x', 'axis-y', 'axis-z']
 const AXIS_LABELS = ['x', 'y', 'z']
 
-export function Vec3Field({ label, value, onChange, min, max, step, unit, disabled }: Vec3FieldProps) {
+function VecNField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  unit,
+  disabled,
+  count,
+}: {
+  label: string
+  value: number[]
+  onChange: (v: number[]) => void
+  min: number
+  max: number
+  step?: number
+  unit?: string
+  disabled?: boolean
+  count: 2 | 3
+}) {
   const id = useId()
   return (
     <div className="field-row">
@@ -75,8 +95,8 @@ export function Vec3Field({ label, value, onChange, min, max, step, unit, disabl
         <span>{label}</span>
         <span className="value">{unit ?? ''}</span>
       </span>
-      <div className="vec3-input">
-        {value.map((v, i) => (
+      <div className={count === 2 ? 'vec2-input' : 'vec3-input'}>
+        {value.slice(0, count).map((v, i) => (
           <input
             key={AXIS_LABELS[i]}
             id={`${id}-${AXIS_LABELS[i]}`}
@@ -89,7 +109,7 @@ export function Vec3Field({ label, value, onChange, min, max, step, unit, disabl
             disabled={disabled}
             value={Number.isFinite(v) ? v : 0}
             onChange={(e) => {
-              const next = [...value] as [number, number, number]
+              const next = [...value]
               next[i] = parseFloat(e.target.value)
               onChange(next)
             }}
@@ -98,6 +118,49 @@ export function Vec3Field({ label, value, onChange, min, max, step, unit, disabl
         ))}
       </div>
     </div>
+  )
+}
+
+export function Vec3Field({ label, value, onChange, min, max, step, unit, disabled }: Vec3FieldProps) {
+  return (
+    <VecNField
+      label={label}
+      value={value}
+      onChange={(v) => onChange(v as [number, number, number])}
+      min={min}
+      max={max}
+      step={step}
+      unit={unit}
+      disabled={disabled}
+      count={3}
+    />
+  )
+}
+
+interface Vec2FieldProps {
+  label: string
+  value: [number, number]
+  onChange: (v: [number, number]) => void
+  min: number
+  max: number
+  step?: number
+  unit?: string
+  disabled?: boolean
+}
+
+export function Vec2Field({ label, value, onChange, min, max, step, unit, disabled }: Vec2FieldProps) {
+  return (
+    <VecNField
+      label={label}
+      value={value}
+      onChange={(v) => onChange(v as [number, number])}
+      min={min}
+      max={max}
+      step={step}
+      unit={unit}
+      disabled={disabled}
+      count={2}
+    />
   )
 }
 
