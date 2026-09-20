@@ -415,6 +415,7 @@ function sceneBodies(
   for (const sol of solved) {
     const spec = particles.find((p) => p.id === sol.id)
     const pos = vec(sol, 'x', 'y')
+    const displayPos = pos ?? { x: 0, y: 0 }
     const rho = sol.slots.rho.value
     const pathKind = spec?.path ?? 'general'
     if (pathKind === 'circular-origin' && rho !== null && Number.isFinite(rho) && rho > 0) {
@@ -426,9 +427,9 @@ function sceneBodies(
         path: circlePoly(0, 0, rho),
         currentIndex: 0,
       })
-    } else if (pathKind === 'circular' && pos && sol.unitVectors.e_n && rho !== null && Number.isFinite(rho) && rho > 0) {
-      const cx = pos.x + rho * sol.unitVectors.e_n.x
-      const cy = pos.y + rho * sol.unitVectors.e_n.y
+    } else if (pathKind === 'circular' && sol.unitVectors.e_n && rho !== null && Number.isFinite(rho) && rho > 0) {
+      const cx = displayPos.x + rho * sol.unitVectors.e_n.x
+      const cy = displayPos.y + rho * sol.unitVectors.e_n.y
       bodies.push({
         label: `${sol.label} path`,
         color: sol.color,
@@ -443,15 +444,16 @@ function sceneBodies(
     const acc = vec(sol, 'ax', 'ay')
     if (show.v && vel) extraVectors.push({ vx: vel.x, vy: vel.y, color: sol.color })
     if (show.a && acc) extraVectors.push({ vx: acc.x, vy: acc.y, color: '#fb7185' })
-    if (show.et && sol.unitVectors.e_t) extraVectors.push({ ...sol.unitVectors.e_t, vx: sol.unitVectors.e_t.x, vy: sol.unitVectors.e_t.y, color: '#29d3f5', unit: true })
-    if (show.en && sol.unitVectors.e_n) extraVectors.push({ ...sol.unitVectors.e_n, vx: sol.unitVectors.e_n.x, vy: sol.unitVectors.e_n.y, color: '#a78bfa', unit: true })
-    if (show.er && sol.unitVectors.e_r) extraVectors.push({ ...sol.unitVectors.e_r, vx: sol.unitVectors.e_r.x, vy: sol.unitVectors.e_r.y, color: '#59d67f', unit: true, dashed: true })
+    if (show.et && sol.unitVectors.e_t) extraVectors.push({ vx: sol.unitVectors.e_t.x, vy: sol.unitVectors.e_t.y, color: '#29d3f5', unit: true })
+    if (show.en && sol.unitVectors.e_n) extraVectors.push({ vx: sol.unitVectors.e_n.x, vy: sol.unitVectors.e_n.y, color: '#a78bfa', unit: true })
+    if (show.er && sol.unitVectors.e_r) extraVectors.push({ vx: sol.unitVectors.e_r.x, vy: sol.unitVectors.e_r.y, color: '#59d67f', unit: true, dashed: true })
     if (show.eth && sol.unitVectors.e_theta) extraVectors.push({ vx: sol.unitVectors.e_theta.x, vy: sol.unitVectors.e_theta.y, color: '#f5a524', unit: true, dashed: true })
-    if (pos) {
+    const hasAnything = pos !== null || vel !== null || extraVectors.length > 0 || pathKind !== 'general'
+    if (hasAnything) {
       bodies.push({
         label: sol.label,
         color: sol.color,
-        path: [pos],
+        path: [displayPos],
         currentIndex: 0,
         extraVectors,
       })
@@ -658,6 +660,9 @@ export function CurvilinearSolverPanel() {
             <ToggleField label="êθ" checked={showEth} onChange={setShowEth} />
             {particles.length > 1 && <ToggleField label="r_A/B" checked={showRel} onChange={setShowRel} />}
           </div>
+          {output.particles.some((p) => p.slots.x.value === null || p.slots.y.value === null) && (
+            <p className="hint">If x and y are unknown, the sketch places that point at the origin so the path and unit vectors still draw.</p>
+          )}
           <Scene2D height={320} aspectEqual includeOrigin={includeOrigin} bodies={bodies} />
         </div>
       </div>
