@@ -2,17 +2,19 @@ import { useState } from 'react'
 import { CurvilinearPanel } from './CurvilinearPanel'
 import { RectilinearPanel } from './RectilinearPanel'
 import { RelativeMotionPanel } from './RelativeMotionPanel'
+import { SolverPanel } from './SolverPanel'
 
-type Tab = 'rectilinear' | 'curvilinear' | 'relative'
+type Tab = 'solver' | 'rectilinear' | 'curvilinear' | 'relative'
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'solver', label: 'Solver', icon: '🧮' },
   { id: 'rectilinear', label: 'Rectilinear motion', icon: '📏' },
   { id: 'curvilinear', label: 'Curvilinear motion', icon: '🎯' },
   { id: 'relative', label: 'Relative motion', icon: '🔀' },
 ]
 
 export function KinematicsLab() {
-  const [tab, setTab] = useState<Tab>('rectilinear')
+  const [tab, setTab] = useState<Tab>('solver')
 
   return (
     <div className="kin-lab">
@@ -23,9 +25,11 @@ export function KinematicsLab() {
           </button>
         ))}
       </div>
+      {tab === 'solver' && <SolverPanel />}
       {tab === 'rectilinear' && <RectilinearPanel />}
       {tab === 'curvilinear' && <CurvilinearPanel />}
       {tab === 'relative' && <RelativeMotionPanel />}
     </div>
   )
 }
+
