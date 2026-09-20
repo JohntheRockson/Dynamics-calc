@@ -165,6 +165,7 @@ select {
   flex: 1;
   min-height: 0;
   padding: 16px 20px 28px;
+  overflow-y: auto;
 }
 
 .section-nav {
@@ -928,6 +929,19 @@ select.num-input {
   color: var(--text-faint);
   font-weight: 700;
 }
+.solver-group summary.solver-group-title {
+  cursor: pointer;
+  list-style: none;
+}
+.solver-group summary.solver-group-title::-webkit-details-marker {
+  display: none;
+}
+.solver-group summary.solver-group-title::before {
+  content: '▸ ';
+}
+.solver-group[open] summary.solver-group-title::before {
+  content: '▾ ';
+}
 
 .solver-qty-grid {
   display: grid;
@@ -1051,6 +1065,10 @@ select.num-input {
   color: var(--text-faint);
   font-size: 11px;
   text-align: center;
+  background: var(--bg);
+  position: relative;
+  z-index: 5;
+  flex: none;
 }
 .footer-note a {
   color: var(--text-faint);

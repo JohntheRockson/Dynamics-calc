@@ -228,20 +228,31 @@ function QtyGroupFields({
     initial: 'Constant-accel initials (optional)',
   }
   const keys = QTY_META.filter((m) => m.group === group)
+  const body = (
+    <div className="solver-qty-grid">
+      {keys.map((m) => (
+        <OptionalNumberField
+          key={m.key}
+          label={m.label}
+          unit={m.unit}
+          value={displayOf(m.key, particle.knowns[m.key] ?? null)}
+          onChange={(v) => onChange(setKnown(particle, m.key, v))}
+        />
+      ))}
+    </div>
+  )
+  if (group === 'initial') {
+    return (
+      <details className="solver-group">
+        <summary className="solver-group-title">{titles[group]}</summary>
+        {body}
+      </details>
+    )
+  }
   return (
     <div className="solver-group">
       <div className="solver-group-title">{titles[group]}</div>
-      <div className="solver-qty-grid">
-        {keys.map((m) => (
-          <OptionalNumberField
-            key={m.key}
-            label={m.label}
-            unit={m.unit}
-            value={displayOf(m.key, particle.knowns[m.key] ?? null)}
-            onChange={(v) => onChange(setKnown(particle, m.key, v))}
-          />
-        ))}
-      </div>
+      {body}
     </div>
   )
 }
