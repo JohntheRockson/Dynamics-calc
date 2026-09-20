@@ -42,7 +42,7 @@ export default function App() {
       <p className="footer-note">
         {section === 'attitude'
           ? "Rust engine (`engine/`) cross-validated against the original Python reference (`legacy-python/`) — see the README for scope and parity notes."
-          : 'Client-side kinematics: RK4-integrated rectilinear/curvilinear motion with quadratic air drag, and translating-axes relative motion of two particles.'}
+          : 'Client-side kinematics: rectilinear and projectile motion (with quadratic drag), a curvilinear solver in rectangular / n–t / polar components, and translating-axes relative motion.'}
       </p>
     </div>
   )

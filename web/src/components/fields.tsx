@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import { formatNumber } from '../format'
 
 function clamp(v: number, min: number, max: number): number {
@@ -183,6 +183,71 @@ export function ToggleField({ label, checked, onChange, disabled }: ToggleFieldP
       </span>
       <span>{label}</span>
     </label>
+  )
+}
+
+interface OptionalNumberFieldProps {
+  label: string
+  value: number | null
+  onChange: (v: number | null) => void
+  unit?: string
+  disabled?: boolean
+  hint?: string
+  placeholder?: string
+}
+
+/** Empty means unknown (solver will try to fill it). */
+export function OptionalNumberField({ label, value, onChange, unit, disabled, hint, placeholder = 'unknown' }: OptionalNumberFieldProps) {
+  const id = useId()
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft !== null ? draft : value === null ? '' : String(value)
+
+  const commit = (raw: string) => {
+    const t = raw.trim()
+    if (t === '' || t === '-' || t === '.' || t === '-.') {
+      onChange(null)
+      return
+    }
+    const n = Number(t)
+    if (Number.isFinite(n)) onChange(n)
+  }
+
+  return (
+    <div className="solver-qty">
+      <label className="solver-qty-label" htmlFor={id}>
+        <span>{label}</span>
+        {unit ? <span className="unit">{unit}</span> : null}
+      </label>
+      <input
+        id={id}
+        name={id}
+        className={`num-input ${value !== null ? 'is-known' : ''}`}
+        inputMode="decimal"
+        placeholder={placeholder}
+        disabled={disabled}
+        value={shown}
+        aria-label={label}
+        onFocus={() => setDraft(value === null ? '' : String(value))}
+        onBlur={() => {
+          const t = (draft ?? shown).trim()
+          if (t === '' || t === '-' || t === '.' || t === '-.') {
+            onChange(null)
+          } else {
+            const n = Number(t)
+            if (Number.isFinite(n)) {
+              onChange(n)
+            }
+          }
+          setDraft(null)
+        }}
+        onChange={(e) => {
+          const t = e.target.value
+          setDraft(t)
+          commit(t)
+        }}
+      />
+      {hint && <p className="hint">{hint}</p>}
+    </div>
   )
 }
 
