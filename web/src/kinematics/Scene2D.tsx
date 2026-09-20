@@ -9,8 +9,16 @@ export interface Scene2DBody {
   dashed?: boolean
 }
 
+export interface Scene2DMarker {
+  x: number
+  y: number
+  label: string
+  color?: string
+}
+
 interface Scene2DProps {
   bodies: Scene2DBody[]
+  markers?: Scene2DMarker[]
   height?: number
   xLabel?: string
   yLabel?: string
@@ -25,7 +33,7 @@ function niceTick(v: number): string {
   return v.toFixed(abs < 1 ? 2 : abs < 10 ? 1 : 0)
 }
 
-export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY }: Scene2DProps) {
+export function Scene2D({ bodies, markers = [], height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY }: Scene2DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [width, setWidth] = useState(600)
@@ -71,6 +79,12 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
         if (pt.y < ymin) ymin = pt.y
         if (pt.y > ymax) ymax = pt.y
       }
+    }
+    for (const m of markers) {
+      if (m.x < xmin) xmin = m.x
+      if (m.x > xmax) xmax = m.x
+      if (m.y < ymin) ymin = m.y
+      if (m.y > ymax) ymax = m.y
     }
     if (groundY !== undefined) {
       ymin = Math.min(ymin, groundY)
@@ -230,7 +244,23 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
         }
       }
     }
-  }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY])
+
+    for (const m of markers) {
+      const px = sx(m.x)
+      const py = sy(m.y)
+      const color = m.color ?? '#e7edf5'
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(px, py, 4, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#05080c'
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+      ctx.font = '700 13px var(--font-sans), sans-serif'
+      ctx.fillStyle = color
+      ctx.fillText(m.label, px + 7, py - 7)
+    }
+  }, [bodies, markers, width, height, xLabel, yLabel, aspectEqual, groundY])
 
   return (
     <div ref={containerRef} style={{ width: '100%' }}>
