@@ -1,12 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 
+export interface Scene2DVector {
+  vx: number
+  vy: number
+  color: string
+  dashed?: boolean
+  /** Draw at a fixed pixel length (unit vectors) instead of the velocity scale. */
+  unit?: boolean
+}
+
 export interface Scene2DBody {
   label: string
   color: string
   path: { x: number; y: number }[]
   currentIndex: number
   velocityVector?: { vx: number; vy: number }
+  extraVectors?: Scene2DVector[]
   dashed?: boolean
+  hideMarker?: boolean
 }
 
 export interface Scene2DMarker {
@@ -24,6 +35,7 @@ interface Scene2DProps {
   yLabel?: string
   aspectEqual?: boolean
   groundY?: number
+  includeOrigin?: boolean
 }
 
 function niceTick(v: number): string {
@@ -33,7 +45,7 @@ function niceTick(v: number): string {
   return v.toFixed(abs < 1 ? 2 : abs < 10 ? 1 : 0)
 }
 
-export function Scene2D({ bodies, markers = [], height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY }: Scene2DProps) {
+export function Scene2D({ bodies, markers = [], height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY, includeOrigin = false }: Scene2DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [width, setWidth] = useState(600)
@@ -88,6 +100,12 @@ export function Scene2D({ bodies, markers = [], height = 260, xLabel = 'x (m)', 
     }
     if (groundY !== undefined) {
       ymin = Math.min(ymin, groundY)
+    }
+    if (includeOrigin) {
+      xmin = Math.min(xmin, 0)
+      xmax = Math.max(xmax, 0)
+      ymin = Math.min(ymin, 0)
+      ymax = Math.max(ymax, 0)
     }
     if (!Number.isFinite(xmin) || !Number.isFinite(xmax)) {
       xmin = -1
@@ -212,39 +230,47 @@ export function Scene2D({ bodies, markers = [], height = 260, xLabel = 'x (m)', 
       const cur = b.path[idx]
       const cpx = sx(cur.x)
       const cpy = sy(cur.y)
-      ctx.fillStyle = b.color
-      ctx.beginPath()
-      ctx.arc(cpx, cpy, 5, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.strokeStyle = '#05080c'
-      ctx.lineWidth = 1.5
-      ctx.stroke()
+      if (!b.hideMarker) {
+        ctx.fillStyle = b.color
+        ctx.beginPath()
+        ctx.arc(cpx, cpy, 5, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.strokeStyle = '#05080c'
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      }
 
-      if (b.velocityVector) {
-        const scale = Math.min(plotW, plotH) * 0.16
-        const vmag = Math.hypot(b.velocityVector.vx, b.velocityVector.vy)
-        if (vmag > 1e-6) {
-          const dx = (b.velocityVector.vx / vmag) * scale
-          const dy = (b.velocityVector.vy / vmag) * scale
-          const ex = cpx + dx
-          const ey = cpy - dy
-          ctx.strokeStyle = b.color
-          ctx.lineWidth = 2
-          ctx.beginPath()
-          ctx.moveTo(cpx, cpy)
-          ctx.lineTo(ex, ey)
-          ctx.stroke()
-          const angle = Math.atan2(ey - cpy, ex - cpx)
-          ctx.beginPath()
-          ctx.moveTo(ex, ey)
-          ctx.lineTo(ex - 8 * Math.cos(angle - 0.4), ey - 8 * Math.sin(angle - 0.4))
-          ctx.lineTo(ex - 8 * Math.cos(angle + 0.4), ey - 8 * Math.sin(angle + 0.4))
-          ctx.closePath()
-          ctx.fill()
-        }
+      const arrows: Scene2DVector[] = []
+      if (b.velocityVector) arrows.push({ ...b.velocityVector, color: b.color })
+      if (b.extraVectors) arrows.push(...b.extraVectors)
+      const scale = Math.min(plotW, plotH) * 0.16
+      const unitLen = Math.min(plotW, plotH) * 0.12
+      for (const vec of arrows) {
+        const vmag = Math.hypot(vec.vx, vec.vy)
+        if (vmag <= 1e-9) continue
+        const len = vec.unit ? unitLen : scale
+        const dx = (vec.vx / vmag) * len
+        const dy = (vec.vy / vmag) * len
+        const ex = cpx + dx
+        const ey = cpy - dy
+        ctx.strokeStyle = vec.color
+        ctx.fillStyle = vec.color
+        ctx.lineWidth = vec.unit ? 1.6 : 2
+        ctx.setLineDash(vec.dashed ? [4, 3] : [])
+        ctx.beginPath()
+        ctx.moveTo(cpx, cpy)
+        ctx.lineTo(ex, ey)
+        ctx.stroke()
+        ctx.setLineDash([])
+        const angle = Math.atan2(ey - cpy, ex - cpx)
+        ctx.beginPath()
+        ctx.moveTo(ex, ey)
+        ctx.lineTo(ex - 8 * Math.cos(angle - 0.4), ey - 8 * Math.sin(angle - 0.4))
+        ctx.lineTo(ex - 8 * Math.cos(angle + 0.4), ey - 8 * Math.sin(angle + 0.4))
+        ctx.closePath()
+        ctx.fill()
       }
     }
-
     for (const m of markers) {
       const px = sx(m.x)
       const py = sy(m.y)
@@ -260,7 +286,7 @@ export function Scene2D({ bodies, markers = [], height = 260, xLabel = 'x (m)', 
       ctx.fillStyle = color
       ctx.fillText(m.label, px + 7, py - 7)
     }
-  }, [bodies, markers, width, height, xLabel, yLabel, aspectEqual, groundY])
+  }, [bodies, markers, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin])
 
   return (
     <div ref={containerRef} style={{ width: '100%' }}>

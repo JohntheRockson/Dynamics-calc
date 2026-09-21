@@ -1,15 +1,35 @@
 import { useMemo, useState } from 'react'
-import { NumberField, SelectField, ToggleField } from '../components/fields'
+import { NumberField, Segmented, SelectField, ToggleField } from '../components/fields'
 import { PlaybackBar } from '../components/PlaybackBar'
 import { TimeSeriesChart } from '../components/Charts/TimeSeriesChart'
 import { formatNumber } from '../format'
 import { usePlayback } from '../hooks/usePlayback'
 import { airDensity, GRAVITY_PRESETS, SHAPE_PRESETS } from './constants'
+import { CurvilinearSolverPanel } from './CurvilinearSolverPanel'
 import { Eq, EqList } from './Eq'
 import { noDragTimeOfFlight, normalTangentialAt, simulateProjectile, type DragParams } from './physics'
 import { Scene2D } from './Scene2D'
 
 export function CurvilinearPanel() {
+  const [mode, setMode] = useState<'solver' | 'projectile'>('solver')
+  return (
+    <div>
+      <div className="kin-mode-bar">
+        <Segmented
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'solver', label: 'Kinematics solver' },
+            { value: 'projectile', label: 'Projectile trajectory' },
+          ]}
+        />
+      </div>
+      {mode === 'solver' ? <CurvilinearSolverPanel /> : <ProjectilePanel />}
+    </div>
+  )
+}
+
+function ProjectilePanel() {
   const [x0, setX0] = useState(0)
   const [y0, setY0] = useState(1)
   const [speed0, setSpeed0] = useState(25)
