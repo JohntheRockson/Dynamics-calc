@@ -13,7 +13,7 @@ const EXAMPLES: { id: ExampleId; label: string }[] = [
   { id: 'helix', label: 'Helix' },
 ]
 
-function RowView({ row, open, onToggle, onRemove }: { row: RowModel; open: boolean; onToggle: () => void; onRemove: () => void }) {
+function RowView({ row, open, onToggle, onRemove, showRemove }: { row: RowModel; open: boolean; onToggle: () => void; onRemove: () => void; showRemove: boolean }) {
   const body = (
     <>
       <span className="statement-label">{row.label}</span>
@@ -32,7 +32,7 @@ function RowView({ row, open, onToggle, onRemove }: { row: RowModel; open: boole
       ) : (
         <div className="statement-main">{body}</div>
       )}
-      {row.statementId && (
+      {showRemove && (
         <button type="button" className="btn btn-ghost statement-remove" onClick={onRemove} aria-label={`Remove ${row.label}`}>
           Remove
         </button>
@@ -54,9 +54,9 @@ export function Workspace() {
 
   useEffect(() => {
     playback.reset(Math.max(compiled.duration, 0.001))
-    // Reset only when the problem's duration changes. `reset` is a fresh function each render.
+    // Restart whenever the statements change, including a new example with the same duration.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compiled.duration])
+  }, [doc])
 
   const time = compiled.duration > 0 ? Math.min(playback.time, compiled.duration) : 0
   const view = useMemo(() => viewAt(compiled, time), [compiled, time])
@@ -91,7 +91,12 @@ export function Workspace() {
           {view.blocks.length === 0 && <p className="hint">Type “point” below to start a problem.</p>}
           {view.blocks.map((block) => (
             <article key={block.id} className="statement-block" style={{ borderLeftColor: block.color }}>
-              <h3>{block.title}</h3>
+              <div className="statement-block-head">
+                <h3>{block.title}</h3>
+                <button type="button" className="btn btn-ghost statement-remove" onClick={() => setDoc((current) => removeStatement(current, block.removeId))} aria-label={`Remove ${block.title}`}>
+                  Remove
+                </button>
+              </div>
               {block.note && <p className="statement-note">{block.note}</p>}
               <ul>
                 {block.rows.map((row) => (
@@ -103,6 +108,7 @@ export function Workspace() {
                     onRemove={() => {
                       if (row.statementId) setDoc((current) => removeStatement(current, row.statementId!))
                     }}
+                    showRemove={row.statementId !== null && row.statementId !== block.removeId}
                   />
                 ))}
               </ul>

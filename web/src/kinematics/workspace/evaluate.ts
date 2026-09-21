@@ -36,6 +36,8 @@ export interface BlockModel {
   color: string
   rows: RowModel[]
   note: string | null
+  /** Statement removed by the block's own Remove control. */
+  removeId: string
 }
 
 export interface FigureBody {
@@ -86,6 +88,7 @@ type Motion =
   | { type: 'rect'; x0: number; y0: number; z0: number; vx: number; vy: number; vz: number; ax: number; ay: number; az: number }
 
 interface PointModel {
+  statementId: string
   name: string
   color: string
   path: PathKind | null
@@ -303,6 +306,7 @@ export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
       if (value !== undefined && isSolverKey(key)) knowns[key] = value
     }
     points.push({
+      statementId: statement.id,
       name: statement.name,
       color: statement.color,
       path,
@@ -464,7 +468,7 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
     const note = particle && particle.conflicts.length > 0
       ? particle.conflicts.map((conflict) => `${QTY_META_BY_KEY[conflict.key].label} disagrees (${formatNumber(conflict.existing, 3)} and ${formatNumber(conflict.computed, 3)})`).join('; ')
       : null
-    blocks.push({ id: point.name, title: `Point ${point.name}`, color: point.color, rows, note })
+    blocks.push({ id: point.name, title: `Point ${point.name}`, color: point.color, rows, note, removeId: point.statementId })
 
     if (point.motion) {
       const guide = circleGuide(point.motion)
@@ -537,7 +541,7 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
         hideMarker: true,
       })
     }
-    blocks.push({ id: relative.id, title: `${relative.from} relative to ${relative.to}`, color, rows, note })
+    blocks.push({ id: relative.id, title: `${relative.from} relative to ${relative.to}`, color, rows, note, removeId: relative.id })
   }
 
   return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies }

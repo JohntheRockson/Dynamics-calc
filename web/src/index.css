@@ -1120,6 +1120,12 @@ select.num-input {
   border-left: 3px solid var(--accent);
   padding: 2px 0 2px 10px;
 }
+.statement-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .statement-block h3 {
   font-size: 13px;
   margin-bottom: 4px;
