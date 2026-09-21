@@ -1063,13 +1063,11 @@ select.num-input {
 }
 
 .footer-note {
-  padding: 6px 20px 18px;
+  padding: 6px 20px 12px;
   color: var(--text-faint);
   font-size: 11px;
   text-align: center;
   background: var(--bg);
-  position: relative;
-  z-index: 5;
   flex: none;
 }
 .footer-note a {
@@ -1290,10 +1288,14 @@ button.statement-main:hover {
   min-height: 1.2em;
 }
 
+.workspace-figure {
+  overflow: hidden;
+}
 .workspace-figure-stage {
   flex: 1;
-  min-height: 240px;
+  min-height: 0;
   position: relative;
+  overflow: hidden;
 }
 .workspace-scene3d {
   position: absolute;
