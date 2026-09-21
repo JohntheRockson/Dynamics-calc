@@ -17,7 +17,7 @@ export default function App() {
         <div className="app-title">
           <span className="logo">{section === 'attitude' ? '\u{1F6F0}\u{FE0F}' : '\u{1F4D0}'}</span>
           <h1>{section === 'attitude' ? 'SimLab' : 'Dynamics Lab'}</h1>
-          <span className="subtitle">{section === 'attitude' ? 'Attitude Control Console \u00b7 Rust engine' : 'Particle kinematics \u00b7 client-side'}</span>
+          <span className="subtitle">{section === 'attitude' ? 'Attitude Control Console \u00b7 Rust engine' : 'Statements and figure'}</span>
         </div>
         <nav className="section-nav">
           <button type="button" className={section === 'kinematics' ? 'active' : ''} onClick={() => setSection('kinematics')}>
@@ -42,7 +42,7 @@ export default function App() {
       <p className="footer-note">
         {section === 'attitude'
           ? "Rust engine (`engine/`) cross-validated against the original Python reference (`legacy-python/`) — see the README for scope and parity notes."
-          : 'Client-side kinematics: rectilinear and projectile motion (with quadratic drag), a curvilinear solver in rectangular / n–t / polar components, and translating-axes relative motion.'}
+          : 'Type a statement on the left. The figure on the right is 2D or 3D, depending on the problem.'}
       </p>
     </div>
   )
