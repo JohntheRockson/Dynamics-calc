@@ -2,6 +2,7 @@
 // y = and x = are curves too. z = and z^2 = are surfaces. Other results stay in the console.
 
 import type { Statement } from '../document'
+import { containsCas, evaluateCas, rewriteAll, solveLinearSystem, type CasCurve, type CasPoint } from './cas'
 import {
   MathError,
   applyEnv,
@@ -59,6 +60,9 @@ export interface CurvePlot {
   visible: boolean
   path: { x: number; y: number; z: number }[]
   sample: (window: PlotWindow) => { x: number; y: number; z: number }[]
+  dashed?: boolean
+  /** A single point, drawn with a marker instead of a stroke. */
+  marker?: boolean
 }
 
 export interface SurfacePlot {
@@ -69,6 +73,7 @@ export interface SurfacePlot {
   visible: boolean
   grid: { x: number; y: number; z: number }[][]
   sheets: { x: number; y: number; z: number }[][][]
+  sample: (window: PlotWindow) => { x: number; y: number; z: number }[][][]
 }
 
 export interface MathCompilation {
@@ -88,20 +93,50 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
     return color
   }
 
+  const pushVisual = (id: string, input: string, label: string, text: string, formula: string, curves: CasCurve[], points: CasPoint[], visible: boolean, warn: string | null) => {
+    const color = nextColor()
+    let plotKind: 'curve' | null = null
+    for (const curve of curves) {
+      const plot = curvePlot(id, curve.label, color, visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed })
+      plots.push(plot.plot)
+      plotKind = 'curve'
+    }
+    for (const point of points) {
+      plots.push(pointPlot(id, point.label, color, visible, point.x, point.y))
+      plotKind = 'curve'
+    }
+    rows.push({
+      statementId: id,
+      label,
+      input,
+      text: warn ? `${text} (${warn})` : text,
+      tex: formula,
+      exactTex: formula,
+      exactText: text,
+      approxTex: null,
+      approxText: null,
+      preferDecimal: false,
+      plotKind,
+      visible,
+      warn,
+    })
+  }
+
   for (const statement of statements) {
     if (statement.type !== 'math') continue
     try {
       const parsed = parseMathInput(statement.input)
       if (parsed.kind === 'fn') {
-        env.set(parsed.name, { kind: 'fn', params: parsed.params, body: parsed.body })
         const label = `${parsed.name}(${parsed.params.join(', ')})`
         const formulaTex = `${labelTex(parsed.name, parsed.params)} = ${tex(parsed.body)}`
         const formulaText = `${label} = ${plain(parsed.body)}`
-        const missing = freeSymbols(parsed.body).filter((name) => !parsed.params.includes(name) && !env.has(name))
+        const body = rewriteAll(parsed.body, angles)
+        env.set(parsed.name, { kind: 'fn', params: parsed.params, body })
+        const missing = freeSymbols(body).filter((name) => !parsed.params.includes(name) && !env.has(name))
         const color = nextColor()
         const plot = parsed.params.length === 2
-          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [parsed.body], parsed.params[0], parsed.params[1], env, angles)
-          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [parsed.body], param: parsed.params[0], along: 'x' }, env, angles)
+          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [body], parsed.params[0], parsed.params[1], env, angles)
+          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param: parsed.params[0], along: 'x' }, env, angles)
         if (missing.length > 0) plot.warn = `Give ${missing.join(', ')} a value above this line to draw the graph.`
         else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
         plots.push(plot.plot)
@@ -162,6 +197,11 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           continue
         }
       }
+      if (parsed.kind === 'system') {
+        const solved = solveLinearSystem(parsed.equations.map((equation) => applyEnv(equation, env, 0)), angles)
+        pushVisual(statement.id, statement.input, 'Solve', solved.text, solved.tex, solved.curves, solved.points, statement.visible, solved.warn)
+        continue
+      }
       if (parsed.kind === 'solve') {
         const equation = applyEnv(parsed.equation, env, 0)
         const solved = solveEquation(equation, parsed.variable)
@@ -184,7 +224,24 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
       }
       const expr = parsed.kind === 'expr' ? parsed.expr : null
       if (!expr) continue
-      const value = normalize(applyEnv(expr, env, 0), angles)
+      const applied = applyEnv(expr, env, 0)
+      const cas = evaluateCas(applied, angles)
+      if (cas) {
+        pushVisual(statement.id, statement.input, casLabel(applied), cas.text, cas.tex, cas.curves, cas.points, statement.visible, cas.warn)
+        continue
+      }
+      const value = normalize(rewriteAll(applied, angles), angles)
+      if (containsCas(expr)) {
+        const curve = singleCurve(value)
+        if (curve) {
+          const color = nextColor()
+          const plot = curvePlot(statement.id, curve.label, color, statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles)
+          plots.push(plot.plot)
+          const shown = described(expr, value, statement.input, angles)
+          rows.push({ ...shown, statementId: statement.id, label: curve.label, plotKind: 'curve', visible: statement.visible, warn: plot.warn })
+          continue
+        }
+      }
       if (value.type === 'eq') {
         const left = present(normalize(value.left, angles), angles)
         const right = present(normalize(value.right, angles), angles)
@@ -303,14 +360,41 @@ function hasGeometry(plot: CurvePlot | SurfacePlot): boolean {
   return plot.sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
-function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode): { plot: CurvePlot; warn: string | null } {
+function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options?: { dashed?: boolean }): { plot: CurvePlot; warn: string | null } {
   const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles) : [])
-  return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW) } }
+  return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options?.dashed } }
+}
+
+function pointPlot(id: string, label: string, color: string, visible: boolean, x: number, y: number): CurvePlot {
+  const sample = (window: PlotWindow) => (x < window.xMin || x > window.xMax || y < window.yMin || y > window.yMax ? [] : [{ x, y, z: 0 }])
+  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), marker: true }
 }
 
 function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], xName: string, yName: string, env: MathEnv, angles: AngleMode): { plot: SurfacePlot; warn: string | null } {
-  const sheets = bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, DEFAULT_WINDOW, angles)) : []
-  return { warn: null, plot: { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [] } }
+  const sample = (window: PlotWindow) => (bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, window, angles)) : [])
+  const sheets = sample(DEFAULT_WINDOW)
+  return { warn: null, plot: { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [], sample } }
+}
+
+function casLabel(expr: Expr): string {
+  if (expr.type !== 'call') return 'Result'
+  if (expr.name === 'diff') return 'Derivative'
+  if (expr.name === 'integrate') return 'Integral'
+  if (expr.name === 'zeros') return 'Zeros'
+  if (expr.name === 'tangent') return 'Tangent'
+  if (expr.name === 'normal') return 'Normal'
+  if (expr.name === 'series') return 'Series'
+  if (expr.name === 'fmin') return 'Minimum'
+  if (expr.name === 'fmax') return 'Maximum'
+  if (expr.name === 'dsolve') return 'Solution'
+  return expr.name
+}
+
+function singleCurve(expr: Expr): CasCurve | null {
+  const symbols = freeSymbols(expr)
+  if (symbols.length !== 1) return null
+  if (symbols[0] !== 'x' && symbols[0] !== 'y') return null
+  return { expr, along: symbols[0], label: symbols[0] === 'x' ? 'y' : 'x' }
 }
 
 function labelTex(name: string, params: string[]): string {

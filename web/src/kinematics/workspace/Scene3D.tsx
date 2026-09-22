@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { FigureBody, FigureSurface } from './evaluate'
-import { CUBE, emptyBox, expandPlotBox, fromWorld, toWorld, type PlotBox, type PlotFrame } from './math/plotFrame'
+import { CUBE, emptyBox, expandPlotBox, fromWorld, originBox, toWorld, type PlotBox, type PlotFrame } from './math/plotFrame'
 
 function colorHex(color: string): number {
   const hex = Number.parseInt(color.replace('#', ''), 16)
@@ -18,7 +18,38 @@ function place(frame: PlotFrame, x: number, y: number, z: number): THREE.Vector3
   return new THREE.Vector3(point.x, point.y, point.z)
 }
 
-function addSurfaceGrid(content: THREE.Group, frame: PlotFrame, grid: { x: number; y: number; z: number }[][], colorName: string, flat: boolean): void {
+const HALF = CUBE / 2
+const GRAPH_CLIP = [
+  new THREE.Plane(new THREE.Vector3(1, 0, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(-1, 0, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(0, 1, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(0, -1, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(0, 0, 1), HALF),
+  new THREE.Plane(new THREE.Vector3(0, 0, -1), HALF),
+]
+
+export type GraphView = 'iso' | 'xy' | 'xz' | 'yz'
+
+function snapCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls, view: GraphView, target: THREE.Vector3, distance: number): void {
+  controls.target.copy(target)
+  if (view === 'xy') {
+    camera.up.set(0, 0, 1)
+    camera.position.set(target.x, target.y + distance, target.z)
+  } else if (view === 'xz') {
+    camera.up.set(0, 1, 0)
+    camera.position.set(target.x, target.y, target.z + distance)
+  } else if (view === 'yz') {
+    camera.up.set(0, 1, 0)
+    camera.position.set(target.x + distance, target.y, target.z)
+  } else {
+    camera.up.set(0, 1, 0)
+    camera.position.set(target.x + distance * 0.72, target.y + distance * 0.48, target.z + distance * 0.5)
+  }
+  camera.lookAt(target)
+  controls.update()
+}
+
+function addSurfaceGrid(content: THREE.Group, frame: PlotFrame, grid: { x: number; y: number; z: number }[][], colorName: string, flat: boolean, clip: boolean): void {
   const rows = grid.length
   const cols = grid[0]?.length ?? 0
   if (rows < 2 || cols < 2) return
@@ -93,11 +124,12 @@ function addSurfaceGrid(content: THREE.Group, frame: PlotFrame, grid: { x: numbe
     polygonOffset: true,
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
+    clippingPlanes: clip ? GRAPH_CLIP : undefined,
   })))
   if (wires.length > 0) {
     const lines = new THREE.BufferGeometry()
     lines.setAttribute('position', new THREE.Float32BufferAttribute(wires, 3))
-    content.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: flat ? base : 0xe7eef6, transparent: true, opacity: flat ? 0.35 : 0.22 })))
+    content.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: flat ? base : 0xe7eef6, transparent: true, opacity: flat ? 0.35 : 0.22, clippingPlanes: clip ? GRAPH_CLIP : undefined })))
   }
 }
 
@@ -314,7 +346,7 @@ function boundsOf(bodies: FigureBody[], surfaces: FigureSurface[]): PlotBox | nu
   return Number.isFinite(box.xMin) ? box : null
 }
 
-export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[]; surfaces?: FigureSurface[]; fitKey: string }) {
+export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, onDomainSpan, graphView = 'iso' }: { bodies: FigureBody[]; surfaces?: FigureSurface[]; fitKey: string; domainSpan?: number; domainZ?: number; onDomainSpan?: (span: number) => void; graphView?: GraphView }) {
   const mountRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<THREE.Group | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
@@ -324,7 +356,18 @@ export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[
   const frameRef = useRef<PlotFrame>({ equal: true, box: emptyBox() })
   const spanRef = useRef(10)
   const readoutRef = useRef('')
+  const zoomRef = useRef<((delta: number) => void) | null>(null)
   const [readout, setReadout] = useState('x —    y —    z —')
+  useEffect(() => {
+    zoomRef.current = onDomainSpan && domainSpan
+      ? (delta) => {
+          const factor = delta > 0 ? 1.12 : 1 / 1.12
+          const next = domainSpan * factor
+          if (next < 1e-3 || next > 1e5) return
+          onDomainSpan(next)
+        }
+      : null
+  }, [onDomainSpan, domainSpan])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -338,7 +381,15 @@ export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.setClearColor(0x111926, 1)
+    renderer.localClippingEnabled = true
     mount.appendChild(renderer.domElement)
+    const onWheel = (event: WheelEvent) => {
+      if (!zoomRef.current) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      zoomRef.current(event.deltaY)
+    }
+    renderer.domElement.addEventListener('wheel', onWheel, { capture: true, passive: false })
 
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
@@ -417,6 +468,7 @@ export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[
       cancelAnimationFrame(frameId)
       observer.disconnect()
       mount.removeEventListener('pointermove', onMove)
+      renderer.domElement.removeEventListener('wheel', onWheel, { capture: true })
       controls.dispose()
       renderer.dispose()
       mount.removeChild(renderer.domElement)
@@ -440,7 +492,10 @@ export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[
 
     const measured = boundsOf(bodies, surfaces)
     const equal = bodies.some((body) => body.role !== 'plot')
-    const frame: PlotFrame = { equal, box: measured ? expandPlotBox(measured) : emptyBox() }
+    const locked = domainSpan !== undefined && !equal
+    const frame: PlotFrame = locked
+      ? { equal: false, box: originBox(domainSpan, domainZ ?? domainSpan) }
+      : { equal, box: measured ? expandPlotBox(measured) : emptyBox() }
     frameRef.current = frame
     const { box } = frame
     const span = frame.equal ? Math.max(box.xMax - box.xMin, box.yMax - box.yMin, box.zMax - box.zMin, 1) : CUBE
@@ -455,8 +510,8 @@ export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[
         if (segment.length > 1) {
           const geometry = new THREE.BufferGeometry().setFromPoints(segment)
           const material = body.dashed
-            ? new THREE.LineDashedMaterial({ color, dashSize: span * 0.03, gapSize: span * 0.02 })
-            : new THREE.LineBasicMaterial({ color })
+            ? new THREE.LineDashedMaterial({ color, dashSize: span * 0.03, gapSize: span * 0.02, clippingPlanes: locked ? GRAPH_CLIP : undefined })
+            : new THREE.LineBasicMaterial({ color, clippingPlanes: locked ? GRAPH_CLIP : undefined })
           const line = new THREE.Line(geometry, material)
           if (body.dashed) line.computeLineDistances()
           content.add(line)
@@ -486,23 +541,27 @@ export function Scene3D({ bodies, surfaces = [], fitKey }: { bodies: FigureBody[
     })
 
     for (const surface of surfaces) {
-      for (const grid of surfaceGrids(surface)) addSurfaceGrid(content, frame, grid, surface.color, Boolean(surface.flat))
+      for (const grid of surfaceGrids(surface)) addSurfaceGrid(content, frame, grid, surface.color, Boolean(surface.flat), locked)
     }
 
-    controls.minDistance = span * 0.2
-    controls.maxDistance = span * 12
-    if (fittedRef.current !== fitKey) {
-      fittedRef.current = fitKey
-      const mid = toWorld(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2)
-      const center = new THREE.Vector3(mid.x, mid.y, mid.z)
-      controls.target.copy(center)
-      camera.position.copy(center).add(new THREE.Vector3(span * 1.35, span * 0.92, span * 0.95))
-      camera.near = Math.max(span / 800, 0.01)
-      camera.far = span * 40
-      camera.updateProjectionMatrix()
-      controls.update()
+    controls.enableZoom = !locked
+    if (!locked) {
+      controls.minDistance = span * 0.2
+      controls.maxDistance = span * 12
     }
-  }, [bodies, surfaces, fitKey])
+    const stamp = `${fitKey}:${graphView}`
+    if (fittedRef.current !== stamp) {
+      fittedRef.current = stamp
+      const mid = toWorld(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2)
+      const center = locked ? new THREE.Vector3(0, 0, 0) : new THREE.Vector3(mid.x, mid.y, mid.z)
+      // Keep the whole origin-centered cube on screen. Zoom changes the math inside it.
+      const distance = locked ? 48 : span * 1.9
+      snapCamera(camera, controls, graphView, center, distance)
+      camera.near = Math.max(span / 800, 0.01)
+      camera.far = span * 80
+      camera.updateProjectionMatrix()
+    }
+  }, [bodies, surfaces, fitKey, domainSpan, domainZ, graphView])
 
   return (
     <div className="workspace-scene3d">

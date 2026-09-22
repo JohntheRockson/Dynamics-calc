@@ -22,6 +22,13 @@ export function emptyBox(): PlotBox {
   return { xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10 }
 }
 
+/** A box centered on the origin. `span` is the x and y half-width, `zAbs` the z half-height. */
+export function originBox(span: number, zAbs: number): PlotBox {
+  const s = Math.max(Math.abs(span), 1e-6)
+  const z = Math.max(Math.abs(zAbs), 1e-6)
+  return { xMin: -s, xMax: s, yMin: -s, yMax: s, zMin: -z, zMax: z }
+}
+
 export function expandPlotBox(box: PlotBox): PlotBox {
   const next = { ...box }
   const xy = Math.max(next.xMax - next.xMin, next.yMax - next.yMin, 1)

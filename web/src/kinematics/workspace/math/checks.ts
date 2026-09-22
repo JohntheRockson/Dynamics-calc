@@ -2,7 +2,8 @@ import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../d
 import { evaluateDocument } from '../evaluate'
 import { previewTex } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
-import { expandPlotBox, fromWorld, toWorld, type PlotFrame } from './plotFrame'
+import { tickMarks } from '../../ticks'
+import { expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './shortcuts'
 
 export function runMathChecks(): string[] {
@@ -124,6 +125,10 @@ export function runMathChecks(): string[] {
   expect(Boolean(previewTex('2+')?.includes('\\square')), `trailing operator preview: ${previewTex('2+')}`)
   const blankFn = emptyFunctionShortcut('', 0, '/')
   expect(blankFn?.value === 'f(x) = ' && blankFn.cursor === 7, `slash starts a function: ${blankFn?.value}`)
+  const surfaceFn = emptyFunctionShortcut('', 0, '/')
+  expect(surfaceFn?.value === 'f(x, y) = ', `a second slash takes x and y: ${surfaceFn?.value}`)
+  const upgraded = emptyFunctionShortcut('f(x) = ', 7, '/')
+  expect(upgraded?.value === 'f(x, y) = ' && upgraded.cursor === 10, `slash upgrades the one-input template: ${upgraded?.value} @ ${upgraded?.cursor}`)
   expect(emptyFunctionShortcut('1', 1, '/') === null, 'slash after a value stays division')
   expect(Boolean(previewTex('f(x) =')?.includes('\\square')), `empty function preview: ${previewTex('f(x) =')}`)
 
@@ -188,6 +193,73 @@ export function runMathChecks(): string[] {
   expect(flat.zMax - flat.zMin > 1, 'a flat curve gets a z range')
   const motion = toWorld({ equal: true, box: flat }, 1, 2, 3)
   expect(motion.x === 1 && motion.y === 3 && motion.z === 2, 'motion keeps equal meters')
+  const centered = originBox(10, 200)
+  const origin = toWorld({ equal: false, box: centered }, 0, 0, 0)
+  const corner = toWorld({ equal: false, box: centered }, 10, 10, 200)
+  expect(Math.abs(origin.x) < 1e-6 && Math.abs(origin.y) < 1e-6 && Math.abs(origin.z) < 1e-6, 'the 3D box is centered on the origin')
+  expect(Math.abs(corner.x - 5) < 1e-6 && Math.abs(corner.y - 5) < 1e-6 && Math.abs(corner.z - 5) < 1e-6, 'a centered box still fills the cube')
+  const parked = tickMarks(-10, 10, 2)
+  const movedTicks = tickMarks(-9, 11, 2)
+  expect(parked[0] === -10 && movedTicks[0] === -8 && parked.includes(0) && movedTicks.includes(0), `grid lines stay on world numbers: ${parked.join(',')} -> ${movedTicks.join(',')}`)
+
+  let algebra = emptyDocument()
+  for (const input of [
+    'decimal(1/2)',
+    'fraction(0.333)',
+    'factor(12)',
+    'gcd(12, 18)',
+    'lcm(4, 6)',
+    'mod(7, 3)',
+    'expand((x+1)*(x+2))',
+    'zeros(x^2 - 1)',
+    'solve(x + y = 3, x - y = 1)',
+    'diff(x^2, x)',
+    'diff(x^3, x, 2)',
+    'diff(x^2, x, 1, 3)',
+    'integrate(x^2, x)',
+    'integrate(x, x, 0, 1)',
+    'limit(sin(x)/x, x, 0)',
+    'sum(i, i, 1, 5)',
+    'prod(i, i, 1, 4)',
+    'fmin(x^2, x, -2, 2)',
+    'fmax(-x^2, x, -2, 2)',
+    'tangent(x^2, x, 1)',
+    'normal(x^2, x, 1)',
+    'series(exp(x), x, 0, 3)',
+    'dsolve(diff(y, x) = y, y, x)',
+    'idiff(x^2 + y^2 = 1, y, x)',
+  ]) algebra = appendMath(algebra, input)
+  const algebraText = evaluateDocument(algebra).blocks.flatMap((block) => block.rows.map((row) => row.text))
+  const algebraPlots = evaluateDocument(algebra).bodies.filter((body) => body.role === 'plot')
+  const has = (part: string) => algebraText.some((text) => text.includes(part))
+  expect(has('0.5'), `decimal: ${algebraText.join(' | ')}`)
+  expect(has('1/3'), `fraction: ${algebraText.join(' | ')}`)
+  expect(has('2^2') && has('3'), `factor: ${algebraText.join(' | ')}`)
+  expect(has('6'), `gcd: ${algebraText.join(' | ')}`)
+  expect(has('12'), `lcm: ${algebraText.join(' | ')}`)
+  expect(has('1'), `mod: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('x^2') && text.includes('3')), `expand: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('x = 1') && text.includes('x = -1')), `zeros: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('x = 2') && text.includes('y = 1')), `system: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('2x') && text.includes('diff(x^2, x)')), `derivative: ${algebraText.join(' | ')}`)
+  expect(has('6x'), `second derivative: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('diff(x^2, x, 1, 3)') && text.includes('6')), `derivative at a point: ${algebraText.join(' | ')}`)
+  expect(has('x^3/3') && has('C'), `integral: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('integrate(x, x, 0, 1)') && text.includes('1/2')), `definite integral: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('limit') && text.includes('1')), `limit: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('sum') && text.includes('15')), `sum: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('prod') && text.includes('24')), `product: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('minimum') && text.includes('0')), `minimum: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('maximum') && text.includes('0')), `maximum: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('tangent') && text.includes('2x')), `tangent: ${algebraText.join(' | ')}`)
+  expect(has('normal'), `normal: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('series') && text.includes('x^2')), `series: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('exp') && text.includes('C')), `differential equation: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('idiff') && text.includes('x') && text.includes('y')), `implicit: ${algebraText.join(' | ')}`)
+  expect(algebraPlots.some((body) => body.label === 'diff' || body.label === 'Derivative' || body.path.length > 2), `derivative is drawn: ${algebraPlots.map((body) => body.label).join(',')}`)
+
+  const degreeDerivative = evaluateDocument(appendMath(emptyDocument(), 'diff(sin(x), x)'), 0, 'deg').blocks.flatMap((block) => block.rows.map((row) => row.text))
+  expect(degreeDerivative.some((text) => text.includes('pi') && text.includes('180')), `degree derivative follows the angle mode: ${degreeDerivative.join(' | ')}`)
 
   return errors
 }

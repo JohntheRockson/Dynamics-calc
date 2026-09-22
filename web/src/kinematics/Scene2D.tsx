@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { formatTick, niceStep, tickMarks } from './ticks'
 
 export interface Scene2DVector {
   vx: number
@@ -41,11 +42,12 @@ interface Scene2DProps {
   onReset?: () => void
 }
 
-function niceTick(v: number): string {
-  if (v === 0) return '0'
-  const abs = Math.abs(v)
-  if (abs >= 1000 || abs < 0.01) return v.toExponential(1)
-  return v.toFixed(abs < 1 ? 2 : abs < 10 ? 1 : 0)
+interface TickLabel {
+  text: string
+  x: number
+  y: number
+  align: CanvasTextAlign
+  baseline: CanvasTextBaseline
 }
 
 export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY, includeOrigin = false, viewBox, onViewBox, onReset }: Scene2DProps) {
@@ -156,48 +158,65 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     const sx = (x: number) => margin.l + ((x - xmin) / (xmax - xmin)) * plotW
     const sy = (y: number) => margin.t + (1 - (y - ymin) / (ymax - ymin)) * plotH
 
-    // Gridlines + ticks.
-    ctx.font = '10px var(--font-mono), monospace'
-    ctx.fillStyle = '#5b6a7e'
-    const xTicks = Math.max(2, Math.min(8, Math.round(plotW / 90)))
-    for (let i = 0; i <= xTicks; i++) {
-      const xv = xmin + ((xmax - xmin) * i) / xTicks
+    const xAxis = xmin < 0 && xmax > 0
+    const yAxis = ymin < 0 && ymax > 0
+    const xStep = niceStep(xmax - xmin, Math.max(2, Math.min(12, plotW / 90)))
+    const yStep = niceStep(ymax - ymin, Math.max(2, Math.min(10, plotH / 56)))
+    const xMarks = tickMarks(xmin, xmax, xStep)
+    const yMarks = tickMarks(ymin, ymax, yStep)
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(margin.l, margin.t, plotW, plotH)
+    ctx.clip()
+    ctx.strokeStyle = 'rgba(186, 204, 220, 0.18)'
+    ctx.lineWidth = 1
+    for (const xv of xMarks) {
+      if (Math.abs(xv) <= xStep * 1e-6) continue
       const px = sx(xv)
-      ctx.strokeStyle = 'rgba(255,255,255,0.06)'
       ctx.beginPath()
       ctx.moveTo(px, margin.t)
-      ctx.lineTo(px, height - margin.b)
+      ctx.lineTo(px, margin.t + plotH)
       ctx.stroke()
-      ctx.fillText(niceTick(xv), px - 10, height - 8)
     }
-    const yTicks = Math.max(2, Math.min(6, Math.round(plotH / 50)))
-    for (let i = 0; i <= yTicks; i++) {
-      const yv = ymin + ((ymax - ymin) * i) / yTicks
+    for (const yv of yMarks) {
+      if (Math.abs(yv) <= yStep * 1e-6) continue
       const py = sy(yv)
-      ctx.strokeStyle = 'rgba(255,255,255,0.06)'
       ctx.beginPath()
       ctx.moveTo(margin.l, py)
-      ctx.lineTo(width - margin.r, py)
+      ctx.lineTo(margin.l + plotW, py)
       ctx.stroke()
-      ctx.fillText(niceTick(yv), 4, py + 3)
     }
+    ctx.restore()
 
-    // Zero axes, a bit brighter.
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)'
-    if (xmin < 0 && xmax > 0) {
-      const px = sx(0)
+    ctx.strokeStyle = 'rgba(232, 238, 244, 0.55)'
+    ctx.lineWidth = 1.25
+    const axisPx = xAxis ? sx(0) : xmin >= 0 ? margin.l : width - margin.r
+    const axisPy = yAxis ? sy(0) : ymin >= 0 ? height - margin.b : margin.t
+    if (xAxis) {
       ctx.beginPath()
-      ctx.moveTo(px, margin.t)
-      ctx.lineTo(px, height - margin.b)
+      ctx.moveTo(sx(0), margin.t)
+      ctx.lineTo(sx(0), margin.t + plotH)
       ctx.stroke()
     }
-    if (ymin < 0 && ymax > 0) {
-      const py = sy(0)
+    if (yAxis) {
       ctx.beginPath()
-      ctx.moveTo(margin.l, py)
-      ctx.lineTo(width - margin.r, py)
+      ctx.moveTo(margin.l, sy(0))
+      ctx.lineTo(margin.l + plotW, sy(0))
       ctx.stroke()
     }
+    const labels: TickLabel[] = []
+    const xLabelY = yAxis ? (axisPy + 14 < margin.t + plotH - 2 ? axisPy + 4 : axisPy - 16) : ymin >= 0 ? height - margin.b - 16 : margin.t + 4
+    const yLabelX = xAxis ? (axisPx + 36 < margin.l + plotW ? axisPx + 6 : axisPx - 6) : xmin >= 0 ? margin.l + 4 : width - margin.r - 4
+    const yAlign: CanvasTextAlign = xAxis && axisPx + 36 >= margin.l + plotW ? 'right' : xmin < 0 && xmax <= 0 ? 'right' : 'left'
+    for (const xv of xMarks) {
+      if (xv === 0 && yAxis && xAxis) continue
+      labels.push({ text: formatTick(xv, xStep), x: sx(xv), y: xLabelY, align: 'center', baseline: 'top' })
+    }
+    for (const yv of yMarks) {
+      if (yv === 0 && yAxis && xAxis) continue
+      labels.push({ text: formatTick(yv, yStep), x: yLabelX, y: sy(yv), align: yAlign, baseline: 'middle' })
+    }
+    if (xAxis && yAxis) labels.push({ text: '0', x: axisPx - 8, y: axisPy + 4, align: 'right', baseline: 'top' })
 
     if (groundY !== undefined) {
       ctx.strokeStyle = '#8b5a2b'
@@ -291,6 +310,22 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
       }
     }
     ctx.restore()
+
+    ctx.font = '11px var(--font-mono), monospace'
+    ctx.lineWidth = 3
+    const drawn: TickLabel[] = []
+    for (const label of labels) {
+      if (drawn.some((item) => Math.hypot(item.x - label.x, item.y - label.y) < 22)) continue
+      drawn.push(label)
+      ctx.textAlign = label.align
+      ctx.textBaseline = label.baseline
+      ctx.strokeStyle = '#111926'
+      ctx.strokeText(label.text, label.x, label.y)
+      ctx.fillStyle = '#d5deea'
+      ctx.fillText(label.text, label.x, label.y)
+    }
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'alphabetic'
   }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin, viewBox])
 
   useEffect(() => {

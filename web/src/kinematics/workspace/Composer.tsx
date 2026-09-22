@@ -2,6 +2,7 @@ import { useId, useRef, useState } from 'react'
 import { Eq } from '../Eq'
 import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
+import { MATH_SECTIONS } from './math/catalog'
 import { previewTex } from './math/expr'
 import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './math/shortcuts'
 
@@ -28,6 +29,8 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
   const [command, setCommand] = useState<CommandDef | null>(null)
   const [args, setArgs] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
+  const [menu, setMenu] = useState(false)
+  const [section, setSection] = useState(MATH_SECTIONS[0].id)
   const mathMode = !command && looksLikeMath(query)
   const matches = mathMode ? [] : filterCommands(query)
   const names = pointNames(doc)
@@ -61,6 +64,21 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
     setError(null)
     setOpen(false)
     inputRef.current?.focus()
+  }
+
+  const insertTemplate = (template: string) => {
+    setQuery(template)
+    setMenu(false)
+    setOpen(false)
+    setError(null)
+    const caret = template.indexOf('(')
+    const cursor = caret >= 0 ? caret + 1 : template.length
+    requestAnimationFrame(() => {
+      const input = inputRef.current
+      if (!input) return
+      input.focus()
+      input.setSelectionRange(cursor, cursor)
+    })
   }
 
   const submit = () => {
@@ -168,7 +186,10 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
                 return
               }
               if (mathMode) {
-                if (event.key === 'Escape') setOpen(false)
+                if (event.key === 'Escape') {
+                  setOpen(false)
+                  setMenu(false)
+                }
                 return
               }
               if (event.key === 'ArrowDown') {
@@ -184,7 +205,28 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
             }}
           />
           </div>
-          {open && !mathMode && (
+          {menu && (
+            <div className="math-menu" role="dialog" aria-label="Functions">
+              <div className="math-menu-tabs">
+                {MATH_SECTIONS.map((item) => (
+                  <button key={item.id} type="button" className={item.id === section ? 'is-on' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setSection(item.id)}>
+                    {item.title}
+                  </button>
+                ))}
+              </div>
+              <ul>
+                {(MATH_SECTIONS.find((item) => item.id === section) ?? MATH_SECTIONS[0]).items.map((item) => (
+                  <li key={item.template}>
+                    <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => insertTemplate(item.template)}>
+                      <span>{item.name}</span>
+                      <span>{item.blurb}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {open && !mathMode && !menu && (
             <ul className="composer-list" id={listId} role="listbox">
               {matches.length === 0 ? (
                 <li className="composer-empty">No matching statement. Try point, speed, circle, or simulate.</li>
@@ -207,7 +249,12 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
           )}
         </div>
       )}
-      <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts an empty function. Space after sqrt, ln, log, or sin opens it.' : 'Type math, or a statement such as point, speed, or circle. / starts an empty function.')}</p>
+      <div className="composer-hint-row">
+        <button type="button" className="btn btn-ghost workspace-clear" aria-expanded={menu} onClick={() => setMenu((current) => !current)}>
+          Functions
+        </button>
+        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y).' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
+      </div>
     </form>
   )
 }

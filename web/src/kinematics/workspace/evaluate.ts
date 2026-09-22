@@ -75,6 +75,8 @@ export interface FigureSurface {
   sheets?: { x: number; y: number; z: number }[][][]
   /** A swept curve keeps one color. A height graph blends from low to high. */
   flat?: boolean
+  /** Resample a math surface when the 3D window changes. */
+  sample?: (window: PlotWindow) => { x: number; y: number; z: number }[][][]
 }
 
 export interface WorkspaceView {
@@ -605,14 +607,14 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
 
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'curve') continue
-    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, hideMarker: true, role: 'plot', sample: plot.sample, statementId: plot.statementId })
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: plot.marker ? 0 : 0, dashed: plot.dashed, hideMarker: !plot.marker, role: 'plot', sample: plot.sample, statementId: plot.statementId })
   }
 
   const surfaces: FigureSurface[] = []
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'surface') continue
     if (!surfaceHasFiniteZ(plot)) continue
-    surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid, sheets: plot.sheets })
+    surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid, sheets: plot.sheets, sample: plot.sample })
   }
 
   return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces }

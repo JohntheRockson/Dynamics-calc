@@ -1,6 +1,8 @@
 // Small exact-rational kernel: parse, draw as TeX, evaluate, and solve
 // linear or quadratic equations. Trig angles follow the active unit.
 
+import { MATH_FUNCTION_NAMES } from './catalog'
+
 export type AngleMode = 'rad' | 'deg'
 
 export class MathError extends Error {
@@ -42,7 +44,8 @@ interface Rat {
 }
 
 const BUILTIN_CALLS = new Set(['sqrt', 'ln', 'log', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan'])
-const RESERVED = new Set([...BUILTIN_CALLS, 'solve', 'pi', 'e'])
+const CAS_CALLS = new Set(MATH_FUNCTION_NAMES)
+const RESERVED = new Set([...BUILTIN_CALLS, ...CAS_CALLS, 'pi', 'e'])
 
 const ONE: Rat = { n: 1n, d: 1n }
 const ZERO_EXPR: Expr = { type: 'rat', n: 0n, d: 1n }
@@ -123,6 +126,7 @@ export type MathInput =
   | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string }
   | { kind: 'assign'; name: string; expr: Expr; raw: string }
   | { kind: 'solve'; equation: Expr; variable: string | null; raw: string }
+  | { kind: 'system'; equations: Expr[]; raw: string }
   | { kind: 'expr'; expr: Expr; raw: string }
 
 function assertDefinable(name: string): void {
@@ -131,12 +135,13 @@ function assertDefinable(name: string): void {
 
 function parseSolve(expr: Expr, raw: string): MathInput {
   if (expr.type !== 'call') throw new MathError('Use solve(equation) or solve(equation, x).')
+  if (expr.args.length >= 2 && expr.args.every((arg) => arg.type === 'eq')) return { kind: 'system', equations: expr.args, raw }
   if (expr.args.length === 1) return { kind: 'solve', equation: expr.args[0], variable: null, raw }
   if (expr.args.length === 2 && expr.args[1].type === 'sym') {
     if (expr.args[1].name === 'pi' || expr.args[1].name === 'e') throw new MathError(`${expr.args[1].name} is a constant.`)
     return { kind: 'solve', equation: expr.args[0], variable: expr.args[1].name, raw }
   }
-  throw new MathError('Use solve(equation) or solve(equation, x).')
+  throw new MathError('Use solve(equation), solve(equation, x), or solve(eq1, eq2).')
 }
 
 function autoClose(input: string): string {
@@ -199,19 +204,19 @@ class Parser {
   }
 
   parseProduct(): Expr {
-    let left = this.parsePower()
+    let left = this.parseUnary()
     for (;;) {
       if (this.eat('*')) {
-        left = { type: 'mul', args: [left, this.parsePower()] }
+        left = { type: 'mul', args: [left, this.parseUnary()] }
         continue
       }
       if (this.eat('/')) {
-        left = { type: 'div', num: left, den: this.parsePower() }
+        left = { type: 'div', num: left, den: this.parseUnary() }
         continue
       }
       if (!this.startsImplicit()) break
       const before = this.i
-      const right = this.parsePower()
+      const right = this.parseUnary()
       if (this.i === before) break
       left = { type: 'mul', args: [left, right] }
     }
@@ -236,16 +241,16 @@ class Parser {
     return this.src[j] ?? ''
   }
 
-  parsePower(): Expr {
-    const base = this.parseUnary()
-    if (!this.eat('^')) return base
-    return { type: 'pow', base, exp: this.parsePower() }
-  }
-
   parseUnary(): Expr {
     if (this.eat('+')) return this.parseUnary()
     if (this.eat('-')) return { type: 'mul', args: [rat(-1n), this.parseUnary()] }
-    return this.parsePrimary()
+    return this.parsePower()
+  }
+
+  parsePower(): Expr {
+    const base = this.parsePrimary()
+    if (!this.eat('^')) return base
+    return { type: 'pow', base, exp: this.parseUnary() }
   }
 
   parsePrimary(): Expr {
@@ -336,6 +341,11 @@ export function previewTex(input: string): string | null {
       const eq = parsed.equation.type === 'eq' ? parsed.equation : { type: 'eq' as const, left: parsed.equation, right: ZERO_EXPR }
       return `${tex(eq.left)} = ${tex(eq.right)}`
     }
+    if (parsed.kind === 'system') {
+      return parsed.equations
+        .map((eq) => (eq.type === 'eq' ? `${tex(eq.left)} = ${tex(eq.right)}` : tex(eq)))
+        .join(', ')
+    }
     return tex(parsed.expr)
   } catch {
     return null
@@ -389,6 +399,18 @@ export function approximate(e: Expr, angles: AngleMode = 'rad'): { tex: string; 
   if (n === null || !Number.isFinite(n)) return null
   const text = trimNum(n)
   return { tex: text, text }
+}
+
+export function numericConstant(e: Expr, angles: AngleMode = 'rad'): number | null {
+  try {
+    return evalConst(e, angles)
+  } catch {
+    return null
+  }
+}
+
+export function polynomialCoefficients(e: Expr, variable: string): Expr[] | null {
+  return toPoly(e, variable)
 }
 
 export function numericValue(e: Expr, env: MathEnv, angles: AngleMode = 'rad'): number | null {
@@ -504,7 +526,7 @@ function sqrtOf(e: Expr): Expr {
   return { type: 'call', name: 'sqrt', args: [e] }
 }
 
-function substitute(e: Expr, map: Map<string, Expr>): Expr {
+export function substitute(e: Expr, map: Map<string, Expr>): Expr {
   switch (e.type) {
     case 'sym':
       return map.get(e.name) ?? e
@@ -896,11 +918,42 @@ function atomListKey(term: Term): string {
   return term.atoms.map(atomKey).join('*')
 }
 
+function requireSymbol(arg: Expr | undefined, example: string): void {
+  if (!arg || arg.type !== 'sym' || arg.name === 'pi' || arg.name === 'e' || arg.name === '?') throw new MathError(example)
+}
+
 function checkCall(name: string, args: Expr[]): void {
-  const needsOne = new Set(['sqrt', 'ln', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan'])
+  const needsOne = new Set(['sqrt', 'ln', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan', 'decimal', 'fraction', 'factor', 'expand'])
   if (needsOne.has(name) && args.length !== 1) throw new MathError(`${name} needs one value.`)
   if (name === 'log' && args.length !== 1 && args.length !== 2) throw new MathError('log takes a value, or a value and a base.')
-  if (name === 'solve' && args.length !== 1 && args.length !== 2) throw new MathError('Use solve(equation) or solve(equation, x).')
+  if (name === 'solve' && (args.length < 1 || args.length > 4)) throw new MathError('Use solve(equation), solve(equation, x), or solve(eq1, eq2).')
+  if ((name === 'gcd' || name === 'lcm') && args.length < 2) throw new MathError(`${name} needs at least two whole numbers.`)
+  if ((name === 'mod' || name === 'rem') && args.length !== 2) throw new MathError('Use mod(a, b) for the remainder.')
+  if (name === 'zeros' && args.length !== 1 && args.length !== 2) throw new MathError('Use zeros(expr) or zeros(expr, x).')
+  if (name === 'zeros' && args.length === 2) requireSymbol(args[1], 'Use zeros(expr, x).')
+  if (name === 'diff') {
+    if (args.length < 2 || args.length > 4) throw new MathError('Use diff(expr, x), diff(expr, x, 2), or diff(expr, x, 1, a).')
+    requireSymbol(args[1], 'Say which variable to differentiate, for example diff(x^2, x).')
+  }
+  if (name === 'integrate' && args.length !== 2 && args.length !== 4) throw new MathError('Use integrate(expr, x) or integrate(expr, x, a, b).')
+  if (name === 'integrate') requireSymbol(args[1], 'Say which variable to integrate, for example integrate(x^2, x).')
+  if (name === 'limit' && args.length !== 3) throw new MathError('Use limit(expr, x, a).')
+  if (name === 'limit') requireSymbol(args[1], 'Use limit(expr, x, a).')
+  if ((name === 'sum' || name === 'prod') && args.length !== 4) throw new MathError(`Use ${name}(expr, i, start, end).`)
+  if (name === 'sum' || name === 'prod') requireSymbol(args[1], `Use ${name}(expr, i, start, end).`)
+  if ((name === 'tangent' || name === 'normal') && args.length !== 3) throw new MathError(`Use ${name}(expr, x, a).`)
+  if (name === 'tangent' || name === 'normal') requireSymbol(args[1], `Use ${name}(expr, x, a).`)
+  if (name === 'fmin' || name === 'fmax') {
+    if (args.length !== 4) throw new MathError(`Use ${name}(expr, x, a, b).`)
+    requireSymbol(args[1], `Use ${name}(expr, x, a, b).`)
+  }
+  if (name === 'series' && args.length !== 4) throw new MathError('Use series(expr, x, a, order).')
+  if (name === 'series') requireSymbol(args[1], 'Use series(expr, x, a, order).')
+  if ((name === 'dsolve' || name === 'idiff') && args.length !== 3) throw new MathError(name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
+  if (name === 'dsolve' || name === 'idiff') {
+    requireSymbol(args[1], name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
+    requireSymbol(args[2], name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
+  }
 }
 
 function termToExpr(term: Term): Expr {
@@ -1020,7 +1073,7 @@ function isPerfectSquare(r: Expr): boolean {
 function firstUnknown(e: Expr): string | null {
   let name: string | null = null
   walk(e, (node) => {
-    if (!name && node.type === 'call' && !BUILTIN_CALLS.has(node.name)) name = node.name
+    if (!name && node.type === 'call' && !BUILTIN_CALLS.has(node.name) && !CAS_CALLS.has(node.name)) name = node.name
   })
   return name
 }

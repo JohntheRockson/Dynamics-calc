@@ -1,5 +1,9 @@
-const CALLS = new Set(['sqrt', 'ln', 'log', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan'])
-const MATH_WORDS = new Set([...CALLS, 'pi', 'e', 'solve'])
+import { MATH_FUNCTION_NAMES } from './catalog'
+
+const CALLS = new Set(['sqrt', 'ln', 'log', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan', ...MATH_FUNCTION_NAMES])
+const MATH_WORDS = new Set([...CALLS, 'pi', 'e'])
+
+let lastFunctionSlash = 0
 
 /** True when the composer should evaluate the line instead of picking a kinematics statement. */
 export function looksLikeMath(query: string): boolean {
@@ -15,12 +19,22 @@ export function looksLikeMath(query: string): boolean {
   return false
 }
 
-/** `/` with nothing before the caret starts a blank curve, `f(x) = `. */
+/** `/` with nothing before the caret starts `f(x) = `. A second slash makes `f(x, y) = `. */
 export function emptyFunctionShortcut(value: string, cursor: number, key: string): { value: string; cursor: number } | null {
   if (key !== '/') return null
-  if (value.slice(0, cursor).trim() !== '') return null
-  const inserted = 'f(x) = '
-  return { value: `${value.slice(0, cursor)}${inserted}${value.slice(cursor)}`, cursor: cursor + inserted.length }
+  const left = value.slice(0, cursor)
+  const right = value.slice(cursor)
+  const now = Date.now()
+  const rapid = now - lastFunctionSlash < 500
+  if (value === 'f(x) = ' && cursor === value.length) {
+    lastFunctionSlash = 0
+    const inserted = 'f(x, y) = '
+    return { value: inserted, cursor: inserted.length }
+  }
+  if (left.trim() !== '') return null
+  lastFunctionSlash = now
+  const inserted = rapid && right.trim() === '' ? 'f(x, y) = ' : 'f(x) = '
+  return { value: `${left}${inserted}${right}`, cursor: left.length + inserted.length }
 }
 
 /**
