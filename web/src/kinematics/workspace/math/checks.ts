@@ -1,7 +1,9 @@
 import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../document'
 import { evaluateDocument } from '../evaluate'
 import { previewTex } from './expr'
-import { expandMathShortcut, looksLikeMath } from './shortcuts'
+import { clipToDomain, sheetsFromCurve } from './extrude'
+import { expandPlotBox, fromWorld, toWorld, type PlotFrame } from './plotFrame'
+import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './shortcuts'
 
 export function runMathChecks(): string[] {
   const errors: string[] = []
@@ -120,6 +122,72 @@ export function runMathChecks(): string[] {
   expect(Boolean(previewTex('x^2')?.includes('^')), `power preview: ${previewTex('x^2')}`)
   expect(Boolean(previewTex('sqrt(')?.includes('\\square')), `open sqrt preview: ${previewTex('sqrt(')}`)
   expect(Boolean(previewTex('2+')?.includes('\\square')), `trailing operator preview: ${previewTex('2+')}`)
+  const blankFn = emptyFunctionShortcut('', 0, '/')
+  expect(blankFn?.value === 'f(x) = ' && blankFn.cursor === 7, `slash starts a function: ${blankFn?.value}`)
+  expect(emptyFunctionShortcut('1', 1, '/') === null, 'slash after a value stays division')
+  expect(Boolean(previewTex('f(x) =')?.includes('\\square')), `empty function preview: ${previewTex('f(x) =')}`)
+
+  const deg = evaluateDocument(appendMath(emptyDocument(), 'sin(30)'), 0, 'deg')
+  const degText = deg.blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(degText.includes('1/2'), `sin(30) degrees: ${degText}`)
+  const cos45 = evaluateDocument(appendMath(emptyDocument(), 'cos(45)'), 0, 'deg').blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(cos45.includes('sqrt(2)'), `cos(45) degrees: ${cos45}`)
+  const right = evaluateDocument(appendMath(emptyDocument(), 'asin(1)'), 0, 'deg').blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(right.includes('90'), `asin(1) degrees: ${right}`)
+  const wave = evaluateDocument(appendMath(emptyDocument(), 'y = sin(x)'), 0, 'deg')
+  const at90 = wave.bodies[0]?.sample?.({ xMin: 90, xMax: 90, yMin: -2, yMax: 2 }) ?? []
+  expect(at90.some((point) => Math.abs(point.y - 1) < 1e-6), `degree graph at 90: ${at90[0]?.y}`)
+  const stillRad = evaluateDocument(appendMath(emptyDocument(), 'sin(pi/2)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(stillRad.includes('1') && !stillRad.includes('90'), `radians stay default: ${stillRad}`)
+
+  const sheets = sheetsFromCurve(
+    [
+      { x: -2, y: -1, z: 0 },
+      { x: 0, y: 5, z: 0 },
+      { x: 2, y: 11, z: 0 },
+    ],
+    0,
+    10,
+    3,
+  )
+  expect(sheets.length === 1 && sheets[0].length === 3, 'a curve sweeps into one sheet')
+  expect(sheets[0][0][0].z === 0 && sheets[0][2][0].z === 10 && sheets[0][1][1].y === 5, 'the sheet keeps the curve and spans z')
+  const split = sheetsFromCurve(
+    [
+      { x: 0, y: 1, z: 0 },
+      { x: 1, y: 2, z: 0 },
+      { x: Number.NaN, y: Number.NaN, z: Number.NaN },
+      { x: 0, y: -1, z: 0 },
+      { x: 1, y: -2, z: 0 },
+    ],
+    -4,
+    4,
+    2,
+  )
+  expect(split.length === 2, `a gap stays two sheets: ${split.length}`)
+
+  const tall: PlotFrame = { equal: false, box: expandPlotBox({ xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: 0, zMax: 200 }) }
+  const tip = toWorld(tall, 0, 0, 0)
+  const rim = toWorld(tall, 10, 10, 200)
+  expect(Math.abs(tip.y + 5) < 1e-6 && Math.abs(tip.x) < 1e-6, `paraboloid tip sits on the cube floor: ${tip.x}, ${tip.y}`)
+  expect(Math.abs(rim.x - 5) < 1e-6 && Math.abs(rim.y - 5) < 1e-6 && Math.abs(rim.z - 5) < 1e-6, `tall surface fills the cube: ${rim.x}, ${rim.y}, ${rim.z}`)
+  const back = fromWorld(tall, rim.x, rim.y, rim.z)
+  expect(Math.abs(back.x - 10) < 1e-6 && Math.abs(back.y - 10) < 1e-6 && Math.abs(back.z - 200) < 1e-6, 'cube positions convert back to math')
+  const clipped = clipToDomain(
+    [
+      { x: -10, y: -25, z: 0 },
+      { x: -5, y: -10, z: 0 },
+      { x: 0, y: 5, z: 0 },
+      { x: 2, y: 11, z: 0 },
+    ],
+    { xMin: -10, xMax: 10, yMin: -10, yMax: 10 },
+  )
+  expect(Number.isFinite(clipped[2].y) && !Number.isFinite(clipped[0].y) && !Number.isFinite(clipped[3].y), 'a plane stays inside the surface domain')
+
+  const flat = expandPlotBox({ xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: 0, zMax: 0 })
+  expect(flat.zMax - flat.zMin > 1, 'a flat curve gets a z range')
+  const motion = toWorld({ equal: true, box: flat }, 1, 2, 3)
+  expect(motion.x === 1 && motion.y === 3 && motion.z === 2, 'motion keeps equal meters')
 
   return errors
 }

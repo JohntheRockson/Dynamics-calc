@@ -1,5 +1,7 @@
 // Small exact-rational kernel: parse, draw as TeX, evaluate, and solve
-// linear or quadratic equations. Angles in sin/cos are radians.
+// linear or quadratic equations. Trig angles follow the active unit.
+
+export type AngleMode = 'rad' | 'deg'
 
 export class MathError extends Error {
   constructor(message: string) {
@@ -318,6 +320,7 @@ function cookPreview(input: string): string {
   if (balance > 0) source += ')'.repeat(balance)
   source = source.replace(/\(\s*\)/g, '(?)')
   if (/[+\-*/^,]$/.test(source)) source += '?'
+  else if (/=\s*$/.test(source)) source += '?'
   return source
 }
 
@@ -348,21 +351,21 @@ export function validateMath(input: string): string | null {
   }
 }
 
-export function normalize(e: Expr): Expr {
-  return fromTerms(toSum(fold(e)))
+export function normalize(e: Expr, angles: AngleMode = 'rad'): Expr {
+  return fromTerms(toSum(fold(e, angles)))
 }
 
-export function present(e: Expr): { tex: string; text: string } {
+export function present(e: Expr, angles: AngleMode = 'rad'): { tex: string; text: string } {
   const unknown = firstUnknown(e)
   if (unknown) throw new MathError(`${unknown} is not defined.`)
   if (e.type === 'sym' && (e.name === 'e' || e.name === 'pi')) {
-    const n = evalConst(e)
+    const n = evalConst(e, angles)
     if (n === null) return { tex: tex(e), text: plain(e) }
     const dec: Expr = { type: 'dec', text: trimNum(n), value: n }
     return { tex: tex(dec), text: plain(dec) }
   }
   if (hasFreeSymbol(e) || keepSymbolic(e) || containsConstantSym(e)) {
-    const n = evalConst(e)
+    const n = evalConst(e, angles)
     if (!hasFreeSymbol(e) && !keepSymbolic(e) && n !== null && Number.isFinite(n)) {
       const snapped = snap(n)
       if (snapped) return { tex: tex(snapped), text: plain(snapped) }
@@ -370,7 +373,7 @@ export function present(e: Expr): { tex: string; text: string } {
     if (!hasFreeSymbol(e) && n !== null && !Number.isFinite(n)) throw new MathError('Not a real number.')
     return { tex: tex(e), text: plain(e) }
   }
-  const n = evalConst(e)
+  const n = evalConst(e, angles)
   if (n === null) return { tex: tex(e), text: plain(e) }
   if (!Number.isFinite(n)) throw new MathError('Not a real number.')
   const snapped = snap(n)
@@ -380,17 +383,17 @@ export function present(e: Expr): { tex: string; text: string } {
 }
 
 /** A decimal for a fully numeric value. Radicals that did not simplify still have one. */
-export function approximate(e: Expr): { tex: string; text: string } | null {
+export function approximate(e: Expr, angles: AngleMode = 'rad'): { tex: string; text: string } | null {
   if (hasFreeSymbol(e)) return null
-  const n = evalConst(e)
+  const n = evalConst(e, angles)
   if (n === null || !Number.isFinite(n)) return null
   const text = trimNum(n)
   return { tex: text, text }
 }
 
-export function numericValue(e: Expr, env: MathEnv): number | null {
+export function numericValue(e: Expr, env: MathEnv, angles: AngleMode = 'rad'): number | null {
   try {
-    const n = evalConst(applyEnv(e, env, 0))
+    const n = evalConst(applyEnv(e, env, 0), angles)
     if (n === null || !Number.isFinite(n)) return null
     return n
   } catch {
@@ -522,7 +525,7 @@ function substitute(e: Expr, map: Map<string, Expr>): Expr {
   }
 }
 
-function fold(e: Expr): Expr {
+function fold(e: Expr, angles: AngleMode = 'rad'): Expr {
   switch (e.type) {
     case 'rat':
       return rat(e.n, e.d)
@@ -530,7 +533,7 @@ function fold(e: Expr): Expr {
     case 'sym':
       return e
     case 'add': {
-      const args = e.args.map(fold)
+      const args = e.args.map((arg) => fold(arg, angles))
       if (args.every((arg) => arg.type === 'rat')) {
         return args.reduce<Expr>((acc, arg) => {
           if (acc.type !== 'rat' || arg.type !== 'rat') return arg
@@ -540,7 +543,7 @@ function fold(e: Expr): Expr {
       return { type: 'add', args }
     }
     case 'mul': {
-      const args = e.args.map(fold)
+      const args = e.args.map((arg) => fold(arg, angles))
       if (args.every((arg) => arg.type === 'rat')) {
         return args.reduce<Expr>((acc, arg) => {
           if (acc.type !== 'rat' || arg.type !== 'rat') return arg
@@ -550,44 +553,158 @@ function fold(e: Expr): Expr {
       return { type: 'mul', args }
     }
     case 'div': {
-      const num = fold(e.num)
-      const den = fold(e.den)
+      const num = fold(e.num, angles)
+      const den = fold(e.den, angles)
       if (num.type === 'rat' && den.type === 'rat' && den.n !== 0n) return rat(num.n * den.d, num.d * den.n)
       return { type: 'div', num, den }
     }
     case 'pow': {
-      const base = fold(e.base)
-      const exp = fold(e.exp)
+      const base = fold(e.base, angles)
+      const exp = fold(e.exp, angles)
       if (exp.type === 'rat' && exp.n === 0n) return rat(1n)
       if (exp.type === 'rat' && exp.n === 1n && exp.d === 1n) return base
       if (base.type === 'rat' && exp.type === 'rat' && exp.d === 1n) return powRat(base, exp.n)
       if (base.type === 'rat' && exp.type === 'rat' && exp.n === 1n && exp.d === 2n) return exactSqrt(base)
-      return snapConstant({ type: 'pow', base, exp }) ?? { type: 'pow', base, exp }
+      return snapConstant({ type: 'pow', base, exp }, angles) ?? { type: 'pow', base, exp }
     }
     case 'call': {
-      const args = e.args.map(fold)
+      const args = e.args.map((arg) => fold(arg, angles))
       if (e.name === 'sqrt' && args.length === 1 && args[0].type === 'rat') return exactSqrt(args[0])
       if (e.name === 'ln' && args.length === 1 && args[0].type === 'sym' && args[0].name === 'e') return rat(1n)
       if (e.name === 'log' && args.length === 1 && args[0].type === 'rat') {
         const exact = log10Rat(args[0])
         if (exact) return exact
       }
-      return snapConstant({ type: 'call', name: e.name, args }) ?? { type: 'call', name: e.name, args }
+      if (angles === 'deg' && args.length === 1 && (e.name === 'sin' || e.name === 'cos' || e.name === 'tan')) {
+        const exact = exactDegreeTrig(e.name, args[0])
+        if (exact) return fold(exact, 'rad')
+      }
+      return snapConstant({ type: 'call', name: e.name, args }, angles) ?? { type: 'call', name: e.name, args }
     }
     case 'eq':
-      return { type: 'eq', left: fold(e.left), right: fold(e.right) }
+      return { type: 'eq', left: fold(e.left, angles), right: fold(e.right, angles) }
   }
 }
 
-function snapConstant(e: Expr): Expr | null {
+function snapConstant(e: Expr, angles: AngleMode): Expr | null {
   if (hasFreeSymbol(e) || keepSymbolic(e) || containsConstantSym(e)) {
-    const n = evalConst(e)
+    const n = evalConst(e, angles)
     if (n !== null && Number.isFinite(n)) return snap(n)
     return null
   }
-  const n = evalConst(e)
+  const n = evalConst(e, angles)
   if (n === null || !Number.isFinite(n)) return null
   return snap(n)
+}
+
+const DEGREE_MARKS = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 300, 315, 330]
+
+function exactDegreeTrig(name: 'sin' | 'cos' | 'tan', angle: Expr): Expr | null {
+  if (angle.type !== 'rat') return null
+  let n = angle.n % (360n * angle.d)
+  if (n < 0n) n += 360n * angle.d
+  const match = DEGREE_MARKS.find((deg) => n === BigInt(deg) * angle.d)
+  if (match === undefined) return null
+  if (name === 'tan' && (match === 90 || match === 270)) throw new MathError('Not a real number.')
+  return name === 'sin' ? sinDegrees(match) : name === 'cos' ? cosDegrees(match) : tanDegrees(match)
+}
+
+function halfRoot(k: 2 | 3): Expr {
+  return { type: 'div', num: { type: 'call', name: 'sqrt', args: [rat(BigInt(k))] }, den: rat(2n) }
+}
+
+function negExpr(e: Expr): Expr {
+  return { type: 'mul', args: [rat(-1n), e] }
+}
+
+function sinDegrees(deg: number): Expr {
+  switch (deg) {
+    case 0:
+    case 180:
+      return rat(0n)
+    case 30:
+    case 150:
+      return rat(1n, 2n)
+    case 45:
+    case 135:
+      return halfRoot(2)
+    case 60:
+    case 120:
+      return halfRoot(3)
+    case 90:
+      return rat(1n)
+    case 210:
+    case 330:
+      return negExpr(rat(1n, 2n))
+    case 225:
+    case 315:
+      return negExpr(halfRoot(2))
+    case 240:
+    case 300:
+      return negExpr(halfRoot(3))
+    default:
+      return rat(-1n)
+  }
+}
+
+function cosDegrees(deg: number): Expr {
+  switch (deg) {
+    case 0:
+      return rat(1n)
+    case 30:
+    case 330:
+      return halfRoot(3)
+    case 45:
+    case 315:
+      return halfRoot(2)
+    case 60:
+    case 300:
+      return rat(1n, 2n)
+    case 90:
+    case 270:
+      return rat(0n)
+    case 120:
+    case 240:
+      return negExpr(rat(1n, 2n))
+    case 135:
+    case 225:
+      return negExpr(halfRoot(2))
+    case 150:
+    case 210:
+      return negExpr(halfRoot(3))
+    default:
+      return rat(-1n)
+  }
+}
+
+function tanDegrees(deg: number): Expr {
+  const root3: Expr = { type: 'call', name: 'sqrt', args: [rat(3n)] }
+  const over3: Expr = { type: 'div', num: root3, den: rat(3n) }
+  switch (deg) {
+    case 0:
+    case 180:
+      return rat(0n)
+    case 30:
+    case 210:
+      return over3
+    case 45:
+    case 225:
+      return rat(1n)
+    case 60:
+    case 240:
+      return root3
+    case 120:
+    case 300:
+      return negExpr(root3)
+    case 135:
+    case 315:
+      return rat(-1n)
+    case 150:
+    case 330:
+      return negExpr(over3)
+    default:
+      return rat(0n)
+  }
 }
 
 function log10Rat(r: Expr): Expr | null {
@@ -935,7 +1052,7 @@ function walk(e: Expr, visit: (node: Expr) => void): void {
   }
 }
 
-function evalConst(e: Expr): number | null {
+function evalConst(e: Expr, angles: AngleMode = 'rad'): number | null {
   switch (e.type) {
     case 'rat':
       return Number(e.n) / Number(e.d)
@@ -946,19 +1063,19 @@ function evalConst(e: Expr): number | null {
       if (e.name === 'e') return Math.E
       return null
     case 'add':
-      return reduceNums(e.args, 0, (sum, n) => sum + n)
+      return reduceNums(e.args, 0, (sum, n) => sum + n, angles)
     case 'mul':
-      return reduceNums(e.args, 1, (product, n) => product * n)
+      return reduceNums(e.args, 1, (product, n) => product * n, angles)
     case 'div': {
-      const num = evalConst(e.num)
-      const den = evalConst(e.den)
+      const num = evalConst(e.num, angles)
+      const den = evalConst(e.den, angles)
       if (num === null || den === null) return null
       if (den === 0) return Number.NaN
       return num / den
     }
     case 'pow': {
-      const base = evalConst(e.base)
-      const exp = evalConst(e.exp)
+      const base = evalConst(e.base, angles)
+      const exp = evalConst(e.exp, angles)
       if (base === null || exp === null) return null
       if (base < 0 && !Number.isInteger(exp)) return Number.NaN
       return base ** exp
@@ -966,30 +1083,32 @@ function evalConst(e: Expr): number | null {
     case 'call': {
       const args: number[] = []
       for (const arg of e.args) {
-        const n = evalConst(arg)
+        const n = evalConst(arg, angles)
         if (n === null) return null
         args.push(n)
       }
-      return callNumber(e.name, args)
+      return callNumber(e.name, args, angles)
     }
     case 'eq':
       return null
   }
 }
 
-function reduceNums(args: Expr[], start: number, step: (acc: number, n: number) => number): number | null {
+function reduceNums(args: Expr[], start: number, step: (acc: number, n: number) => number, angles: AngleMode): number | null {
   let acc = start
   for (const arg of args) {
-    const n = evalConst(arg)
+    const n = evalConst(arg, angles)
     if (n === null) return null
     acc = step(acc, n)
   }
   return acc
 }
 
-function callNumber(name: string, args: number[]): number | null {
+function callNumber(name: string, args: number[], angles: AngleMode): number | null {
   const x = args[0]
   const y = args[1]
+  const toRad = (n: number) => (angles === 'deg' ? (n * Math.PI) / 180 : n)
+  const fromRad = (n: number) => (angles === 'deg' ? (n * 180) / Math.PI : n)
   switch (name) {
     case 'sqrt':
       return args.length === 1 ? Math.sqrt(x) : null
@@ -1000,21 +1119,21 @@ function callNumber(name: string, args: number[]): number | null {
       if (args.length === 2 && y !== 0) return Math.log(x) / Math.log(y)
       return null
     case 'sin':
-      return args.length === 1 ? Math.sin(x) : null
+      return args.length === 1 ? Math.sin(toRad(x)) : null
     case 'cos':
-      return args.length === 1 ? Math.cos(x) : null
+      return args.length === 1 ? Math.cos(toRad(x)) : null
     case 'tan':
-      return args.length === 1 ? Math.tan(x) : null
+      return args.length === 1 ? Math.tan(toRad(x)) : null
     case 'abs':
       return args.length === 1 ? Math.abs(x) : null
     case 'exp':
       return args.length === 1 ? Math.exp(x) : null
     case 'asin':
-      return args.length === 1 ? Math.asin(x) : null
+      return args.length === 1 ? fromRad(Math.asin(x)) : null
     case 'acos':
-      return args.length === 1 ? Math.acos(x) : null
+      return args.length === 1 ? fromRad(Math.acos(x)) : null
     case 'atan':
-      return args.length === 1 ? Math.atan(x) : null
+      return args.length === 1 ? fromRad(Math.atan(x)) : null
     default:
       return null
   }

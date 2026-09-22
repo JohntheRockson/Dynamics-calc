@@ -1,9 +1,9 @@
-import { useId, useRef, useState, type UIEvent } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Eq } from '../Eq'
 import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
 import { previewTex } from './math/expr'
-import { expandMathShortcut, looksLikeMath } from './math/shortcuts'
+import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './math/shortcuts'
 
 function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string, string> {
   const names = pointNames(doc)
@@ -22,7 +22,6 @@ function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string
 export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; onCommit: (commandId: string, args: Record<string, string>) => string | null; onMath: (input: string) => string | null }) {
   const listId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
-  const overlayRef = useRef<HTMLDivElement>(null)
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
@@ -131,7 +130,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         <div className="composer-search">
           <div className={preview ? 'composer-field is-math' : 'composer-field'}>
             {preview && (
-              <div className="composer-math" ref={overlayRef} aria-hidden="true">
+              <div className="composer-preview" aria-hidden="true">
                 <Eq tex={preview} />
               </div>
             )}
@@ -147,25 +146,25 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
             value={query}
             onFocus={() => setOpen(true)}
             onBlur={() => setOpen(false)}
-            onScroll={(event: UIEvent<HTMLInputElement>) => {
-              if (overlayRef.current) overlayRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`
-            }}
             onChange={(event) => {
               setQuery(event.target.value)
               setHighlight(0)
               setOpen(true)
-              if (overlayRef.current) overlayRef.current.style.transform = 'translateX(0px)'
             }}
             onKeyDown={(event) => {
-              const cursor = event.currentTarget.selectionStart ?? query.length
-              const expanded = expandMathShortcut(query, cursor, event.key)
+              const input = event.currentTarget
+              const typed = input.value
+              const cursor = input.selectionStart ?? typed.length
+              const expanded = emptyFunctionShortcut(typed, cursor, event.key) ?? expandMathShortcut(typed, cursor, event.key)
               if (expanded) {
                 event.preventDefault()
                 const input = event.currentTarget
                 setQuery(expanded.value)
                 setHighlight(0)
                 setError(null)
-                requestAnimationFrame(() => input.setSelectionRange(expanded.cursor, expanded.cursor))
+                requestAnimationFrame(() => {
+                  input.setSelectionRange(expanded.cursor, expanded.cursor)
+                })
                 return
               }
               if (mathMode) {
@@ -208,7 +207,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
           )}
         </div>
       )}
-      <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. Space after sqrt, ln, log, or sin opens the function.' : 'Type math, or a statement such as point, speed, or circle.')}</p>
+      <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts an empty function. Space after sqrt, ln, log, or sin opens it.' : 'Type math, or a statement such as point, speed, or circle. / starts an empty function.')}</p>
     </form>
   )
 }

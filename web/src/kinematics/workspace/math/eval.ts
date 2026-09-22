@@ -14,13 +14,14 @@ import {
   present,
   solveEquation,
   tex,
+  type AngleMode,
   type Expr,
   type MathEnv,
 } from './expr'
 
 const PLOT_COLORS = ['#59d67f', '#f5a524', '#a78bfa', '#fb6a6a', '#5aa8ff', '#e879f9']
 const CURVE_SAMPLES = 201
-const SURFACE_SAMPLES = 21
+const SURFACE_SAMPLES = 61
 const CLIP = 1e4
 const AXES = new Set(['x', 'y', 'z'])
 
@@ -75,7 +76,7 @@ export interface MathCompilation {
   plots: Array<CurvePlot | SurfacePlot>
 }
 
-export function compileMath(statements: Statement[]): MathCompilation {
+export function compileMath(statements: Statement[], angles: AngleMode = 'rad'): MathCompilation {
   const env: MathEnv = new Map()
   const rows: MathConsoleRow[] = []
   const plots: Array<CurvePlot | SurfacePlot> = []
@@ -99,8 +100,8 @@ export function compileMath(statements: Statement[]): MathCompilation {
         const missing = freeSymbols(parsed.body).filter((name) => !parsed.params.includes(name) && !env.has(name))
         const color = nextColor()
         const plot = parsed.params.length === 2
-          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [parsed.body], parsed.params[0], parsed.params[1], env)
-          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [parsed.body], param: parsed.params[0], along: 'x' }, env)
+          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [parsed.body], parsed.params[0], parsed.params[1], env, angles)
+          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [parsed.body], param: parsed.params[0], along: 'x' }, env, angles)
         if (missing.length > 0) plot.warn = `Give ${missing.join(', ')} a value above this line to draw the graph.`
         else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
         plots.push(plot.plot)
@@ -114,11 +115,11 @@ export function compileMath(statements: Statement[]): MathCompilation {
           : null
       if (equation) {
         const dep = dependentAxis(equation.left)
-        const plotted = dep ? explicitPlot(dep, equation.right, env) : null
+        const plotted = dep ? explicitPlot(dep, equation.right, env, angles) : null
         if (parsed.kind === 'assign' && !plotted) {
-          const value = normalize(applyEnv(parsed.expr, env, 0))
+          const value = normalize(applyEnv(parsed.expr, env, 0), angles)
           env.set(parsed.name, { kind: 'expr', expr: value })
-          const shown = described(parsed.expr, value, statement.input)
+          const shown = described(parsed.expr, value, statement.input, angles)
           const nameTex = tex({ type: 'sym', name: parsed.name })
           const exactText = `${parsed.name} = ${shown.exactText ?? ''}`
           const exactTex = `${nameTex} = ${shown.exactTex ?? ''}`
@@ -144,7 +145,7 @@ export function compileMath(statements: Statement[]): MathCompilation {
         }
         if (plotted) {
           if (parsed.kind === 'assign') {
-            const value = normalize(applyEnv(parsed.expr, env, 0))
+            const value = normalize(applyEnv(parsed.expr, env, 0), angles)
             env.set(parsed.name, { kind: 'expr', expr: value })
           }
           const color = nextColor()
@@ -152,8 +153,8 @@ export function compileMath(statements: Statement[]): MathCompilation {
           const formulaTex = `${tex(equation.left)} = ${tex(equation.right)}`
           const formulaText = `${plain(equation.left)} = ${plain(equation.right)}`
           const plot = plotted.kind === 'surface'
-            ? surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, 'x', 'y', env)
-            : curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env)
+            ? surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, 'x', 'y', env, angles)
+            : curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles)
           if (plotted.warn) plot.warn = plotted.warn
           else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
           plots.push(plot.plot)
@@ -183,10 +184,10 @@ export function compileMath(statements: Statement[]): MathCompilation {
       }
       const expr = parsed.kind === 'expr' ? parsed.expr : null
       if (!expr) continue
-      const value = normalize(applyEnv(expr, env, 0))
+      const value = normalize(applyEnv(expr, env, 0), angles)
       if (value.type === 'eq') {
-        const left = present(normalize(value.left))
-        const right = present(normalize(value.right))
+        const left = present(normalize(value.left, angles), angles)
+        const right = present(normalize(value.right, angles), angles)
         rows.push({
           statementId: statement.id,
           label: 'Result',
@@ -204,7 +205,7 @@ export function compileMath(statements: Statement[]): MathCompilation {
         })
         continue
       }
-      const shown = described(expr, value, statement.input)
+      const shown = described(expr, value, statement.input, angles)
       rows.push({ ...shown, statementId: statement.id, label: 'Result', plotKind: null, visible: true, warn: null })
     } catch (error) {
       const message = error instanceof MathError ? error.message : 'Could not read that.'
@@ -247,9 +248,9 @@ function rowBase(id: string, input: string, label: string, text: string, formula
   }
 }
 
-function described(input: Expr, value: Expr, raw: string): Omit<MathConsoleRow, 'statementId' | 'label' | 'plotKind' | 'visible' | 'warn'> {
-  const exact = present(value)
-  const approx = approximate(value)
+function described(input: Expr, value: Expr, raw: string, angles: AngleMode): Omit<MathConsoleRow, 'statementId' | 'label' | 'plotKind' | 'visible' | 'warn'> {
+  const exact = present(value, angles)
+  const approx = approximate(value, angles)
   const same = !approx || approx.text === exact.text
   const unchanged = plain(input) === exact.text
   const preferDecimal = Boolean(approx && !same && unchanged && !/^-?\d+(?:\/\d+)?$/.test(exact.text))
@@ -275,8 +276,8 @@ function dependentAxis(left: Expr): { name: 'x' | 'y' | 'z'; power: number } | n
   return null
 }
 
-function explicitPlot(dep: { name: 'x' | 'y' | 'z'; power: number }, rhs: Expr, env: MathEnv): { kind: 'curve'; bodies: Expr[]; param: string; along: 'x' | 'y'; warn: string | null } | { kind: 'surface'; bodies: Expr[]; warn: string | null } | null {
-  const value = normalize(applyEnv(rhs, env, 0))
+function explicitPlot(dep: { name: 'x' | 'y' | 'z'; power: number }, rhs: Expr, env: MathEnv, angles: AngleMode): { kind: 'curve'; bodies: Expr[]; param: string; along: 'x' | 'y'; warn: string | null } | { kind: 'surface'; bodies: Expr[]; warn: string | null } | null {
+  const value = normalize(applyEnv(rhs, env, 0), angles)
   if (freeSymbols(value).includes(dep.name)) return null
   const roots = rootBodies(value, dep.power)
   if (dep.name === 'z') {
@@ -302,13 +303,13 @@ function hasGeometry(plot: CurvePlot | SurfacePlot): boolean {
   return plot.sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
-function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv): { plot: CurvePlot; warn: string | null } {
-  const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window) : [])
+function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode): { plot: CurvePlot; warn: string | null } {
+  const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles) : [])
   return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW) } }
 }
 
-function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], xName: string, yName: string, env: MathEnv): { plot: SurfacePlot; warn: string | null } {
-  const sheets = bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, DEFAULT_WINDOW)) : []
+function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], xName: string, yName: string, env: MathEnv, angles: AngleMode): { plot: SurfacePlot; warn: string | null } {
+  const sheets = bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, DEFAULT_WINDOW, angles)) : []
   return { warn: null, plot: { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [] } }
 }
 
@@ -327,7 +328,7 @@ function bind(env: MathEnv, name: string, value: number): MathEnv {
   return next
 }
 
-function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: MathEnv, window: PlotWindow): { x: number; y: number; z: number }[] {
+function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: MathEnv, window: PlotWindow, angles: AngleMode): { x: number; y: number; z: number }[] {
   const path: { x: number; y: number; z: number }[] = []
   const min = along === 'x' ? window.xMin : window.yMin
   const max = along === 'x' ? window.xMax : window.yMax
@@ -336,7 +337,7 @@ function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: Ma
     let previous = false
     for (let i = 0; i < CURVE_SAMPLES; i += 1) {
       const t = sampleAt(i, CURVE_SAMPLES, min, max)
-      const value = numericValue(body, bind(env, param, t))
+      const value = numericValue(body, bind(env, param, t), angles)
       const x = along === 'x' ? t : value
       const y = along === 'x' ? value : t
       if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > clip || Math.abs(y) > clip) {
@@ -352,7 +353,7 @@ function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: Ma
   return path
 }
 
-function sampleSurface(body: Expr, xName: string, yName: string, env: MathEnv, window: PlotWindow): { x: number; y: number; z: number }[][] {
+function sampleSurface(body: Expr, xName: string, yName: string, env: MathEnv, window: PlotWindow, angles: AngleMode): { x: number; y: number; z: number }[][] {
   const grid: { x: number; y: number; z: number }[][] = []
   for (let row = 0; row < SURFACE_SAMPLES; row += 1) {
     const y = sampleAt(row, SURFACE_SAMPLES, window.yMin, window.yMax)
@@ -361,7 +362,7 @@ function sampleSurface(body: Expr, xName: string, yName: string, env: MathEnv, w
       const x = sampleAt(col, SURFACE_SAMPLES, window.xMin, window.xMax)
       let local = bind(env, xName, x)
       local = bind(local, yName, y)
-      const z = numericValue(body, local)
+      const z = numericValue(body, local, angles)
       line.push({ x, y, z: z === null || Math.abs(z) > CLIP ? Number.NaN : z })
     }
     grid.push(line)

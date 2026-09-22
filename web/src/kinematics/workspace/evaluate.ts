@@ -20,6 +20,7 @@ import {
   type WorkspaceDocument,
 } from './document'
 import { compileMath, type CurvePlot, type PlotWindow, type SurfacePlot } from './math/eval'
+import type { AngleMode } from './math/expr'
 
 export interface RowModel {
   id: string
@@ -64,6 +65,7 @@ export interface FigureBody {
   role?: 'plot'
   /** Resample a math curve across the window that is on screen. */
   sample?: (window: PlotWindow) => { x: number; y: number; z: number }[]
+  statementId?: string
 }
 
 export interface FigureSurface {
@@ -71,6 +73,8 @@ export interface FigureSurface {
   color: string
   grid: { x: number; y: number; z: number }[][]
   sheets?: { x: number; y: number; z: number }[][][]
+  /** A swept curve keeps one color. A height graph blends from low to high. */
+  flat?: boolean
 }
 
 export interface WorkspaceView {
@@ -323,7 +327,7 @@ function circleGuide(motion: Motion): { x: number; y: number; z: number }[] | nu
   return pts
 }
 
-export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
+export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad'): CompiledDocument {
   const points: PointModel[] = []
   for (const statement of doc.statements) {
     if (statement.type !== 'point') continue
@@ -353,7 +357,7 @@ export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
   const relatives: RelativeModel[] = doc.statements
     .filter((s): s is Extract<Statement, { type: 'relative' }> => s.type === 'relative')
     .map((s) => ({ id: s.id, from: s.from, to: s.to }))
-  const math = compileMath(doc.statements)
+  const math = compileMath(doc.statements, angles)
   const mathRows: RowModel[] = math.rows.map((row) => ({
     id: row.statementId,
     statementId: row.statementId,
@@ -375,7 +379,7 @@ export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
   const duration = points.reduce((max, point) => Math.max(max, point.simulate ?? 0), 0)
   const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && surfaceHasFiniteZ(plot))
   const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible ? 3 : 2
-  const fitKey = `${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
+  const fitKey = `${angles}:${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
   return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey }
 }
 
@@ -601,7 +605,7 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
 
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'curve') continue
-    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, hideMarker: true, role: 'plot', sample: plot.sample })
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, hideMarker: true, role: 'plot', sample: plot.sample, statementId: plot.statementId })
   }
 
   const surfaces: FigureSurface[] = []
@@ -614,8 +618,8 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
   return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces }
 }
 
-export function evaluateDocument(doc: WorkspaceDocument, time = 0): WorkspaceView {
-  return viewAt(compileDocument(doc), time)
+export function evaluateDocument(doc: WorkspaceDocument, time = 0, angles: AngleMode = 'rad'): WorkspaceView {
+  return viewAt(compileDocument(doc, angles), time)
 }
 
 export function runWorkspaceChecks(): string[] {

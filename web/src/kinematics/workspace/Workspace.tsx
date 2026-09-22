@@ -3,7 +3,7 @@ import { Eq } from '../Eq'
 import { usePlayback } from '../../hooks/usePlayback'
 import { Composer } from './Composer'
 import { appendMath, commitCommand, emptyDocument, exampleDocument, removeStatement, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
-import { validateMath } from './math/expr'
+import { validateMath, type AngleMode } from './math/expr'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
 import { FigurePane } from './FigurePane'
 
@@ -14,7 +14,7 @@ const EXAMPLES: { id: ExampleId; label: string }[] = [
   { id: 'helix', label: 'Helix' },
 ]
 
-function RowView({ row, open, decimal, onToggle, onRemove, onToggleVisible, onToggleDecimal, showRemove }: { row: RowModel; open: boolean; decimal: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; showRemove: boolean }) {
+function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisible, onToggleDecimal, onTogglePlane, showRemove }: { row: RowModel; open: boolean; decimal: boolean; plane: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; onTogglePlane: () => void; showRemove: boolean }) {
   const typed = row.input
   const showTypedLabel = Boolean(typed && !row.plotKind)
   const canApproximate = Boolean(row.exactTex && row.approxTex && row.exactTex !== row.approxTex)
@@ -46,6 +46,11 @@ function RowView({ row, open, decimal, onToggle, onRemove, onToggleVisible, onTo
             {decimal ? 'Exact' : 'Decimal'}
           </button>
         )}
+        {row.plotKind === 'curve' && (
+          <button type="button" className="btn btn-ghost statement-eye" aria-pressed={plane} onClick={onTogglePlane} aria-label={plane ? `Draw ${row.label} as a curve` : `Extend ${row.label} into a plane`}>
+            {plane ? 'Curve' : 'Plane'}
+          </button>
+        )}
         {row.plotKind && (
           <button type="button" className="btn btn-ghost statement-eye" aria-pressed={row.visible !== false} onClick={onToggleVisible} aria-label={row.visible === false ? `Show ${row.label} on the figure` : `Hide ${row.label} on the figure`}>
             {row.visible === false ? 'Show' : 'Hide'}
@@ -75,7 +80,9 @@ export function Workspace() {
   const [doc, setDoc] = useState<WorkspaceDocument>(() => exampleDocument('circular'))
   const [openRow, setOpenRow] = useState<string | null>(null)
   const [decimal, setDecimal] = useState<Record<string, boolean>>({})
-  const compiled = useMemo(() => compileDocument(doc), [doc])
+  const [planes, setPlanes] = useState<Record<string, boolean>>({})
+  const [angles, setAngles] = useState<AngleMode>('rad')
+  const compiled = useMemo(() => compileDocument(doc, angles), [doc, angles])
   const playback = usePlayback(Math.max(compiled.duration, 0.001))
 
   useEffect(() => {
@@ -93,6 +100,15 @@ export function Workspace() {
         <div className="panel-header">
           <h2>Statements</h2>
           <div className="workspace-tools">
+          <button
+            type="button"
+            className="btn btn-ghost workspace-clear"
+            aria-pressed={angles === 'deg'}
+            aria-label={angles === 'deg' ? 'Angles are in degrees. Switch to radians.' : 'Angles are in radians. Switch to degrees.'}
+            onClick={() => setAngles((current) => (current === 'rad' ? 'deg' : 'rad'))}
+          >
+            {angles === 'deg' ? 'Degrees' : 'Radians'}
+          </button>
           <button type="button" className="btn btn-ghost workspace-clear" onClick={() => setDoc(emptyDocument())}>
             Clear
           </button>
@@ -138,6 +154,7 @@ export function Workspace() {
                     row={row}
                     open={openRow === row.id}
                     decimal={decimal[row.id] ?? Boolean(row.preferDecimal)}
+                    plane={Boolean(row.statementId && planes[row.statementId])}
                     onToggle={() => setOpenRow((current) => (current === row.id ? null : row.id))}
                     onRemove={() => {
                       if (row.statementId) setDoc((current) => removeStatement(current, row.statementId!))
@@ -149,6 +166,11 @@ export function Workspace() {
                     onToggleDecimal={() => {
                       const showing = decimal[row.id] ?? Boolean(row.preferDecimal)
                       setDecimal((current) => ({ ...current, [row.id]: !showing }))
+                    }}
+                    onTogglePlane={() => {
+                      if (!row.statementId) return
+                      const id = row.statementId
+                      setPlanes((current) => ({ ...current, [id]: !current[id] }))
                     }}
                     showRemove={row.statementId !== null && row.statementId !== block.removeId}
                   />
@@ -174,7 +196,7 @@ export function Workspace() {
           }}
         />
       </section>
-      <FigurePane view={view} playback={playback} />
+      <FigurePane view={view} playback={playback} planes={planes} />
     </div>
   )
 }

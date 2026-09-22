@@ -15,6 +15,14 @@ export function looksLikeMath(query: string): boolean {
   return false
 }
 
+/** `/` with nothing before the caret starts a blank curve, `f(x) = `. */
+export function emptyFunctionShortcut(value: string, cursor: number, key: string): { value: string; cursor: number } | null {
+  if (key !== '/') return null
+  if (value.slice(0, cursor).trim() !== '') return null
+  const inserted = 'f(x) = '
+  return { value: `${value.slice(0, cursor)}${inserted}${value.slice(cursor)}`, cursor: cursor + inserted.length }
+}
+
 /**
  * Turn a finished function name into a call.
  * `sqrt` then space, Tab, or a digit becomes `sqrt(`.
