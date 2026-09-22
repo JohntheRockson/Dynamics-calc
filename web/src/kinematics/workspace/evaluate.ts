@@ -19,6 +19,7 @@ import {
   type Statement,
   type WorkspaceDocument,
 } from './document'
+import { compileMath, type CurvePlot, type SurfacePlot } from './math/eval'
 
 export interface RowModel {
   id: string
@@ -26,8 +27,13 @@ export interface RowModel {
   label: string
   text: string
   tex: string | null
-  source: 'given' | 'solved'
+  source: 'given' | 'solved' | 'error'
   formula: string | null
+  /** Set when this row draws a graph. */
+  plotKind?: 'curve' | 'surface' | null
+  visible?: boolean
+  /** Plain text is kept for checks. Hide it when TeX already shows the same line. */
+  showText?: boolean
 }
 
 export interface BlockModel {
@@ -48,6 +54,13 @@ export interface FigureBody {
   dashed?: boolean
   hideMarker?: boolean
   velocity?: { x: number; y: number; z: number }
+  role?: 'plot'
+}
+
+export interface FigureSurface {
+  label: string
+  color: string
+  grid: { x: number; y: number; z: number }[][]
 }
 
 export interface WorkspaceView {
@@ -56,6 +69,7 @@ export interface WorkspaceView {
   fitKey: string
   blocks: BlockModel[]
   bodies: FigureBody[]
+  surfaces: FigureSurface[]
 }
 
 interface Sample {
@@ -110,6 +124,8 @@ interface RelativeModel {
 export interface CompiledDocument {
   points: PointModel[]
   relatives: RelativeModel[]
+  mathRows: RowModel[]
+  plots: Array<CurvePlot | SurfacePlot>
   dimension: 2 | 3
   duration: number
   fitKey: string
@@ -322,10 +338,24 @@ export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
   const relatives: RelativeModel[] = doc.statements
     .filter((s): s is Extract<Statement, { type: 'relative' }> => s.type === 'relative')
     .map((s) => ({ id: s.id, from: s.from, to: s.to }))
+  const math = compileMath(doc.statements)
+  const mathRows: RowModel[] = math.rows.map((row) => ({
+    id: row.statementId,
+    statementId: row.statementId,
+    label: row.label,
+    text: row.text,
+    tex: row.tex,
+    source: row.tex ? (row.plotKind ? 'given' : 'solved') : 'error',
+    formula: null,
+    plotKind: row.plotKind,
+    visible: row.visible,
+    showText: row.plotKind ? Boolean(row.warn) : !row.tex,
+  }))
   const duration = points.reduce((max, point) => Math.max(max, point.simulate ?? 0), 0)
-  const dimension: 2 | 3 = points.some((point) => point.hasZ) ? 3 : 2
-  const fitKey = `${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}`
-  return { points, relatives, dimension, duration, fitKey }
+  const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && plot.grid.some((row) => row.some((point) => Number.isFinite(point.z))))
+  const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible ? 3 : 2
+  const fitKey = `${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
+  return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey }
 }
 
 function knownsAt(point: PointModel, time: number): Partial<Record<Qty, number>> {
@@ -544,7 +574,24 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
     blocks.push({ id: relative.id, title: `${relative.from} relative to ${relative.to}`, color, rows, note, removeId: relative.id })
   }
 
-  return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies }
+  if (compiled.mathRows.length > 0) {
+    blocks.push({ id: 'math', title: 'Math', color: '#59d67f', rows: compiled.mathRows, note: null, removeId: '' })
+  }
+
+  for (const plot of compiled.plots) {
+    if (!plot.visible || plot.kind !== 'curve') continue
+    if (!plot.path.some((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) continue
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, hideMarker: true, role: 'plot' })
+  }
+
+  const surfaces: FigureSurface[] = []
+  for (const plot of compiled.plots) {
+    if (!plot.visible || plot.kind !== 'surface') continue
+    if (!plot.grid.some((row) => row.some((point) => Number.isFinite(point.z)))) continue
+    surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid })
+  }
+
+  return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces }
 }
 
 export function evaluateDocument(doc: WorkspaceDocument, time = 0): WorkspaceView {

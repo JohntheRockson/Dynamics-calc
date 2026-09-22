@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { Eq } from '../Eq'
 import { usePlayback } from '../../hooks/usePlayback'
 import { Composer } from './Composer'
-import { commitCommand, exampleDocument, removeStatement, type ExampleId, type WorkspaceDocument } from './document'
+import { appendMath, commitCommand, emptyDocument, exampleDocument, removeStatement, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
+import { validateMath } from './math/expr'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
 import { FigurePane } from './FigurePane'
 
@@ -13,13 +14,13 @@ const EXAMPLES: { id: ExampleId; label: string }[] = [
   { id: 'helix', label: 'Helix' },
 ]
 
-function RowView({ row, open, onToggle, onRemove, showRemove }: { row: RowModel; open: boolean; onToggle: () => void; onRemove: () => void; showRemove: boolean }) {
+function RowView({ row, open, onToggle, onRemove, onToggleVisible, showRemove }: { row: RowModel; open: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; showRemove: boolean }) {
   const body = (
     <>
       <span className="statement-label">{row.label}</span>
       <span className="statement-value">
         {row.tex && <Eq tex={row.tex} />}
-        {row.text && <span>{row.text}</span>}
+        {row.text && row.showText !== false && <span>{row.text}</span>}
       </span>
     </>
   )
@@ -32,11 +33,18 @@ function RowView({ row, open, onToggle, onRemove, showRemove }: { row: RowModel;
       ) : (
         <div className="statement-main">{body}</div>
       )}
-      {showRemove && (
-        <button type="button" className="btn btn-ghost statement-remove" onClick={onRemove} aria-label={`Remove ${row.label}`}>
-          Remove
-        </button>
-      )}
+      <div className="statement-actions">
+        {row.plotKind && (
+          <button type="button" className="btn btn-ghost statement-eye" aria-pressed={row.visible !== false} onClick={onToggleVisible} aria-label={row.visible === false ? `Show ${row.label} on the figure` : `Hide ${row.label} on the figure`}>
+            {row.visible === false ? 'Show' : 'Hide'}
+          </button>
+        )}
+        {showRemove && (
+          <button type="button" className="btn btn-ghost statement-remove" onClick={onRemove} aria-label={`Remove ${row.label}`}>
+            Remove
+          </button>
+        )}
+      </div>
       {open && row.formula && (
         <div className="statement-formula">
           <Eq tex={row.formula} />
@@ -66,6 +74,10 @@ export function Workspace() {
       <section className="workspace-console panel">
         <div className="panel-header">
           <h2>Statements</h2>
+          <div className="workspace-tools">
+          <button type="button" className="btn btn-ghost workspace-clear" onClick={() => setDoc(emptyDocument())}>
+            Clear
+          </button>
           <label className="workspace-example">
             <span>Example</span>
             <select
@@ -86,16 +98,19 @@ export function Workspace() {
               ))}
             </select>
           </label>
+          </div>
         </div>
         <div className="workspace-statements">
-          {view.blocks.length === 0 && <p className="hint">Type “point” below to start a problem.</p>}
+          {view.blocks.length === 0 && <p className="hint">Type a calculation, or “point” to start a problem. Clear empties the list.</p>}
           {view.blocks.map((block) => (
             <article key={block.id} className="statement-block" style={{ borderLeftColor: block.color }}>
               <div className="statement-block-head">
                 <h3>{block.title}</h3>
-                <button type="button" className="btn btn-ghost statement-remove" onClick={() => setDoc((current) => removeStatement(current, block.removeId))} aria-label={`Remove ${block.title}`}>
-                  Remove
-                </button>
+                {block.removeId && (
+                  <button type="button" className="btn btn-ghost statement-remove" onClick={() => setDoc((current) => removeStatement(current, block.removeId))} aria-label={`Remove ${block.title}`}>
+                    Remove
+                  </button>
+                )}
               </div>
               {block.note && <p className="statement-note">{block.note}</p>}
               <ul>
@@ -107,6 +122,10 @@ export function Workspace() {
                     onToggle={() => setOpenRow((current) => (current === row.id ? null : row.id))}
                     onRemove={() => {
                       if (row.statementId) setDoc((current) => removeStatement(current, row.statementId!))
+                    }}
+                    onToggleVisible={() => {
+                      if (!row.statementId || !row.plotKind) return
+                      setDoc((current) => setMathVisible(current, row.statementId!, row.visible === false))
                     }}
                     showRemove={row.statementId !== null && row.statementId !== block.removeId}
                   />
@@ -122,6 +141,12 @@ export function Workspace() {
             const result = commitCommand(doc, commandId, args)
             if (result.error) return result.error
             setDoc(result.doc)
+            return null
+          }}
+          onMath={(input) => {
+            const message = validateMath(input)
+            if (message) return message
+            setDoc((current) => appendMath(current, input))
             return null
           }}
         />

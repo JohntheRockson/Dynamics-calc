@@ -78,6 +78,7 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     let ymax = -Infinity
     for (const b of bodies) {
       for (const pt of b.path) {
+        if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) continue
         if (pt.x < xmin) xmin = pt.x
         if (pt.x > xmax) xmax = pt.x
         if (pt.y < ymin) ymin = pt.y
@@ -203,17 +204,25 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
       ctx.lineWidth = 2
       ctx.setLineDash(b.dashed ? [5, 4] : [])
       ctx.beginPath()
-      b.path.forEach((pt, i) => {
+      let drawing = false
+      for (const pt of b.path) {
+        if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+          drawing = false
+          continue
+        }
         const px = sx(pt.x)
         const py = sy(pt.y)
-        if (i === 0) ctx.moveTo(px, py)
-        else ctx.lineTo(px, py)
-      })
+        if (!drawing) {
+          ctx.moveTo(px, py)
+          drawing = true
+        } else ctx.lineTo(px, py)
+      }
       ctx.stroke()
       ctx.setLineDash([])
 
       const idx = Math.min(b.currentIndex, b.path.length - 1)
       const cur = b.path[idx]
+      if (!cur || !Number.isFinite(cur.x) || !Number.isFinite(cur.y)) continue
       const cpx = sx(cur.x)
       const cpy = sy(cur.y)
       if (!b.hideMarker) {
@@ -263,8 +272,8 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     <div ref={containerRef} style={{ width: '100%' }}>
       <canvas ref={canvasRef} className="chart-canvas" />
       <div className="chart-legend">
-        {bodies.map((b) => (
-          <span className="item" key={b.label}>
+        {bodies.map((b, index) => (
+          <span className="item" key={`${b.label}-${index}`}>
             <span className="swatch" style={{ background: b.color, opacity: b.dashed ? 0.7 : 1 }} />
             {b.label}
           </span>

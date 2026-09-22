@@ -1093,6 +1093,17 @@ select.num-input {
   min-width: 0;
 }
 
+.workspace-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workspace-clear {
+  padding: 4px 8px;
+  font-size: 11px;
+}
 .workspace-example {
   display: flex;
   align-items: center;
@@ -1187,9 +1198,18 @@ button.statement-main:hover {
 .is-solved .statement-value {
   color: var(--success);
 }
+.statement-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+.statement-eye,
 .statement-remove {
   padding: 2px 6px;
   font-size: 10px;
+}
+.is-error .statement-value {
+  color: #ffb4bd;
 }
 .statement-formula {
   grid-column: 1 / -1;
@@ -1283,6 +1303,10 @@ button.statement-main:hover {
   font-family: var(--font-mono);
   text-transform: none;
   letter-spacing: 0;
+}
+.composer-preview {
+  min-height: 1.4em;
+  overflow-x: auto;
 }
 .composer-hint {
   min-height: 1.2em;

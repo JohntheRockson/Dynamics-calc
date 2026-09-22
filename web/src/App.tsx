@@ -42,7 +42,7 @@ export default function App() {
       <p className="footer-note">
         {section === 'attitude'
           ? "Rust engine (`engine/`) cross-validated against the original Python reference (`legacy-python/`) — see the README for scope and parity notes."
-          : 'Type a statement on the left. The figure on the right is 2D or 3D, depending on the problem.'}
+          : 'Type math or a statement on the left. Results stay in the list, and graphs share the figure. A 3D graph switches the figure to 3D.'}
       </p>
     </div>
   )

@@ -1,0 +1,1173 @@
+// Small exact-rational kernel: parse, draw as TeX, evaluate, and solve
+// linear or quadratic equations. Angles in sin/cos are radians.
+
+export class MathError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MathError'
+  }
+}
+
+export type Expr =
+  | { type: 'rat'; n: bigint; d: bigint }
+  | { type: 'dec'; text: string; value: number }
+  | { type: 'sym'; name: string }
+  | { type: 'add'; args: Expr[] }
+  | { type: 'mul'; args: Expr[] }
+  | { type: 'div'; num: Expr; den: Expr }
+  | { type: 'pow'; base: Expr; exp: Expr }
+  | { type: 'call'; name: string; args: Expr[] }
+  | { type: 'eq'; left: Expr; right: Expr }
+
+export type Binding =
+  | { kind: 'expr'; expr: Expr }
+  | { kind: 'fn'; params: string[]; body: Expr }
+
+export type MathEnv = Map<string, Binding>
+
+type Atom =
+  | { kind: 'var'; name: string; exp: number }
+  | { kind: 'expr'; expr: Expr; exp: number }
+
+interface Term {
+  coeff: Rat
+  atoms: Atom[]
+}
+
+interface Rat {
+  n: bigint
+  d: bigint
+}
+
+const BUILTIN_CALLS = new Set(['sqrt', 'ln', 'log', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan'])
+const RESERVED = new Set([...BUILTIN_CALLS, 'solve', 'pi', 'e'])
+
+const ONE: Rat = { n: 1n, d: 1n }
+const ZERO_EXPR: Expr = { type: 'rat', n: 0n, d: 1n }
+
+function rat(n: bigint, d: bigint = 1n): Expr {
+  if (d === 0n) return { type: 'div', num: { type: 'rat', n, d: 1n }, den: ZERO_EXPR }
+  if (d < 0n) {
+    n = -n
+    d = -d
+  }
+  const g = gcd(n < 0n ? -n : n, d)
+  return { type: 'rat', n: n / g, d: d / g }
+}
+
+function asRat(e: Expr): Rat | null {
+  if (e.type !== 'rat') return null
+  return { n: e.n, d: e.d }
+}
+
+function ratExpr(r: Rat): Expr {
+  return rat(r.n, r.d)
+}
+
+function gcd(a: bigint, b: bigint): bigint {
+  let x = a < 0n ? -a : a
+  let y = b < 0n ? -b : b
+  while (y !== 0n) {
+    const t = y
+    y = x % y
+    x = t
+  }
+  return x || 1n
+}
+
+function addRat(a: Rat, b: Rat): Rat {
+  const n = a.n * b.d + b.n * a.d
+  const d = a.d * b.d
+  const out = asRat(rat(n, d))
+  return out ?? ONE
+}
+
+function mulRat(a: Rat, b: Rat): Rat {
+  const out = asRat(rat(a.n * b.n, a.d * b.d))
+  return out ?? ONE
+}
+
+function divRat(a: Rat, b: Rat): Rat {
+  const out = asRat(rat(a.n * b.d, a.d * b.n))
+  return out ?? ONE
+}
+
+export function parseMathInput(input: string): MathInput {
+  const raw = autoClose(input.trim())
+  if (!raw) throw new MathError('Enter a calculation.')
+  const fn2 = /^([A-Za-z][A-Za-z0-9]*)\s*\(\s*([A-Za-z][A-Za-z0-9]*)\s*,\s*([A-Za-z][A-Za-z0-9]*)\s*\)\s*=\s*([\s\S]+)$/.exec(raw)
+  if (fn2) {
+    assertDefinable(fn2[1])
+    if (fn2[2] === fn2[3]) throw new MathError('Use two different inputs.')
+    return { kind: 'fn', name: fn2[1], params: [fn2[2], fn2[3]], body: parseExpr(fn2[4]), raw }
+  }
+  const fn1 = /^([A-Za-z][A-Za-z0-9]*)\s*\(\s*([A-Za-z][A-Za-z0-9]*)\s*\)\s*=\s*([\s\S]+)$/.exec(raw)
+  if (fn1) {
+    assertDefinable(fn1[1])
+    return { kind: 'fn', name: fn1[1], params: [fn1[2]], body: parseExpr(fn1[3]), raw }
+  }
+  const expr = parseExpr(raw)
+  if (expr.type === 'eq' && expr.left.type === 'call') {
+    throw new MathError('Define a curve as f(x) = … or a surface as f(x, y) = ….')
+  }
+  if (expr.type === 'eq' && expr.left.type === 'sym' && !RESERVED.has(expr.left.name)) {
+    return { kind: 'assign', name: expr.left.name, expr: expr.right, raw }
+  }
+  if (expr.type === 'call' && expr.name === 'solve') return parseSolve(expr, raw)
+  return { kind: 'expr', expr, raw }
+}
+
+export type MathInput =
+  | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string }
+  | { kind: 'assign'; name: string; expr: Expr; raw: string }
+  | { kind: 'solve'; equation: Expr; variable: string | null; raw: string }
+  | { kind: 'expr'; expr: Expr; raw: string }
+
+function assertDefinable(name: string): void {
+  if (RESERVED.has(name)) throw new MathError(`${name} is built in.`)
+}
+
+function parseSolve(expr: Expr, raw: string): MathInput {
+  if (expr.type !== 'call') throw new MathError('Use solve(equation) or solve(equation, x).')
+  if (expr.args.length === 1) return { kind: 'solve', equation: expr.args[0], variable: null, raw }
+  if (expr.args.length === 2 && expr.args[1].type === 'sym') {
+    if (expr.args[1].name === 'pi' || expr.args[1].name === 'e') throw new MathError(`${expr.args[1].name} is a constant.`)
+    return { kind: 'solve', equation: expr.args[0], variable: expr.args[1].name, raw }
+  }
+  throw new MathError('Use solve(equation) or solve(equation, x).')
+}
+
+function autoClose(input: string): string {
+  let balance = 0
+  for (const ch of input) {
+    if (ch === '(') balance += 1
+    else if (ch === ')') balance -= 1
+    if (balance < 0) return input
+  }
+  if (balance > 0) return input + ')'.repeat(balance)
+  return input
+}
+
+export function parseExpr(input: string): Expr {
+  const parser = new Parser(input.trim())
+  const expr = parser.parseEquation()
+  parser.skip()
+  if (parser.i < parser.src.length) throw new MathError('Could not read that. Check the operators and parentheses.')
+  return expr
+}
+
+class Parser {
+  src: string
+  i = 0
+
+  constructor(src: string) {
+    this.src = src
+  }
+
+  skip(): void {
+    while (this.i < this.src.length && /\s/.test(this.src[this.i])) this.i += 1
+  }
+
+  peek(): string {
+    this.skip()
+    return this.src[this.i] ?? ''
+  }
+
+  eat(ch: string): boolean {
+    if (this.peek() !== ch) return false
+    this.i += 1
+    return true
+  }
+
+  parseEquation(): Expr {
+    const left = this.parseSum()
+    if (!this.eat('=')) return left
+    const right = this.parseSum()
+    return { type: 'eq', left, right }
+  }
+
+  parseSum(): Expr {
+    let left = this.parseProduct()
+    for (;;) {
+      if (this.eat('+')) left = { type: 'add', args: [left, this.parseProduct()] }
+      else if (this.eat('-')) left = { type: 'add', args: [left, { type: 'mul', args: [rat(-1n), this.parseProduct()] }] }
+      else break
+    }
+    return left
+  }
+
+  parseProduct(): Expr {
+    let left = this.parsePower()
+    for (;;) {
+      if (this.eat('*')) {
+        left = { type: 'mul', args: [left, this.parsePower()] }
+        continue
+      }
+      if (this.eat('/')) {
+        left = { type: 'div', num: left, den: this.parsePower() }
+        continue
+      }
+      if (!this.startsImplicit()) break
+      const before = this.i
+      const right = this.parsePower()
+      if (this.i === before) break
+      left = { type: 'mul', args: [left, right] }
+    }
+    return left
+  }
+
+  canStartPrimary(): boolean {
+    const c = this.peek()
+    return c === '(' || /[A-Za-zπ0-9.]/.test(c)
+  }
+
+  startsImplicit(): boolean {
+    const c = this.peek()
+    if (c === '(' || /[A-Za-zπ]/.test(c)) return true
+    if (/[0-9.]/.test(c)) return this.prevNonSpace() === ')'
+    return false
+  }
+
+  prevNonSpace(): string {
+    let j = this.i - 1
+    while (j >= 0 && /\s/.test(this.src[j])) j -= 1
+    return this.src[j] ?? ''
+  }
+
+  parsePower(): Expr {
+    const base = this.parseUnary()
+    if (!this.eat('^')) return base
+    return { type: 'pow', base, exp: this.parsePower() }
+  }
+
+  parseUnary(): Expr {
+    if (this.eat('+')) return this.parseUnary()
+    if (this.eat('-')) return { type: 'mul', args: [rat(-1n), this.parseUnary()] }
+    return this.parsePrimary()
+  }
+
+  parsePrimary(): Expr {
+    const c = this.peek()
+    if (!c) throw new MathError('Could not read that. Check the operators and parentheses.')
+    if (/[0-9.]/.test(c)) return this.parseNumber()
+    if (c === 'π') {
+      this.i += 1
+      return { type: 'sym', name: 'pi' }
+    }
+      if (/[A-Za-z]/.test(c)) {
+      const name = this.parseIdent()
+      if (this.peek() === '(') {
+        this.i += 1
+        const args: Expr[] = []
+        if (this.peek() !== ')') {
+          args.push(this.parseEquation())
+          while (this.eat(',')) args.push(this.parseEquation())
+        }
+        if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
+        checkCall(name, args)
+        return { type: 'call', name, args }
+      }
+      if (BUILTIN_CALLS.has(name) && this.canStartPrimary()) return { type: 'call', name, args: [this.parseProduct()] }
+      return { type: 'sym', name }
+    }
+    if (c === '(') {
+      this.i += 1
+      const inner = this.parseSum()
+      if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
+      return inner
+    }
+    throw new MathError('Could not read that. Check the operators and parentheses.')
+  }
+
+  parseIdent(): string {
+    const start = this.i
+    this.i += 1
+    while (this.i < this.src.length && /[A-Za-z0-9]/.test(this.src[this.i])) this.i += 1
+    const word = this.src.slice(start, this.i)
+    if (word === 'pi') return 'pi'
+    return word
+  }
+
+  parseNumber(): Expr {
+    const m = /^(\d+\.?\d*|\.\d+)(?:e([+-]?\d+))?/i.exec(this.src.slice(this.i))
+    if (!m) throw new MathError('Could not read that number.')
+    this.i += m[0].length
+    const exp = m[2] ? Number(m[2]) : 0
+    if (!Number.isFinite(exp)) throw new MathError('Could not read that number.')
+    const [whole, frac = ''] = m[1].split('.')
+    const digits = `${whole}${frac}`.replace(/^0+(?=\d)/, '') || '0'
+    const scale = frac.length - exp
+    if (scale >= 0) return rat(BigInt(digits), 10n ** BigInt(scale))
+    return rat(BigInt(digits) * 10n ** BigInt(-scale), 1n)
+  }
+}
+
+export function previewTex(input: string): string | null {
+  try {
+    const parsed = parseMathInput(input)
+    if (parsed.kind === 'fn') {
+      const params = parsed.params.join(', ')
+      return `${parsed.name}\\left(${params}\\right) = ${tex(normalize(parsed.body))}`
+    }
+    if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(normalize(parsed.expr))}`
+    if (parsed.kind === 'solve') {
+      const eq = parsed.equation.type === 'eq' ? parsed.equation : { type: 'eq' as const, left: parsed.equation, right: ZERO_EXPR }
+      return `${tex(normalize(eq.left))} = ${tex(normalize(eq.right))}`
+    }
+    return tex(normalize(parsed.expr))
+  } catch {
+    return null
+  }
+}
+
+export function validateMath(input: string): string | null {
+  try {
+    parseMathInput(input)
+    return null
+  } catch (error) {
+    return error instanceof MathError ? error.message : 'Could not read that.'
+  }
+}
+
+export function normalize(e: Expr): Expr {
+  return fromTerms(toSum(fold(e)))
+}
+
+export function present(e: Expr): { tex: string; text: string } {
+  const unknown = firstUnknown(e)
+  if (unknown) throw new MathError(`${unknown} is not defined.`)
+  if (e.type === 'sym' && (e.name === 'e' || e.name === 'pi')) {
+    const n = evalConst(e)
+    if (n === null) return { tex: tex(e), text: plain(e) }
+    const dec: Expr = { type: 'dec', text: trimNum(n), value: n }
+    return { tex: tex(dec), text: plain(dec) }
+  }
+  if (hasFreeSymbol(e) || keepSymbolic(e) || containsConstantSym(e)) {
+    const n = evalConst(e)
+    if (!hasFreeSymbol(e) && !keepSymbolic(e) && n !== null && Number.isFinite(n)) {
+      const snapped = snap(n)
+      if (snapped) return { tex: tex(snapped), text: plain(snapped) }
+    }
+    if (!hasFreeSymbol(e) && n !== null && !Number.isFinite(n)) throw new MathError('Not a real number.')
+    return { tex: tex(e), text: plain(e) }
+  }
+  const n = evalConst(e)
+  if (n === null) return { tex: tex(e), text: plain(e) }
+  if (!Number.isFinite(n)) throw new MathError('Not a real number.')
+  const snapped = snap(n)
+  if (snapped) return { tex: tex(snapped), text: plain(snapped) }
+  const dec: Expr = { type: 'dec', text: trimNum(n), value: n }
+  return { tex: tex(dec), text: plain(dec) }
+}
+
+export function numericValue(e: Expr, env: MathEnv): number | null {
+  try {
+    const n = evalConst(applyEnv(e, env, 0))
+    if (n === null || !Number.isFinite(n)) return null
+    return n
+  } catch {
+    return null
+  }
+}
+
+export function applyEnv(e: Expr, env: MathEnv, depth: number): Expr {
+  if (depth > 24) throw new MathError('That calculation repeats without ending.')
+  switch (e.type) {
+    case 'rat':
+    case 'dec':
+      return e
+    case 'sym': {
+      const binding = env.get(e.name)
+      if (binding?.kind === 'expr') return applyEnv(binding.expr, env, depth + 1)
+      return e
+    }
+    case 'add':
+    case 'mul':
+      return { ...e, args: e.args.map((arg) => applyEnv(arg, env, depth)) }
+    case 'div':
+      return { type: 'div', num: applyEnv(e.num, env, depth), den: applyEnv(e.den, env, depth) }
+    case 'pow':
+      return { type: 'pow', base: applyEnv(e.base, env, depth), exp: applyEnv(e.exp, env, depth) }
+    case 'eq':
+      return { type: 'eq', left: applyEnv(e.left, env, depth), right: applyEnv(e.right, env, depth) }
+    case 'call': {
+      const args = e.args.map((arg) => applyEnv(arg, env, depth))
+      const binding = env.get(e.name)
+      if (binding?.kind === 'fn') {
+        if (binding.params.length !== args.length) {
+          const count = binding.params.length
+          throw new MathError(`${e.name} takes ${count} input${count === 1 ? '' : 's'}.`)
+        }
+        const map = new Map(binding.params.map((param, index) => [param, args[index]]))
+        return applyEnv(substitute(binding.body, map), env, depth + 1)
+      }
+      return { type: 'call', name: e.name, args }
+    }
+  }
+}
+
+export function freeSymbols(e: Expr): string[] {
+  const names = new Set<string>()
+  walk(e, (node) => {
+    if (node.type === 'sym' && node.name !== 'pi' && node.name !== 'e') names.add(node.name)
+  })
+  return [...names]
+}
+
+export function solveEquation(equation: Expr, variable: string | null): { tex: string; text: string } {
+  const zero = equation.type === 'eq'
+    ? normalize({ type: 'add', args: [equation.left, { type: 'mul', args: [rat(-1n), equation.right] }] })
+    : normalize(equation)
+  const symbols = freeSymbols(zero)
+  let name = variable
+  if (!name) {
+    if (symbols.length === 1) name = symbols[0]
+    else if (symbols.includes('x')) name = 'x'
+    else if (symbols.length === 0) {
+      if (isZeroExpr(zero)) return { tex: '\\text{true}', text: 'true' }
+      return { tex: '\\text{no solution}', text: 'no solution' }
+    } else {
+      throw new MathError('Say which variable to solve for, for example solve(x + y = 3, x).')
+    }
+  }
+  const poly = toPoly(zero, name)
+  if (!poly) throw new MathError('Cannot solve that algebraically yet. It can be linear or quadratic.')
+  const deg = polyDegree(poly)
+  if (deg > 2) throw new MathError('Cannot solve that algebraically yet. It can be linear or quadratic.')
+  if (deg === 0) {
+    if (isZeroExpr(poly[0] ?? ZERO_EXPR)) return { tex: `\\text{true for every }${texSymbol(name)}`, text: `true for every ${name}` }
+    return { tex: '\\text{no solution}', text: 'no solution' }
+  }
+  if (deg === 1) {
+    const root = normalize({ type: 'div', num: { type: 'mul', args: [rat(-1n), poly[0] ?? ZERO_EXPR] }, den: poly[1] ?? ZERO_EXPR })
+    return { tex: `${texSymbol(name)} = ${tex(root)}`, text: `${name} = ${plain(root)}` }
+  }
+  const a = poly[2] ?? ZERO_EXPR
+  const b = poly[1] ?? ZERO_EXPR
+  const c = poly[0] ?? ZERO_EXPR
+  const disc = normalize({
+    type: 'add',
+    args: [
+      { type: 'pow', base: b, exp: rat(2n) },
+      { type: 'mul', args: [rat(-4n), a, c] },
+    ],
+  })
+  if (disc.type === 'rat' && disc.n < 0n) return { tex: `\\text{no real solution for }${texSymbol(name)}`, text: `no real solution for ${name}` }
+  const radical = sqrtOf(disc)
+  const twoA = normalize({ type: 'mul', args: [rat(2n), a] })
+  const negB = normalize({ type: 'mul', args: [rat(-1n), b] })
+  const plus = normalize({ type: 'div', num: { type: 'add', args: [negB, radical] }, den: twoA })
+  const minus = normalize({ type: 'div', num: { type: 'add', args: [negB, { type: 'mul', args: [rat(-1n), radical] }] }, den: twoA })
+  if (exprKey(plus) === exprKey(minus)) return { tex: `${texSymbol(name)} = ${tex(plus)}`, text: `${name} = ${plain(plus)}` }
+  return {
+    tex: `${texSymbol(name)} = ${tex(plus)} \\;\\text{or}\\; ${texSymbol(name)} = ${tex(minus)}`,
+    text: `${name} = ${plain(plus)} or ${name} = ${plain(minus)}`,
+  }
+}
+
+function sqrtOf(e: Expr): Expr {
+  if (e.type === 'rat') {
+    if (e.n < 0n) throw new MathError('No real solution.')
+    return exactSqrt(e)
+  }
+  return { type: 'call', name: 'sqrt', args: [e] }
+}
+
+function substitute(e: Expr, map: Map<string, Expr>): Expr {
+  switch (e.type) {
+    case 'sym':
+      return map.get(e.name) ?? e
+    case 'rat':
+    case 'dec':
+      return e
+    case 'add':
+    case 'mul':
+      return { ...e, args: e.args.map((arg) => substitute(arg, map)) }
+    case 'div':
+      return { type: 'div', num: substitute(e.num, map), den: substitute(e.den, map) }
+    case 'pow':
+      return { type: 'pow', base: substitute(e.base, map), exp: substitute(e.exp, map) }
+    case 'call':
+      return { type: 'call', name: e.name, args: e.args.map((arg) => substitute(arg, map)) }
+    case 'eq':
+      return { type: 'eq', left: substitute(e.left, map), right: substitute(e.right, map) }
+  }
+}
+
+function fold(e: Expr): Expr {
+  switch (e.type) {
+    case 'rat':
+      return rat(e.n, e.d)
+    case 'dec':
+    case 'sym':
+      return e
+    case 'add': {
+      const args = e.args.map(fold)
+      if (args.every((arg) => arg.type === 'rat')) {
+        return args.reduce<Expr>((acc, arg) => {
+          if (acc.type !== 'rat' || arg.type !== 'rat') return arg
+          return rat(acc.n * arg.d + arg.n * acc.d, acc.d * arg.d)
+        }, rat(0n))
+      }
+      return { type: 'add', args }
+    }
+    case 'mul': {
+      const args = e.args.map(fold)
+      if (args.every((arg) => arg.type === 'rat')) {
+        return args.reduce<Expr>((acc, arg) => {
+          if (acc.type !== 'rat' || arg.type !== 'rat') return arg
+          return rat(acc.n * arg.n, acc.d * arg.d)
+        }, rat(1n))
+      }
+      return { type: 'mul', args }
+    }
+    case 'div': {
+      const num = fold(e.num)
+      const den = fold(e.den)
+      if (num.type === 'rat' && den.type === 'rat' && den.n !== 0n) return rat(num.n * den.d, num.d * den.n)
+      return { type: 'div', num, den }
+    }
+    case 'pow': {
+      const base = fold(e.base)
+      const exp = fold(e.exp)
+      if (exp.type === 'rat' && exp.n === 0n) return rat(1n)
+      if (exp.type === 'rat' && exp.n === 1n && exp.d === 1n) return base
+      if (base.type === 'rat' && exp.type === 'rat' && exp.d === 1n) return powRat(base, exp.n)
+      if (base.type === 'rat' && exp.type === 'rat' && exp.n === 1n && exp.d === 2n) return exactSqrt(base)
+      return snapConstant({ type: 'pow', base, exp }) ?? { type: 'pow', base, exp }
+    }
+    case 'call': {
+      const args = e.args.map(fold)
+      if (e.name === 'sqrt' && args.length === 1 && args[0].type === 'rat') return exactSqrt(args[0])
+      if (e.name === 'ln' && args.length === 1 && args[0].type === 'sym' && args[0].name === 'e') return rat(1n)
+      if (e.name === 'log' && args.length === 1 && args[0].type === 'rat') {
+        const exact = log10Rat(args[0])
+        if (exact) return exact
+      }
+      return snapConstant({ type: 'call', name: e.name, args }) ?? { type: 'call', name: e.name, args }
+    }
+    case 'eq':
+      return { type: 'eq', left: fold(e.left), right: fold(e.right) }
+  }
+}
+
+function snapConstant(e: Expr): Expr | null {
+  if (hasFreeSymbol(e) || keepSymbolic(e) || containsConstantSym(e)) {
+    const n = evalConst(e)
+    if (n !== null && Number.isFinite(n)) return snap(n)
+    return null
+  }
+  const n = evalConst(e)
+  if (n === null || !Number.isFinite(n)) return null
+  return snap(n)
+}
+
+function log10Rat(r: Expr): Expr | null {
+  if (r.type !== 'rat' || r.n <= 0n || r.d !== 1n) return null
+  let n = r.n
+  let k = 0n
+  while (n % 10n === 0n) {
+    n /= 10n
+    k += 1n
+  }
+  if (n === 1n) return rat(k)
+  return null
+}
+
+function powRat(base: Expr, exp: bigint): Expr {
+  if (base.type !== 'rat') return base
+  if (exp < 0n) {
+    if (base.n === 0n) return { type: 'div', num: rat(1n), den: ZERO_EXPR }
+    return rat(base.d ** -exp, base.n ** -exp)
+  }
+  return rat(base.n ** exp, base.d ** exp)
+}
+
+function exactSqrt(r: Expr): Expr {
+  if (r.type !== 'rat') return { type: 'call', name: 'sqrt', args: [r] }
+  if (r.n < 0n) return { type: 'call', name: 'sqrt', args: [r] }
+  const reduced = asRat(rat(r.n, r.d)) ?? { n: r.n, d: r.d }
+  const num = squareParts(reduced.n)
+  const den = squareParts(reduced.d)
+  const inside = num.rest * den.rest
+  const coeff = asRat(rat(num.root, den.root * den.rest)) ?? ONE
+  if (inside === 1n) return ratExpr(coeff)
+  const radical: Expr = { type: 'call', name: 'sqrt', args: [rat(inside)] }
+  if (coeff.n === 1n && coeff.d === 1n) return radical
+  return { type: 'mul', args: [ratExpr(coeff), radical] }
+}
+
+function squareParts(n: bigint): { root: bigint; rest: bigint } {
+  if (n < 0n) throw new MathError('Not a real number.')
+  if (n === 0n) return { root: 0n, rest: 1n }
+  let root = 1n
+  let free = 1n
+  let rest = n
+  let factor = 2n
+  while (factor * factor <= rest) {
+    let count = 0n
+    while (rest % factor === 0n) {
+      rest /= factor
+      count += 1n
+    }
+    if (count > 0n) {
+      root *= factor ** (count / 2n)
+      if (count % 2n === 1n) free *= factor
+    }
+    factor = factor === 2n ? 3n : factor + 2n
+  }
+  if (rest > 1n) free *= rest
+  return { root, rest: free }
+}
+
+function snap(n: number): Expr | null {
+  if (!Number.isFinite(n)) return null
+  const nearest = Math.round(n)
+  if (Math.abs(n - nearest) <= 1e-9 * Math.max(1, Math.abs(n))) return rat(BigInt(nearest))
+  for (let d = 2; d <= 12; d += 1) {
+    const num = Math.round(n * d)
+    if (Math.abs(n - num / d) <= 1e-8 * Math.max(1, Math.abs(n))) return rat(BigInt(num), BigInt(d))
+  }
+  return null
+}
+
+function trimNum(n: number): string {
+  if (Object.is(n, -0) || n === 0) return '0'
+  const abs = Math.abs(n)
+  const text = abs >= 1e6 || abs < 1e-4 ? n.toExponential(4) : n.toPrecision(8)
+  return text.replace(/(\.\d*?)0+(e|$)/, '$1$2').replace(/\.(e|$)/, '$1')
+}
+
+function toSum(e: Expr): Term[] {
+  switch (e.type) {
+    case 'rat': {
+      const coeff = asRat(rat(e.n, e.d)) ?? ONE
+      if (coeff.n === 0n) return []
+      return [{ coeff, atoms: [] }]
+    }
+    case 'dec':
+    case 'sym':
+      return [{ coeff: ONE, atoms: [atomOf(e)] }]
+    case 'add':
+      return mergeTerms(e.args.flatMap(toSum))
+    case 'mul':
+      return e.args.reduce<Term[]>((acc, arg) => mulSums(acc, toSum(arg)), [{ coeff: ONE, atoms: [] }])
+    case 'div': {
+      const num = toSum(e.num)
+      const den = toSum(e.den)
+      if (den.length === 1 && den[0].coeff.n !== 0n) {
+        const factor = den[0]
+        if (exprKey(fromTerms(num)) === exprKey(fromTerms(den))) return [{ coeff: ONE, atoms: [] }]
+        const inv: Term = {
+          coeff: divRat(ONE, factor.coeff),
+          atoms: factor.atoms.map((atom) => ({ ...atom, exp: -atom.exp })),
+        }
+        return mulSums(num, [inv])
+      }
+      return [{ coeff: ONE, atoms: [{ kind: 'expr', expr: e, exp: 1 }] }]
+    }
+    case 'pow': {
+      if (e.exp.type === 'rat' && e.exp.d === 1n && e.exp.n >= 0n && e.exp.n <= 12n) {
+        let acc: Term[] = [{ coeff: ONE, atoms: [] }]
+        const base = toSum(e.base)
+        for (let i = 0n; i < e.exp.n; i += 1n) {
+          acc = mulSums(acc, base)
+          if (acc.length > 400) return [{ coeff: ONE, atoms: [{ kind: 'expr', expr: e, exp: 1 }] }]
+        }
+        return acc
+      }
+      if (e.base.type === 'sym' && e.exp.type === 'rat' && e.exp.d === 1n && e.exp.n > -12n && e.exp.n < 12n) {
+        return [{ coeff: ONE, atoms: [{ kind: 'var', name: e.base.name, exp: Number(e.exp.n) }] }]
+      }
+      return [{ coeff: ONE, atoms: [atomOf(e)] }]
+    }
+    case 'call':
+    case 'eq':
+      return [{ coeff: ONE, atoms: [atomOf(e)] }]
+  }
+}
+
+function atomOf(e: Expr): Atom {
+  if (e.type === 'sym') return { kind: 'var', name: e.name, exp: 1 }
+  return { kind: 'expr', expr: e, exp: 1 }
+}
+
+function mulSums(a: Term[], b: Term[]): Term[] {
+  if (a.length === 0 || b.length === 0) return []
+  const out: Term[] = []
+  for (const left of a) {
+    for (const right of b) {
+      out.push({
+        coeff: mulRat(left.coeff, right.coeff),
+        atoms: [...left.atoms, ...right.atoms],
+      })
+    }
+  }
+  return mergeTerms(out)
+}
+
+function mergeTerms(terms: Term[]): Term[] {
+  const map = new Map<string, Term>()
+  for (const term of terms) {
+    const atoms = mergeAtoms(term.atoms)
+    const key = atoms.map(atomKey).join('*')
+    const prev = map.get(key)
+    if (!prev) map.set(key, { coeff: term.coeff, atoms })
+    else prev.coeff = addRat(prev.coeff, term.coeff)
+  }
+  return [...map.values()].filter((term) => term.coeff.n !== 0n)
+}
+
+function mergeAtoms(atoms: Atom[]): Atom[] {
+  const map = new Map<string, Atom>()
+  for (const atom of atoms) {
+    const key = atom.kind === 'var' ? `v:${atom.name}` : `e:${exprKey(atom.expr)}`
+    const prev = map.get(key)
+    if (!prev) map.set(key, { ...atom })
+    else prev.exp += atom.exp
+  }
+  return [...map.values()].filter((atom) => atom.exp !== 0).sort((a, b) => atomKey(a).localeCompare(atomKey(b)))
+}
+
+function atomKey(atom: Atom): string {
+  if (atom.kind === 'var') return `v:${atom.name}^${atom.exp}`
+  return `e:${exprKey(atom.expr)}^${atom.exp}`
+}
+
+function fromTerms(terms: Term[]): Expr {
+  const merged = mergeTerms(terms)
+  if (merged.length === 0) return ZERO_EXPR
+  const sorted = merged.sort((a, b) => degreeOf(b) - degreeOf(a) || atomListKey(a).localeCompare(atomListKey(b)))
+  const args = sorted.map(termToExpr)
+  const expr: Expr = args.length === 1 ? args[0] : { type: 'add', args }
+  return preferConstantFirst(expr)
+}
+
+function degreeOf(term: Term): number {
+  return term.atoms.reduce((sum, atom) => sum + Math.abs(atom.exp), 0)
+}
+
+function atomListKey(term: Term): string {
+  return term.atoms.map(atomKey).join('*')
+}
+
+function checkCall(name: string, args: Expr[]): void {
+  const needsOne = new Set(['sqrt', 'ln', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan'])
+  if (needsOne.has(name) && args.length !== 1) throw new MathError(`${name} needs one value.`)
+  if (name === 'log' && args.length !== 1 && args.length !== 2) throw new MathError('log takes a value, or a value and a base.')
+  if (name === 'solve' && args.length !== 1 && args.length !== 2) throw new MathError('Use solve(equation) or solve(equation, x).')
+}
+
+function termToExpr(term: Term): Expr {
+  const negative = term.coeff.n < 0n
+  const coeff = negative ? { n: -term.coeff.n, d: term.coeff.d } : term.coeff
+  const num: Expr[] = []
+  const den: Expr[] = []
+  if (coeff.d !== 1n) den.push(rat(coeff.d))
+  if (coeff.n !== 1n) num.push(rat(coeff.n))
+  for (const atom of term.atoms) {
+    const base: Expr = atom.kind === 'var' ? { type: 'sym', name: atom.name } : atom.expr
+    const exp = atom.exp
+    const piece: Expr = Math.abs(exp) === 1 ? base : { type: 'pow', base, exp: rat(BigInt(Math.abs(exp))) }
+    if (exp > 0) num.push(piece)
+    else den.push(piece)
+  }
+  let expr: Expr = num.length === 0 ? rat(1n) : num.length === 1 ? num[0] : { type: 'mul', args: num }
+  if (den.length === 1) expr = { type: 'div', num: expr, den: den[0] }
+  else if (den.length > 1) expr = { type: 'div', num: expr, den: { type: 'mul', args: den } }
+  if (!negative) return expr
+  if (expr.type === 'rat') return rat(-expr.n, expr.d)
+  return { type: 'mul', args: [rat(-1n), expr] }
+}
+
+function preferConstantFirst(e: Expr): Expr {
+  if (e.type !== 'add') return e
+  const constants = e.args.filter((arg) => arg.type === 'rat' && arg.n > 0n)
+  const rest = e.args.filter((arg) => !(arg.type === 'rat' && arg.n > 0n))
+  if (constants.length === 0 || rest.length === 0 || !isNegative(rest[0])) return e
+  return { type: 'add', args: [...constants, ...rest] }
+}
+
+function isNegative(e: Expr): boolean {
+  if (e.type === 'rat') return e.n < 0n
+  if (e.type === 'mul' && e.args[0]?.type === 'rat' && e.args[0].n < 0n) return true
+  if (e.type === 'div') return isNegative(e.num)
+  return false
+}
+
+function toPoly(e: Expr, variable: string): Expr[] | null {
+  const buckets = new Map<number, Term[]>()
+  for (const term of toSum(fold(e))) {
+    let power = 0
+    const rest: Atom[] = []
+    for (const atom of term.atoms) {
+      if (atom.kind === 'var' && atom.name === variable) {
+        if (atom.exp < 0) return null
+        power += atom.exp
+      } else if (atom.kind === 'expr' && depends(atom.expr, variable)) return null
+      else rest.push(atom)
+    }
+    const list = buckets.get(power) ?? []
+    list.push({ coeff: term.coeff, atoms: rest })
+    buckets.set(power, list)
+  }
+  if (buckets.size === 0) return [ZERO_EXPR]
+  const max = Math.max(...buckets.keys())
+  const coeffs: Expr[] = []
+  for (let i = 0; i <= max; i += 1) coeffs.push(normalize(fromTerms(buckets.get(i) ?? [])))
+  return coeffs
+}
+
+function polyDegree(coeffs: Expr[]): number {
+  let deg = coeffs.length - 1
+  while (deg > 0 && isZeroExpr(coeffs[deg])) deg -= 1
+  return deg
+}
+
+function isZeroExpr(e: Expr): boolean {
+  return toSum(fold(e)).every((term) => term.coeff.n === 0n)
+}
+
+function depends(e: Expr, variable: string): boolean {
+  if (e.type === 'sym') return e.name === variable
+  if (e.type === 'rat' || e.type === 'dec') return false
+  if (e.type === 'add' || e.type === 'mul') return e.args.some((arg) => depends(arg, variable))
+  if (e.type === 'div') return depends(e.num, variable) || depends(e.den, variable)
+  if (e.type === 'pow') return depends(e.base, variable) || depends(e.exp, variable)
+  if (e.type === 'call') return e.args.some((arg) => depends(arg, variable))
+  return depends(e.left, variable) || depends(e.right, variable)
+}
+
+function hasFreeSymbol(e: Expr): boolean {
+  return freeSymbols(e).length > 0
+}
+
+function containsConstantSym(e: Expr): boolean {
+  let found = false
+  walk(e, (node) => {
+    if (node.type === 'sym' && (node.name === 'pi' || node.name === 'e')) found = true
+  })
+  return found
+}
+
+function keepSymbolic(e: Expr): boolean {
+  if (e.type === 'call' && e.name === 'sqrt') {
+    const arg = e.args[0]
+    if (arg?.type === 'rat' && arg.n >= 0n) return !isPerfectSquare(arg)
+    return true
+  }
+  if (e.type === 'pow' && e.exp.type === 'rat' && e.exp.d !== 1n) return true
+  if (e.type === 'add' || e.type === 'mul') return e.args.some(keepSymbolic)
+  if (e.type === 'div') return keepSymbolic(e.num) || keepSymbolic(e.den)
+  if (e.type === 'pow') return keepSymbolic(e.base) || keepSymbolic(e.exp)
+  if (e.type === 'call') return e.args.some(keepSymbolic)
+  if (e.type === 'eq') return keepSymbolic(e.left) || keepSymbolic(e.right)
+  return false
+}
+
+function isPerfectSquare(r: Expr): boolean {
+  if (r.type !== 'rat' || r.n < 0n) return false
+  const num = squareParts(r.n)
+  const den = squareParts(r.d)
+  return num.rest === 1n && den.rest === 1n
+}
+
+function firstUnknown(e: Expr): string | null {
+  let name: string | null = null
+  walk(e, (node) => {
+    if (!name && node.type === 'call' && !BUILTIN_CALLS.has(node.name)) name = node.name
+  })
+  return name
+}
+
+function walk(e: Expr, visit: (node: Expr) => void): void {
+  visit(e)
+  switch (e.type) {
+    case 'add':
+    case 'mul':
+      e.args.forEach((arg) => walk(arg, visit))
+      break
+    case 'div':
+      walk(e.num, visit)
+      walk(e.den, visit)
+      break
+    case 'pow':
+      walk(e.base, visit)
+      walk(e.exp, visit)
+      break
+    case 'call':
+      e.args.forEach((arg) => walk(arg, visit))
+      break
+    case 'eq':
+      walk(e.left, visit)
+      walk(e.right, visit)
+      break
+    default:
+      break
+  }
+}
+
+function evalConst(e: Expr): number | null {
+  switch (e.type) {
+    case 'rat':
+      return Number(e.n) / Number(e.d)
+    case 'dec':
+      return e.value
+    case 'sym':
+      if (e.name === 'pi') return Math.PI
+      if (e.name === 'e') return Math.E
+      return null
+    case 'add':
+      return reduceNums(e.args, 0, (sum, n) => sum + n)
+    case 'mul':
+      return reduceNums(e.args, 1, (product, n) => product * n)
+    case 'div': {
+      const num = evalConst(e.num)
+      const den = evalConst(e.den)
+      if (num === null || den === null) return null
+      if (den === 0) return Number.NaN
+      return num / den
+    }
+    case 'pow': {
+      const base = evalConst(e.base)
+      const exp = evalConst(e.exp)
+      if (base === null || exp === null) return null
+      if (base < 0 && !Number.isInteger(exp)) return Number.NaN
+      return base ** exp
+    }
+    case 'call': {
+      const args: number[] = []
+      for (const arg of e.args) {
+        const n = evalConst(arg)
+        if (n === null) return null
+        args.push(n)
+      }
+      return callNumber(e.name, args)
+    }
+    case 'eq':
+      return null
+  }
+}
+
+function reduceNums(args: Expr[], start: number, step: (acc: number, n: number) => number): number | null {
+  let acc = start
+  for (const arg of args) {
+    const n = evalConst(arg)
+    if (n === null) return null
+    acc = step(acc, n)
+  }
+  return acc
+}
+
+function callNumber(name: string, args: number[]): number | null {
+  const x = args[0]
+  const y = args[1]
+  switch (name) {
+    case 'sqrt':
+      return args.length === 1 ? Math.sqrt(x) : null
+    case 'ln':
+      return args.length === 1 ? Math.log(x) : null
+    case 'log':
+      if (args.length === 1) return Math.log10(x)
+      if (args.length === 2 && y !== 0) return Math.log(x) / Math.log(y)
+      return null
+    case 'sin':
+      return args.length === 1 ? Math.sin(x) : null
+    case 'cos':
+      return args.length === 1 ? Math.cos(x) : null
+    case 'tan':
+      return args.length === 1 ? Math.tan(x) : null
+    case 'abs':
+      return args.length === 1 ? Math.abs(x) : null
+    case 'exp':
+      return args.length === 1 ? Math.exp(x) : null
+    case 'asin':
+      return args.length === 1 ? Math.asin(x) : null
+    case 'acos':
+      return args.length === 1 ? Math.acos(x) : null
+    case 'atan':
+      return args.length === 1 ? Math.atan(x) : null
+    default:
+      return null
+  }
+}
+
+const P_ADD = 1
+const P_MUL = 2
+const P_POW = 3
+const P_ATOM = 5
+
+export function tex(e: Expr): string {
+  return texAt(e, 0)
+}
+
+function texAt(e: Expr, parent: number): string {
+  const [text, prec] = texPrec(e)
+  return prec < parent ? `\\left(${text}\\right)` : text
+}
+
+function texPrec(e: Expr): [string, number] {
+  switch (e.type) {
+    case 'rat':
+      if (e.d === 1n) return [e.n.toString(), P_ATOM]
+      return [`${e.n < 0n ? '-' : ''}\\frac{${e.n < 0n ? -e.n : e.n}}{${e.d}}`, P_ATOM]
+    case 'dec':
+      return [e.text, P_ATOM]
+    case 'sym':
+      return [texSymbol(e.name), P_ATOM]
+    case 'add':
+      return [texAdd(e.args), P_ADD]
+    case 'mul':
+      return [texMul(e.args), P_MUL]
+    case 'div':
+      return [`\\frac{${texAt(e.num, 0)}}{${texAt(e.den, 0)}}`, P_ATOM]
+    case 'pow':
+      if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`\\sqrt{${texAt(e.base, 0)}}`, P_ATOM]
+      return [`${texAt(e.base, P_POW + 1)}^{${texAt(e.exp, 0)}}`, P_POW]
+    case 'call':
+      return [texCall(e.name, e.args), P_ATOM]
+    case 'eq':
+      return [`${texAt(e.left, 0)} = ${texAt(e.right, 0)}`, 0]
+  }
+}
+
+function texSymbol(name: string): string {
+  if (name === 'pi') return '\\pi'
+  if (name === 'theta') return '\\theta'
+  return name
+}
+
+function texAdd(args: Expr[]): string {
+  let out = ''
+  args.forEach((arg, index) => {
+    const neg = isNegative(arg)
+    const body = texAt(neg ? stripNegative(arg) : arg, P_ADD)
+    if (index === 0) out = neg ? `-${body}` : body
+    else out += neg ? ` - ${body}` : ` + ${body}`
+  })
+  return out
+}
+
+function stripNegative(e: Expr): Expr {
+  if (e.type === 'rat') return rat(e.n < 0n ? -e.n : e.n, e.d)
+  if (e.type === 'mul' && e.args[0]?.type === 'rat' && e.args[0].n < 0n) {
+    const coeff = rat(-e.args[0].n, e.args[0].d)
+    const rest = e.args.slice(1)
+    if (coeff.type === 'rat' && coeff.n === 1n && coeff.d === 1n) return rest.length === 1 ? rest[0] : { type: 'mul', args: rest }
+    return { type: 'mul', args: [coeff, ...rest] }
+  }
+  if (e.type === 'div' && isNegative(e.num)) return { type: 'div', num: stripNegative(e.num), den: e.den }
+  return e
+}
+
+function texMul(args: Expr[]): string {
+  if (args.length >= 2 && args[0].type === 'rat' && args[0].n === -1n && args[0].d === 1n) {
+    const rest = args.slice(1)
+    const body = rest.length === 1 ? texAt(rest[0], P_MUL) : texMul(rest)
+    return `-${body}`
+  }
+  return args
+    .map((arg, index) => {
+      const piece = texAt(arg, P_MUL)
+      if (index === 0) return piece
+      const prev = args[index - 1]
+      const juxtapose = (prev.type === 'rat' || prev.type === 'dec') && (arg.type === 'sym' || arg.type === 'call' || arg.type === 'pow')
+      return juxtapose ? piece : ` \\cdot ${piece}`
+    })
+    .join('')
+}
+
+function texCall(name: string, args: Expr[]): string {
+  if (name === 'sqrt' && args.length === 1) return `\\sqrt{${texAt(args[0], 0)}}`
+  if (name === 'abs' && args.length === 1) return `\\left|${texAt(args[0], 0)}\\right|`
+  const macro: Record<string, string> = { sin: '\\sin', cos: '\\cos', tan: '\\tan', ln: '\\ln', log: '\\log', exp: '\\exp', asin: '\\arcsin', acos: '\\arccos', atan: '\\arctan' }
+  if (name === 'log' && args.length === 2) return `\\log_{${texAt(args[1], 0)}}\\left(${texAt(args[0], 0)}\\right)`
+  const head = macro[name] ?? name
+  return `${head}\\left(${args.map((arg) => texAt(arg, 0)).join(', ')}\\right)`
+}
+
+export function plain(e: Expr): string {
+  return plainAt(e, 0)
+}
+
+function plainAt(e: Expr, parent: number): string {
+  const [text, prec] = plainPrec(e)
+  return prec < parent ? `(${text})` : text
+}
+
+function plainPrec(e: Expr): [string, number] {
+  switch (e.type) {
+    case 'rat':
+      if (e.d === 1n) return [e.n.toString(), P_ATOM]
+      return [`${e.n < 0n ? '-' : ''}${e.n < 0n ? -e.n : e.n}/${e.d}`, P_ATOM]
+    case 'dec':
+      return [e.text, P_ATOM]
+    case 'sym':
+      return [e.name, P_ATOM]
+    case 'add':
+      return [plainAdd(e.args), P_ADD]
+    case 'mul':
+      return [plainMul(e.args), P_MUL]
+    case 'div':
+      return [`${plainAt(e.num, P_MUL)}/${plainAt(e.den, P_MUL)}`, P_MUL]
+    case 'pow':
+      if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`sqrt(${plainAt(e.base, 0)})`, P_ATOM]
+      return [`${plainAt(e.base, P_POW + 1)}^${plainAt(e.exp, P_POW)}`, P_POW]
+    case 'call':
+      if (e.name === 'sqrt' && e.args.length === 1) return [`sqrt(${plainAt(e.args[0], 0)})`, P_ATOM]
+      return [`${e.name}(${e.args.map((arg) => plainAt(arg, 0)).join(', ')})`, P_ATOM]
+    case 'eq':
+      return [`${plainAt(e.left, 0)} = ${plainAt(e.right, 0)}`, 0]
+  }
+}
+
+function plainAdd(args: Expr[]): string {
+  let out = ''
+  args.forEach((arg, index) => {
+    const neg = isNegative(arg)
+    const body = plainAt(neg ? stripNegative(arg) : arg, P_ADD)
+    if (index === 0) out = neg ? `-${body}` : body
+    else out += neg ? ` - ${body}` : ` + ${body}`
+  })
+  return out
+}
+
+function plainMul(args: Expr[]): string {
+  if (args.length >= 2 && args[0].type === 'rat' && args[0].n === -1n && args[0].d === 1n) {
+    const rest = args.slice(1)
+    const body = rest.length === 1 ? plainAt(rest[0], P_MUL) : plainMul(rest)
+    return `-${body}`
+  }
+  return args
+    .map((arg, index) => {
+      const piece = plainAt(arg, P_MUL)
+      if (index === 0) return piece
+      const prev = args[index - 1]
+      const juxtapose = (prev.type === 'rat' || prev.type === 'dec') && (arg.type === 'sym' || arg.type === 'call' || arg.type === 'pow')
+      return juxtapose ? piece : `*${piece}`
+    })
+    .join('')
+}
+
+function exprKey(e: Expr): string {
+  switch (e.type) {
+    case 'rat':
+      return `r${e.n}/${e.d}`
+    case 'dec':
+      return `d${e.text}`
+    case 'sym':
+      return `s${e.name}`
+    case 'add':
+      return `a(${e.args.map(exprKey).join(',')})`
+    case 'mul':
+      return `m(${e.args.map(exprKey).join(',')})`
+    case 'div':
+      return `v(${exprKey(e.num)}/${exprKey(e.den)})`
+    case 'pow':
+      return `p(${exprKey(e.base)}^${exprKey(e.exp)})`
+    case 'call':
+      return `c${e.name}(${e.args.map(exprKey).join(',')})`
+    case 'eq':
+      return `q(${exprKey(e.left)}=${exprKey(e.right)})`
+  }
+}

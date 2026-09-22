@@ -1,6 +1,9 @@
 import { useId, useRef, useState } from 'react'
+import { Eq } from '../Eq'
 import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
+import { previewTex } from './math/expr'
+import { expandMathShortcut, looksLikeMath } from './math/shortcuts'
 
 function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string, string> {
   const names = pointNames(doc)
@@ -16,7 +19,7 @@ function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string
   return values
 }
 
-export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: (commandId: string, args: Record<string, string>) => string | null }) {
+export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; onCommit: (commandId: string, args: Record<string, string>) => string | null; onMath: (input: string) => string | null }) {
   const listId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
@@ -25,9 +28,11 @@ export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: 
   const [command, setCommand] = useState<CommandDef | null>(null)
   const [args, setArgs] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
-  const matches = filterCommands(query)
+  const mathMode = !command && looksLikeMath(query)
+  const matches = mathMode ? [] : filterCommands(query)
   const names = pointNames(doc)
   const activeIndex = Math.min(highlight, Math.max(matches.length - 1, 0))
+  const preview = mathMode ? previewTex(query) : null
 
   const choose = (next: CommandDef) => {
     setCommand(next)
@@ -43,6 +48,18 @@ export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: 
     setCommand(null)
     setArgs({})
     setError(null)
+    inputRef.current?.focus()
+  }
+
+  const commitMath = () => {
+    const message = onMath(query)
+    if (message) {
+      setError(message)
+      return
+    }
+    setQuery('')
+    setError(null)
+    setOpen(false)
     inputRef.current?.focus()
   }
 
@@ -65,6 +82,7 @@ export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: 
       onSubmit={(event) => {
         event.preventDefault()
         if (command) submit()
+        else if (mathMode || (query.trim() && matches.length === 0)) commitMath()
         else if (matches[activeIndex]) choose(matches[activeIndex])
       }}
     >
@@ -127,6 +145,21 @@ export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: 
               setOpen(true)
             }}
             onKeyDown={(event) => {
+              const cursor = event.currentTarget.selectionStart ?? query.length
+              const expanded = expandMathShortcut(query, cursor, event.key)
+              if (expanded) {
+                event.preventDefault()
+                const input = event.currentTarget
+                setQuery(expanded.value)
+                setHighlight(0)
+                setError(null)
+                requestAnimationFrame(() => input.setSelectionRange(expanded.cursor, expanded.cursor))
+                return
+              }
+              if (mathMode) {
+                if (event.key === 'Escape') setOpen(false)
+                return
+              }
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
                 setOpen(true)
@@ -139,7 +172,12 @@ export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: 
               }
             }}
           />
-          {open && (
+          {preview && (
+            <div className="composer-preview">
+              <Eq tex={preview} />
+            </div>
+          )}
+          {open && !mathMode && (
             <ul className="composer-list" id={listId} role="listbox">
               {matches.length === 0 ? (
                 <li className="composer-empty">No matching statement. Try point, speed, circle, or simulate.</li>
@@ -162,7 +200,7 @@ export function Composer({ doc, onCommit }: { doc: WorkspaceDocument; onCommit: 
           )}
         </div>
       )}
-      <p className="hint composer-hint">{error ?? command?.blurb ?? 'Statements are plain words. Start typing and pick one.'}</p>
+      <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. Space after sqrt, ln, log, or sin opens the function.' : 'Type math, or a statement such as point, speed, or circle.')}</p>
     </form>
   )
 }

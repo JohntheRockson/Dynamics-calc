@@ -29,6 +29,8 @@ export function FigurePane({ view, playback }: { view: WorkspaceView; playback: 
     hideMarker: body.hideMarker,
     velocityVector: body.velocity ? { vx: body.velocity.x, vy: body.velocity.y } : undefined,
   }))
+  const hasFigure = view.bodies.length > 0 || view.surfaces.length > 0
+  const motion = view.bodies.some((body) => body.role !== 'plot')
 
   return (
     <section className="workspace-figure panel">
@@ -37,12 +39,12 @@ export function FigurePane({ view, playback }: { view: WorkspaceView; playback: 
         <span className="badge">{view.dimension === 3 ? '3D' : '2D'}</span>
       </div>
       <div className="workspace-figure-stage" ref={stageRef}>
-        {view.bodies.length === 0 ? (
-          <p className="workspace-figure-empty">Add a point and the figure will draw it here.</p>
+        {!hasFigure ? (
+          <p className="workspace-figure-empty">Graphs and motion show up here. A calculation with no graph stays in the list.</p>
         ) : view.dimension === 3 ? (
-          <Scene3D bodies={view.bodies} fitKey={view.fitKey} />
+          <Scene3D bodies={view.bodies} surfaces={view.surfaces} fitKey={view.fitKey} />
         ) : (
-          <Scene2D bodies={bodies2d} height={height} aspectEqual includeOrigin />
+          <Scene2D bodies={bodies2d} height={height} aspectEqual includeOrigin xLabel={motion ? 'x (m)' : 'x'} yLabel={motion ? 'y (m)' : 'y'} />
         )}
       </div>
       {view.duration > 0 && <PlaybackBar playback={playback} disabled={false} />}
