@@ -77,6 +77,10 @@ export function FigurePane({ view, playback, planes }: { view: WorkspaceView; pl
     currentIndex: body.index,
     dashed: body.dashed,
     hideMarker: body.hideMarker,
+    hideStroke: body.hideStroke,
+    arrow: body.arrow,
+    shade: body.shade,
+    along: body.along,
     velocityVector: body.velocity ? { vx: body.velocity.x, vy: body.velocity.y } : undefined,
   }))
   const hasFigure = view.bodies.length > 0 || view.surfaces.length > 0
@@ -134,7 +138,7 @@ export function FigurePane({ view, playback, planes }: { view: WorkspaceView; pl
             yLabel={motion ? 'y (m)' : 'y'}
           />
         )}
-        {interactive && <p className="figure-hint">Drag to move. Scroll to zoom.</p>}
+        {interactive && <p className="figure-hint">Drag to move. Scroll to zoom. Click a curve to read a point.</p>}
         {math3d && <p className="figure-hint">Scroll zooms inside the box. xy, xz, and yz look straight at those planes.</p>}
       </div>
       {view.duration > 0 && <PlaybackBar playback={playback} disabled={false} />}

@@ -20,6 +20,10 @@ export interface CasCurve {
   along: 'x' | 'y'
   dashed?: boolean
   label: string
+  /** Fill between this curve and the axis on the parameter interval. */
+  shade?: { from: number; to: number }
+  /** Plain integrand, so a second copy is not stroked when the curve is already drawn. */
+  exprKey?: string
 }
 
 export interface CasPoint {
@@ -28,11 +32,27 @@ export interface CasPoint {
   label: string
 }
 
+export interface CasParametric {
+  components: Expr[]
+  param: string
+  label: string
+  dashed?: boolean
+}
+
+export interface CasArrow {
+  x: number
+  y: number
+  z: number
+  label: string
+}
+
 export interface CasVisual {
   text: string
   tex: string
   curves: CasCurve[]
   points: CasPoint[]
+  parametrics: CasParametric[]
+  arrows: CasArrow[]
   warn: string | null
 }
 
@@ -91,6 +111,10 @@ function mapChildren(e: Expr, visit: (child: Expr) => Expr): Expr {
       return { type: 'pow', base: visit(e.base), exp: visit(e.exp) }
     case 'call':
       return { type: 'call', name: e.name, args: e.args.map(visit) }
+    case 'vec':
+      return { type: 'vec', args: e.args.map(visit) }
+    case 'mat':
+      return { type: 'mat', rows: e.rows.map((row) => row.map(visit)) }
     case 'eq':
       return { type: 'eq', left: visit(e.left), right: visit(e.right) }
     default:
@@ -160,12 +184,22 @@ function shown(value: Expr, angles: AngleMode, source: Expr | null): { text: str
 }
 
 function curveFor(expr: Expr, variable: string, label: string, dashed = false): CasCurve | null {
-  const symbols = freeSymbols(expr).filter((name) => name !== 'C' && name !== 'C1' && name !== 'C2')
+  if (expr.type === 'vec' || expr.type === 'mat') return null
+  const symbols = freeSymbols(expr).filter((name) => name !== 'C' && name !== 'C1' && name !== 'C2' && name !== 'C3')
   if (symbols.length > 1) return null
   if (symbols.length === 1 && symbols[0] !== variable) return null
-  if (symbols.length === 0) return null
   if (variable !== 'x' && variable !== 'y') return null
   return { expr, along: variable, dashed, label }
+}
+
+function vectorGraphics(expr: Expr, param: string, label: string): { parametrics: CasParametric[]; arrows: CasArrow[] } {
+  if (expr.type !== 'vec' || expr.args.length < 2 || expr.args.length > 3) return { parametrics: [], arrows: [] }
+  const symbols = freeSymbols(expr).filter((name) => name !== 'C' && !/^C\d+$/.test(name))
+  if (symbols.length > 1 || (symbols.length === 1 && symbols[0] !== param)) return { parametrics: [], arrows: [] }
+  if (symbols.length === 1) return { parametrics: [{ components: expr.args, param, label }], arrows: [] }
+  const nums = expr.args.map((arg) => numericConstant(arg))
+  if (nums.some((value) => value === null)) return { parametrics: [], arrows: [] }
+  return { arrows: [{ x: nums[0] ?? 0, y: nums[1] ?? 0, z: nums[2] ?? 0, label }], parametrics: [] }
 }
 
 function pointAt(x: number, y: number, label: string): CasPoint | null {
@@ -190,6 +224,10 @@ function derivative(e: Expr, variable: string, angles: AngleMode, dependent?: { 
       if (e.name === variable) return ONE
       if (dependent && e.name === dependent.name) return S(dependent.symbol)
       return ZERO
+    case 'vec':
+      return { type: 'vec', args: e.args.map((arg) => derivative(arg, variable, angles, dependent)) }
+    case 'mat':
+      return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => derivative(arg, variable, angles, dependent))) }
     case 'add':
       return add(e.args.map((arg) => derivative(arg, variable, angles, dependent)))
     case 'mul': {
@@ -281,6 +319,8 @@ function diffValue(args: Expr[], angles: AngleMode): { value: Expr; variable: st
 }
 
 function antiderivative(e: Expr, variable: string, angles: AngleMode): Expr {
+  if (e.type === 'vec') return { type: 'vec', args: e.args.map((arg) => antiderivative(arg, variable, angles)) }
+  if (e.type === 'mat') return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => antiderivative(arg, variable, angles))) }
   if (!freeSymbols(e).includes(variable)) return mul([e, S(variable)])
   if (e.type === 'add') return add(e.args.map((arg) => antiderivative(arg, variable, angles)))
   if (e.type === 'mul') {
@@ -789,7 +829,7 @@ function lineFrom(row: { a: Expr[]; c: Expr }, names: string[], label: string, a
 
 function presentValue(value: Expr, angles: AngleMode, source: Expr, curves: CasCurve[] = [], points: CasPoint[] = [], warn: string | null = null): CasVisual {
   const display = shown(value, angles, source)
-  return { text: display.text, tex: display.tex, curves, points, warn }
+  return { text: display.text, tex: display.tex, curves, points, parametrics: [], arrows: [], warn }
 }
 
 function withOriginal(body: Expr, variable: string, curves: CasCurve[]): CasCurve[] {
@@ -896,7 +936,7 @@ export function solveLinearSystem(equations: Expr[], angles: AngleMode): CasVisu
   const solved = solveLinear(equations, angles)
   const parts = solved.names.map((name, index) => `${name} = ${plain(solved.values[index] ?? ZERO)}`)
   const texParts = solved.names.map((name, index) => `${tex(S(name))} = ${tex(solved.values[index] ?? ZERO)}`)
-  return { text: parts.join(', '), tex: texParts.join(', '), curves: solved.curves, points: [], warn: null }
+  return { text: parts.join(', '), tex: texParts.join(', '), curves: solved.curves, points: [], parametrics: [], arrows: [], warn: null }
 }
 
 export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
@@ -922,7 +962,7 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
       if (symbols.length !== 1) throw new MathError('Factor a whole number or a polynomial in one variable.')
       factored = factorPolynomial(arg, symbols[0], angles)
     }
-    return { text: `${plain(call)} = ${plain(factored)}`, tex: tex(factored), curves: [], points: [], warn: null }
+    return { text: `${plain(call)} = ${plain(factored)}`, tex: tex(factored), curves: [], points: [], parametrics: [], arrows: [], warn: null }
   }
   if (call.name === 'zeros') {
     const variable = args[1] ? symbolOf(args[1], 'x') : (freeSymbols(args[0]).find((name) => name !== 'pi' && name !== 'e') ?? 'x')
@@ -937,7 +977,7 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
       return marker ? [marker] : []
     })
     const curve = curveFor(normalize(args[0], angles), variable, 'curve', true)
-    return { text: pieces.join(' or '), tex: formula, curves: curve ? [curve] : [], points, warn: null }
+    return { text: pieces.join(' or '), tex: formula, curves: curve ? [curve] : [], points, parametrics: [], arrows: [], warn: null }
   }
   if (call.name === 'fmin' || call.name === 'fmax') {
     const found = extremum(args, angles, call.name === 'fmin' ? 'min' : 'max')
@@ -953,25 +993,30 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
       tex: `\\text{${word} }${display.tex}\\text{ at }${tex(S(found.variable))} = ${at.tex}`,
       curves: curve ? [curve] : [],
       points: marker ? [marker] : [],
+      parametrics: [],
+      arrows: [],
       warn: null,
     }
   }
   if (call.name === 'decimal') {
     const value = valueNamed('decimal', args, angles)
     const text = value.type === 'dec' ? value.text : plain(value)
-    return { text: `${plain(call)} = ${text}`, tex: text, curves: [], points: [], warn: null }
+    return { text: `${plain(call)} = ${text}`, tex: text, curves: [], points: [], parametrics: [], arrows: [], warn: null }
   }
+  if (call.name === 'integrate' && args[0].type === 'vec') return vectorIntegral(args, angles, call)
   if (call.name === 'integrate' && args.length === 4) {
+    const variable = symbolOf(args[1], 'x')
+    const integrand = normalize(args[0], angles)
+    const start = numericConstant(normalize(args[2], angles), angles)
+    const end = numericConstant(normalize(args[3], angles), angles)
+    const curves = shadedIntegrand(integrand, variable, start, end)
     try {
-      return presentValue(reduceNamed('integrate', args, angles), angles, call)
+      return presentValue(reduceNamed('integrate', args, angles), angles, call, curves)
     } catch (error) {
-      const variable = symbolOf(args[1], 'x')
-      const start = numericConstant(normalize(args[2], angles), angles)
-      const end = numericConstant(normalize(args[3], angles), angles)
       if (start === null || end === null) throw error
       const value = simpson(args[0], variable, start, end, angles)
       const text = decimalText(value)
-      return { text: `${plain(call)} \\approx ${text}`.replace('\\approx', '≈'), tex: `${text}`, curves: [], points: [], warn: 'Decimal approximation.' }
+      return { text: `${plain(call)} ≈ ${text}`, tex: text, curves, points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
     }
   }
   if (call.name === 'integrate') {
@@ -1004,7 +1049,35 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
     const atPoint = call.name === 'diff' && diffValue(args, angles).at !== null
     const curve = atPoint ? null : curveFor(simplified, variable, call.name)
     const curves = call.name === 'series' ? withOriginal(args[0], variable, curve ? [curve] : []) : curve ? [curve] : []
-    return presentValue(simplified, angles, call, curves)
+    const graphics = atPoint ? { parametrics: [], arrows: [] } : vectorGraphics(simplified, variable, call.name)
+    return { ...presentValue(simplified, angles, call, curves), ...graphics }
   }
   return presentValue(simplified, angles, call)
+}
+
+function shadedIntegrand(integrand: Expr, variable: string, start: number | null, end: number | null): CasCurve[] {
+  const label = plain(integrand).length > 24 ? 'integrand' : plain(integrand)
+  const curve = curveFor(integrand, variable, label)
+  if (!curve) return []
+  curve.exprKey = plain(integrand)
+  if (start !== null && end !== null) curve.shade = { from: start, to: end }
+  return [curve]
+}
+
+function vectorIntegral(args: Expr[], angles: AngleMode, source: Expr): CasVisual {
+  const variable = symbolOf(args[1], 't')
+  const body = args[0]
+  if (body.type !== 'vec') throw new MathError('Integrate a vector one component at a time.')
+  if (args.length === 4) {
+    const parts = body.args.map((component) => reduceNamed('integrate', [component, args[1], args[2], args[3]], angles))
+    const value = normalize({ type: 'vec', args: parts }, angles)
+    const field = vectorGraphics(normalize(body, angles), variable, 'integrand')
+    const result = vectorGraphics(value, variable, 'integral')
+    return { ...presentValue(value, angles, source), parametrics: field.parametrics, arrows: result.arrows }
+  }
+  const antiderivatives = body.args.map((component) => antiderivative(component, variable, angles))
+  const value = normalize({ type: 'vec', args: antiderivatives.map((component, index) => add([component, S(`C${index + 1}`)])) }, angles)
+  const graphics = vectorGraphics(normalize({ type: 'vec', args: antiderivatives }, angles), variable, 'integral')
+  const drawn = graphics.parametrics.length > 0 || graphics.arrows.length > 0
+  return { ...presentValue(value, angles, source), ...graphics, warn: drawn ? 'Graph uses C = 0.' : null }
 }

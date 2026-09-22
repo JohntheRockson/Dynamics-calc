@@ -61,6 +61,10 @@ export interface FigureBody {
   index: number
   dashed?: boolean
   hideMarker?: boolean
+  hideStroke?: boolean
+  arrow?: boolean
+  shade?: { from: number; to: number }
+  along?: 'x' | 'y'
   velocity?: { x: number; y: number; z: number }
   role?: 'plot'
   /** Resample a math curve across the window that is on screen. */
@@ -380,7 +384,8 @@ export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad
   }))
   const duration = points.reduce((max, point) => Math.max(max, point.simulate ?? 0), 0)
   const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && surfaceHasFiniteZ(plot))
-  const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible ? 3 : 2
+  const spaceCurve = math.plots.some((plot) => plot.kind === 'curve' && plot.visible && plot.path.some((point) => Number.isFinite(point.z) && Math.abs(point.z) > 1e-6))
+  const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible || spaceCurve ? 3 : 2
   const fitKey = `${angles}:${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
   return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey }
 }
@@ -607,7 +612,7 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
 
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'curve') continue
-    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: plot.marker ? 0 : 0, dashed: plot.dashed, hideMarker: !plot.marker, role: 'plot', sample: plot.sample, statementId: plot.statementId })
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, dashed: plot.dashed, hideMarker: !plot.marker, hideStroke: plot.hideStroke, arrow: plot.arrow, shade: plot.shade, along: plot.along, role: 'plot', sample: plot.sample, statementId: plot.statementId })
   }
 
   const surfaces: FigureSurface[] = []

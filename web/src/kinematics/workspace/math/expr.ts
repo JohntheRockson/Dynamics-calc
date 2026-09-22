@@ -2,6 +2,7 @@
 // linear or quadratic equations. Trig angles follow the active unit.
 
 import { MATH_FUNCTION_NAMES } from './catalog'
+import { containsAggregate, reduceAlgebra } from './linear'
 
 export type AngleMode = 'rad' | 'deg'
 
@@ -21,6 +22,8 @@ export type Expr =
   | { type: 'div'; num: Expr; den: Expr }
   | { type: 'pow'; base: Expr; exp: Expr }
   | { type: 'call'; name: string; args: Expr[] }
+  | { type: 'vec'; args: Expr[] }
+  | { type: 'mat'; rows: Expr[][] }
   | { type: 'eq'; left: Expr; right: Expr }
 
 export type Binding =
@@ -225,12 +228,12 @@ class Parser {
 
   canStartPrimary(): boolean {
     const c = this.peek()
-    return c === '(' || /[A-Za-zπ0-9.]/.test(c)
+    return c === '(' || c === '[' || /[A-Za-zπ0-9.]/.test(c)
   }
 
   startsImplicit(): boolean {
     const c = this.peek()
-    if (c === '(' || /[A-Za-zπ]/.test(c)) return true
+    if (c === '(' || c === '[' || /[A-Za-zπ]/.test(c)) return true
     if (/[0-9.]/.test(c)) return this.prevNonSpace() === ')'
     return false
   }
@@ -281,13 +284,49 @@ class Parser {
       this.i += 1
       return { type: 'sym', name: '?' }
     }
+    if (c === '[') return this.parseBracket()
     if (c === '(') {
       this.i += 1
       const inner = this.parseSum()
+      if (this.peek() === ',') {
+        const args = [inner]
+        while (this.eat(',')) args.push(this.parseSum())
+        if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
+        return { type: 'vec', args }
+      }
       if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
       return inner
     }
     throw new MathError('Could not read that. Check the operators and parentheses.')
+  }
+
+  parseBracket(): Expr {
+    if (!this.eat('[')) throw new MathError('Could not read that vector.')
+    if (this.peek() === '[') {
+      const rows: Expr[][] = []
+      while (this.peek() === '[') {
+        rows.push(this.parseRow())
+        if (!this.eat(',')) break
+      }
+      if (!this.eat(']')) throw new MathError('Close the matrix with ].')
+      const width = rows[0]?.length ?? 0
+      if (rows.length === 0 || width === 0 || rows.some((row) => row.length !== width)) throw new MathError('Matrix rows should be the same length.')
+      return { type: 'mat', rows }
+    }
+    if (this.eat(']')) return { type: 'vec', args: [] }
+    const args = [this.parseSum()]
+    while (this.eat(',')) args.push(this.parseSum())
+    if (!this.eat(']')) throw new MathError('Close the vector with ].')
+    return { type: 'vec', args }
+  }
+
+  parseRow(): Expr[] {
+    if (!this.eat('[')) throw new MathError('A matrix row starts with [.')
+    if (this.eat(']')) return []
+    const items = [this.parseSum()]
+    while (this.eat(',')) items.push(this.parseSum())
+    if (!this.eat(']')) throw new MathError('Close the matrix row with ].')
+    return items
   }
 
   parseIdent(): string {
@@ -316,14 +355,20 @@ class Parser {
 /** Turn a half-typed line into something the preview can draw: `x^` and `sqrt(` become placeholders. */
 function cookPreview(input: string): string {
   let source = input.trim()
-  let balance = 0
+  const stack: string[] = []
   for (const ch of source) {
-    if (ch === '(') balance += 1
-    else if (ch === ')') balance -= 1
-    if (balance < 0) return source
+    if (ch === '(' || ch === '[') stack.push(ch)
+    else if (ch === ')' || ch === ']') {
+      const open = stack.pop()
+      if (open !== (ch === ')' ? '(' : '[')) return source
+    }
   }
-  if (balance > 0) source += ')'.repeat(balance)
+  while (stack.length > 0) {
+    const open = stack.pop()
+    source += open === '[' ? ']' : ')'
+  }
   source = source.replace(/\(\s*\)/g, '(?)')
+  source = source.replace(/\[\s*\]/g, '[?]')
   if (/[+\-*/^,]$/.test(source)) source += '?'
   else if (/=\s*$/.test(source)) source += '?'
   return source
@@ -362,7 +407,11 @@ export function validateMath(input: string): string | null {
 }
 
 export function normalize(e: Expr, angles: AngleMode = 'rad'): Expr {
-  return fromTerms(toSum(fold(e, angles)))
+  const folded = fold(e, angles)
+  if (!containsAggregate(folded)) return fromTerms(toSum(folded))
+  const reduced = reduceAlgebra(folded, angles, normalize)
+  if (reduced.type === 'vec' || reduced.type === 'mat' || containsAggregate(reduced)) return reduced
+  return fromTerms(toSum(fold(reduced, angles)))
 }
 
 export function present(e: Expr, angles: AngleMode = 'rad'): { tex: string; text: string } {
@@ -456,6 +505,10 @@ export function applyEnv(e: Expr, env: MathEnv, depth: number): Expr {
       }
       return { type: 'call', name: e.name, args }
     }
+    case 'vec':
+      return { type: 'vec', args: e.args.map((arg) => applyEnv(arg, env, depth)) }
+    case 'mat':
+      return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => applyEnv(arg, env, depth))) }
   }
 }
 
@@ -542,6 +595,10 @@ export function substitute(e: Expr, map: Map<string, Expr>): Expr {
       return { type: 'pow', base: substitute(e.base, map), exp: substitute(e.exp, map) }
     case 'call':
       return { type: 'call', name: e.name, args: e.args.map((arg) => substitute(arg, map)) }
+    case 'vec':
+      return { type: 'vec', args: e.args.map((arg) => substitute(arg, map)) }
+    case 'mat':
+      return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => substitute(arg, map))) }
     case 'eq':
       return { type: 'eq', left: substitute(e.left, map), right: substitute(e.right, map) }
   }
@@ -603,6 +660,10 @@ function fold(e: Expr, angles: AngleMode = 'rad'): Expr {
       }
       return snapConstant({ type: 'call', name: e.name, args }, angles) ?? { type: 'call', name: e.name, args }
     }
+    case 'vec':
+      return { type: 'vec', args: e.args.map((arg) => fold(arg, angles)) }
+    case 'mat':
+      return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => fold(arg, angles))) }
     case 'eq':
       return { type: 'eq', left: fold(e.left, angles), right: fold(e.right, angles) }
   }
@@ -850,6 +911,8 @@ function toSum(e: Expr): Term[] {
     }
     case 'call':
     case 'eq':
+    case 'vec':
+    case 'mat':
       return [{ coeff: ONE, atoms: [atomOf(e)] }]
   }
 }
@@ -954,6 +1017,9 @@ function checkCall(name: string, args: Expr[]): void {
     requireSymbol(args[1], name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
     requireSymbol(args[2], name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
   }
+  if ((name === 'dot' || name === 'cross') && args.length !== 2) throw new MathError(`Use ${name}(u, v).`)
+  if ((name === 'unit' || name === 'norm' || name === 'mag') && args.length !== 1) throw new MathError(`Use ${name}(v) on a vector.`)
+  if ((name === 'det' || name === 'transpose' || name === 'inv' || name === 'trace') && args.length !== 1) throw new MathError(`Use ${name}(matrix).`)
 }
 
 function termToExpr(term: Term): Expr {
@@ -1029,11 +1095,14 @@ function isZeroExpr(e: Expr): boolean {
 function depends(e: Expr, variable: string): boolean {
   if (e.type === 'sym') return e.name === variable
   if (e.type === 'rat' || e.type === 'dec') return false
+  if (e.type === 'vec') return e.args.some((arg) => depends(arg, variable))
+  if (e.type === 'mat') return e.rows.some((row) => row.some((arg) => depends(arg, variable)))
   if (e.type === 'add' || e.type === 'mul') return e.args.some((arg) => depends(arg, variable))
   if (e.type === 'div') return depends(e.num, variable) || depends(e.den, variable)
   if (e.type === 'pow') return depends(e.base, variable) || depends(e.exp, variable)
   if (e.type === 'call') return e.args.some((arg) => depends(arg, variable))
-  return depends(e.left, variable) || depends(e.right, variable)
+  if (e.type === 'eq') return depends(e.left, variable) || depends(e.right, variable)
+  return false
 }
 
 function hasFreeSymbol(e: Expr): boolean {
@@ -1059,6 +1128,8 @@ function keepSymbolic(e: Expr): boolean {
   if (e.type === 'div') return keepSymbolic(e.num) || keepSymbolic(e.den)
   if (e.type === 'pow') return keepSymbolic(e.base) || keepSymbolic(e.exp)
   if (e.type === 'call') return e.args.some(keepSymbolic)
+  if (e.type === 'vec') return e.args.some(keepSymbolic)
+  if (e.type === 'mat') return e.rows.some((row) => row.some(keepSymbolic))
   if (e.type === 'eq') return keepSymbolic(e.left) || keepSymbolic(e.right)
   return false
 }
@@ -1095,6 +1166,12 @@ function walk(e: Expr, visit: (node: Expr) => void): void {
       break
     case 'call':
       e.args.forEach((arg) => walk(arg, visit))
+      break
+    case 'vec':
+      e.args.forEach((arg) => walk(arg, visit))
+      break
+    case 'mat':
+      e.rows.forEach((row) => row.forEach((arg) => walk(arg, visit)))
       break
     case 'eq':
       walk(e.left, visit)
@@ -1142,6 +1219,8 @@ function evalConst(e: Expr, angles: AngleMode = 'rad'): number | null {
       }
       return callNumber(e.name, args, angles)
     }
+    case 'vec':
+    case 'mat':
     case 'eq':
       return null
   }
@@ -1226,6 +1305,10 @@ function texPrec(e: Expr): [string, number] {
       return [`${texAt(e.base, P_POW + 1)}^{${texAt(e.exp, 0)}}`, P_POW]
     case 'call':
       return [texCall(e.name, e.args), P_ATOM]
+    case 'vec':
+      return [`\\left[${e.args.map((arg) => texAt(arg, 0)).join(', ')}\\right]`, P_ATOM]
+    case 'mat':
+      return [`\\begin{bmatrix}${e.rows.map((row) => row.map((arg) => texAt(arg, 0)).join(' & ')).join(' \\\\ ')}\\end{bmatrix}`, P_ATOM]
     case 'eq':
       return [`${texAt(e.left, 0)} = ${texAt(e.right, 0)}`, 0]
   }
@@ -1317,6 +1400,10 @@ function plainPrec(e: Expr): [string, number] {
     case 'call':
       if (e.name === 'sqrt' && e.args.length === 1) return [`sqrt(${plainAt(e.args[0], 0)})`, P_ATOM]
       return [`${e.name}(${e.args.map((arg) => plainAt(arg, 0)).join(', ')})`, P_ATOM]
+    case 'vec':
+      return [`[${e.args.map((arg) => plainAt(arg, 0)).join(', ')}]`, P_ATOM]
+    case 'mat':
+      return [`[${e.rows.map((row) => `[${row.map((arg) => plainAt(arg, 0)).join(', ')}]`).join(', ')}]`, P_ATOM]
     case 'eq':
       return [`${plainAt(e.left, 0)} = ${plainAt(e.right, 0)}`, 0]
   }
@@ -1368,6 +1455,10 @@ function exprKey(e: Expr): string {
       return `p(${exprKey(e.base)}^${exprKey(e.exp)})`
     case 'call':
       return `c${e.name}(${e.args.map(exprKey).join(',')})`
+    case 'vec':
+      return `u(${e.args.map(exprKey).join(',')})`
+    case 'mat':
+      return `M(${e.rows.map((row) => row.map(exprKey).join(',')).join(';')})`
     case 'eq':
       return `q(${exprKey(e.left)}=${exprKey(e.right)})`
   }

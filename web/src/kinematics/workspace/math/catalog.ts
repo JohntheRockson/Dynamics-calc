@@ -34,6 +34,23 @@ export const MATH_SECTIONS: MathSection[] = [
     ],
   },
   {
+    id: 'linear',
+    title: 'Linear algebra',
+    items: [
+      { name: 'Vector', template: '[1, 2, 3]', blurb: 'A vector from the origin' },
+      { name: 'Matrix', template: '[[1, 2], [3, 4]]', blurb: 'Rows of the same length' },
+      { name: 'Unit vector', template: 'unit([3, 4])', blurb: 'Same direction, length 1' },
+      { name: 'Norm', template: 'norm([3, 4])', blurb: 'Length of a vector' },
+      { name: 'Dot product', template: 'dot([1, 2], [3, 4])', blurb: 'u · v' },
+      { name: 'Cross product', template: 'cross([1, 0, 0], [0, 1, 0])', blurb: 'A scalar in the plane, a vector in space' },
+      { name: 'Determinant', template: 'det([[1, 2], [3, 4]])', blurb: '2 by 2 or 3 by 3' },
+      { name: 'Inverse', template: 'inv([[1, 2], [3, 4]])', blurb: 'Inverse of a square matrix' },
+      { name: 'Transpose', template: 'transpose([[1, 2], [3, 4]])', blurb: 'Swap rows and columns' },
+      { name: 'Parametric curve', template: 'r(t) = [cos(t), sin(t)]', blurb: 'A vector function of one input' },
+      { name: 'Space curve', template: 'r(t) = [cos(t), sin(t), t]', blurb: 'Three components draw in 3D' },
+    ],
+  },
+  {
     id: 'calculus',
     title: 'Calculus',
     items: [
@@ -80,4 +97,13 @@ export const MATH_FUNCTION_NAMES = [
   'series',
   'dsolve',
   'idiff',
+  'dot',
+  'cross',
+  'unit',
+  'norm',
+  'mag',
+  'det',
+  'transpose',
+  'inv',
+  'trace',
 ]

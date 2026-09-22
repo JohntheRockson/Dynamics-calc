@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { chooseProbe, type ProbePoint } from './probe'
 import { formatTick, niceStep, tickMarks } from './ticks'
 
 export interface Scene2DVector {
@@ -19,6 +20,10 @@ export interface Scene2DBody {
   extraVectors?: Scene2DVector[]
   dashed?: boolean
   hideMarker?: boolean
+  hideStroke?: boolean
+  arrow?: boolean
+  shade?: { from: number; to: number }
+  along?: 'x' | 'y'
 }
 
 export interface Scene2DWindow {
@@ -54,9 +59,24 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const frameRef = useRef<{ marginL: number; marginT: number; plotW: number; plotH: number } | null>(null)
+  const mapRef = useRef<((px: number, py: number) => { x: number; y: number }) | null>(null)
+  const bodiesRef = useRef(bodies)
   const liveRef = useRef(viewBox)
   liveRef.current = viewBox
   const [width, setWidth] = useState(600)
+  const [probe, setProbe] = useState<ProbePoint | null>(null)
+  const marginL = 48
+  const marginR = 14
+  const marginT = 14
+  const marginB = 26
+  const plotW = Math.max(1, width - marginL - marginR)
+  const plotH = Math.max(1, height - marginT - marginB)
+  const probePx = probe && viewBox && viewBox.xMax > viewBox.xMin && viewBox.yMax > viewBox.yMin
+    ? {
+        x: marginL + ((probe.x - viewBox.xMin) / (viewBox.xMax - viewBox.xMin)) * plotW,
+        y: marginT + (1 - (probe.y - viewBox.yMin) / (viewBox.yMax - viewBox.yMin)) * plotH,
+      }
+    : null
 
   useEffect(() => {
     const el = containerRef.current
@@ -72,6 +92,7 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
   }, [])
 
   useEffect(() => {
+    bodiesRef.current = bodies
     const canvas = canvasRef.current
     if (!canvas || width <= 0) return
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -157,6 +178,10 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
 
     const sx = (x: number) => margin.l + ((x - xmin) / (xmax - xmin)) * plotW
     const sy = (y: number) => margin.t + (1 - (y - ymin) / (ymax - ymin)) * plotH
+    mapRef.current = (px, py) => ({
+      x: xmin + ((px - margin.l) / plotW) * (xmax - xmin),
+      y: ymin + (1 - (py - margin.t) / plotH) * (ymax - ymin),
+    })
 
     const xAxis = xmin < 0 && xmax > 0
     const yAxis = ymin < 0 && ymax > 0
@@ -243,25 +268,29 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     ctx.clip()
     for (const b of bodies) {
       if (b.path.length === 0) continue
-      ctx.strokeStyle = b.color
-      ctx.lineWidth = 2
-      ctx.setLineDash(b.dashed ? [5, 4] : [])
-      ctx.beginPath()
-      let drawing = false
-      for (const pt of b.path) {
-        if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
-          drawing = false
-          continue
+      if (b.shade) fillShade(ctx, b.path, b.shade, b.along ?? 'x', b.color, sx, sy)
+      if (!b.hideStroke) {
+        ctx.strokeStyle = b.color
+        ctx.lineWidth = 2
+        ctx.setLineDash(b.dashed ? [5, 4] : [])
+        ctx.beginPath()
+        let drawing = false
+        for (const pt of b.path) {
+          if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+            drawing = false
+            continue
+          }
+          const px = sx(pt.x)
+          const py = sy(pt.y)
+          if (!drawing) {
+            ctx.moveTo(px, py)
+            drawing = true
+          } else ctx.lineTo(px, py)
         }
-        const px = sx(pt.x)
-        const py = sy(pt.y)
-        if (!drawing) {
-          ctx.moveTo(px, py)
-          drawing = true
-        } else ctx.lineTo(px, py)
+        ctx.stroke()
+        ctx.setLineDash([])
+        if (b.arrow) drawArrowhead(ctx, b.path, b.color, sx, sy)
       }
-      ctx.stroke()
-      ctx.setLineDash([])
 
       const idx = Math.min(b.currentIndex, b.path.length - 1)
       const cur = b.path[idx]
@@ -326,24 +355,43 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     }
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'
-  }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin, viewBox])
+    if (probe) {
+      const px = sx(probe.x)
+      const py = sy(probe.y)
+      ctx.fillStyle = '#f4f7fb'
+      ctx.beginPath()
+      ctx.arc(px, py, 4.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#111926'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+  }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin, viewBox, probe])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || !onViewBox) return
     let dragging = false
+    let startX = 0
+    let startY = 0
     const endDrag = () => {
       dragging = false
       canvas.classList.remove('is-grabbing')
     }
     const onDown = (event: PointerEvent) => {
       if (event.button !== 0) return
-      dragging = true
-      canvas.classList.add('is-grabbing')
+      dragging = false
+      startX = event.clientX
+      startY = event.clientY
       canvas.setPointerCapture(event.pointerId)
     }
     const onMove = (event: PointerEvent) => {
-      if (!dragging) return
+      if (!canvas.hasPointerCapture(event.pointerId)) return
+      if (!dragging && Math.hypot(event.clientX - startX, event.clientY - startY) < 4) return
+      if (!dragging) {
+        dragging = true
+        canvas.classList.add('is-grabbing')
+      }
       const frame = frameRef.current
       const current = liveRef.current
       if (!frame || !current) return
@@ -377,20 +425,44 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
       liveRef.current = next
       onViewBox(next)
     }
+    const onUp = (event: PointerEvent) => {
+      const wasDrag = dragging
+      endDrag()
+      if (wasDrag || event.button !== 0) return
+      const map = mapRef.current
+      const frame = frameRef.current
+      const rect = canvas.getBoundingClientRect()
+      if (!map || !frame) return
+      const px = event.clientX - rect.left
+      const py = event.clientY - rect.top
+      const world = map(px, py)
+      const paths = bodiesRef.current.filter((body) => !body.hideStroke && body.path.length > 1).map((body) => body.path)
+      const hit = chooseProbe(paths, world, (x, y) => {
+        const current = liveRef.current
+        const xSpan = (current?.xMax ?? 1) - (current?.xMin ?? 0)
+        const ySpan = (current?.yMax ?? 1) - (current?.yMin ?? 0)
+        return {
+          x: frame.marginL + ((x - (current?.xMin ?? 0)) / xSpan) * frame.plotW,
+          y: frame.marginT + (1 - (y - (current?.yMin ?? 0)) / ySpan) * frame.plotH,
+        }
+      })
+      setProbe(hit)
+    }
     const onDouble = (event: MouseEvent) => {
       event.preventDefault()
+      setProbe(null)
       onReset?.()
     }
     canvas.addEventListener('pointerdown', onDown)
     canvas.addEventListener('pointermove', onMove)
-    canvas.addEventListener('pointerup', endDrag)
+    canvas.addEventListener('pointerup', onUp)
     canvas.addEventListener('pointercancel', endDrag)
     canvas.addEventListener('wheel', onWheel, { passive: false })
     canvas.addEventListener('dblclick', onDouble)
     return () => {
       canvas.removeEventListener('pointerdown', onDown)
       canvas.removeEventListener('pointermove', onMove)
-      canvas.removeEventListener('pointerup', endDrag)
+      canvas.removeEventListener('pointerup', onUp)
       canvas.removeEventListener('pointercancel', endDrag)
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('dblclick', onDouble)
@@ -398,10 +470,11 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
   }, [onViewBox, onReset])
 
   return (
-    <div ref={containerRef} style={{ width: '100%' }}>
+    <div ref={containerRef} className="chart-stage" style={{ width: '100%' }}>
       <canvas ref={canvasRef} className={onViewBox ? 'chart-canvas is-pannable' : 'chart-canvas'} />
+      {probe && probePx && <div className="graph-probe" style={{ left: probePx.x, top: probePx.y }}>{probe.text}</div>}
       <div className="chart-legend">
-        {bodies.map((b, index) => (
+        {bodies.filter((body) => !body.hideStroke).map((b, index) => (
           <span className="item" key={`${b.label}-${index}`}>
             <span className="swatch" style={{ background: b.color, opacity: b.dashed ? 0.7 : 1 }} />
             {b.label}
@@ -410,4 +483,124 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
       </div>
     </div>
   )
+}
+
+function fillShade(
+  ctx: CanvasRenderingContext2D,
+  path: { x: number; y: number }[],
+  shade: { from: number; to: number },
+  along: 'x' | 'y',
+  color: string,
+  sx: (x: number) => number,
+  sy: (y: number) => number,
+) {
+  const strips = clipStrips(path, shade.from, shade.to, along)
+  ctx.save()
+  ctx.globalAlpha = 0.28
+  ctx.fillStyle = color
+  for (const strip of strips) {
+    if (strip.length < 2) continue
+    const first = strip[0]
+    const last = strip[strip.length - 1]
+    ctx.beginPath()
+    if (along === 'y') {
+      ctx.moveTo(sx(0), sy(first.y))
+      for (const point of strip) ctx.lineTo(sx(point.x), sy(point.y))
+      ctx.lineTo(sx(0), sy(last.y))
+    } else {
+      ctx.moveTo(sx(first.x), sy(0))
+      for (const point of strip) ctx.lineTo(sx(point.x), sy(point.y))
+      ctx.lineTo(sx(last.x), sy(0))
+    }
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.restore()
+}
+
+function clipStrips(path: { x: number; y: number }[], from: number, to: number, along: 'x' | 'y'): { x: number; y: number }[][] {
+  const lo = Math.min(from, to)
+  const hi = Math.max(from, to)
+  const strips: { x: number; y: number }[][] = []
+  let strip: { x: number; y: number }[] = []
+  const flush = () => {
+    if (strip.length > 1) strips.push(strip)
+    strip = []
+  }
+  let previous: { x: number; y: number } | null = null
+  for (const point of path) {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      flush()
+      previous = null
+      continue
+    }
+    if (previous) {
+      const clipped = clipSegment(previous, point, lo, hi, along)
+      if (!clipped) flush()
+      else {
+        const [start, end] = clipped
+        const last = strip[strip.length - 1]
+        if (!last || Math.hypot(last.x - start.x, last.y - start.y) > 1e-6) {
+          flush()
+          strip.push(start)
+        }
+        strip.push(end)
+      }
+    }
+    previous = point
+  }
+  flush()
+  return strips
+}
+
+function clipSegment(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  lo: number,
+  hi: number,
+  along: 'x' | 'y',
+): [{ x: number; y: number }, { x: number; y: number }] | null {
+  const coord = (point: { x: number; y: number }) => (along === 'y' ? point.y : point.x)
+  const delta = coord(b) - coord(a)
+  let t0 = 0
+  let t1 = 1
+  const accept = (p: number, q: number) => {
+    if (Math.abs(p) <= 1e-15) return q >= -1e-9
+    const t = q / p
+    if (p < 0) {
+      if (t > t1) return false
+      if (t > t0) t0 = t
+    } else {
+      if (t < t0) return false
+      if (t < t1) t1 = t
+    }
+    return true
+  }
+  const start = coord(a)
+  if (!accept(-delta, start - lo) || !accept(delta, hi - start) || t1 < t0) return null
+  const at = (t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
+  return [at(t0), at(t1)]
+}
+
+function drawArrowhead(
+  ctx: CanvasRenderingContext2D,
+  path: { x: number; y: number }[],
+  color: string,
+  sx: (x: number) => number,
+  sy: (y: number) => number,
+) {
+  const finite = path.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+  if (finite.length < 2) return
+  const tail = finite[finite.length - 2]
+  const tip = finite[finite.length - 1]
+  const ex = sx(tip.x)
+  const ey = sy(tip.y)
+  const angle = Math.atan2(ey - sy(tail.y), ex - sx(tail.x))
+  ctx.fillStyle = color
+  ctx.beginPath()
+  ctx.moveTo(ex, ey)
+  ctx.lineTo(ex - 11 * Math.cos(angle - 0.45), ey - 11 * Math.sin(angle - 0.45))
+  ctx.lineTo(ex - 11 * Math.cos(angle + 0.45), ey - 11 * Math.sin(angle + 0.45))
+  ctx.closePath()
+  ctx.fill()
 }

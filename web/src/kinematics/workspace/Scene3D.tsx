@@ -505,6 +505,20 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
 
     bodies.forEach((body) => {
       const color = colorHex(body.color)
+      if (body.arrow) {
+        const finite = body.path.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z))
+        if (finite.length >= 2) {
+          const from = place(frame, finite[0].x, finite[0].y, finite[0].z)
+          const to = place(frame, finite[finite.length - 1].x, finite[finite.length - 1].y, finite[finite.length - 1].z)
+          const direction = to.clone().sub(from)
+          const length = direction.length()
+          if (length > 1e-6) {
+            direction.normalize()
+            content.add(new THREE.ArrowHelper(direction, from, length, color, Math.min(length * 0.22, span * 0.08), Math.min(length * 0.12, span * 0.045)))
+          }
+        }
+        return
+      }
       let segment: THREE.Vector3[] = []
       const flush = () => {
         if (segment.length > 1) {

@@ -787,6 +787,25 @@ select.num-input {
   border-radius: var(--radius-sm);
 }
 
+.chart-stage {
+  position: relative;
+}
+
+.graph-probe {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(8, 11, 16, 0.92);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  transform: translate(10px, calc(-100% - 8px));
+}
+
 .chart-legend {
   display: flex;
   flex-wrap: wrap;

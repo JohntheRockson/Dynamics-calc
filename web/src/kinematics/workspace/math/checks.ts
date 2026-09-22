@@ -1,3 +1,4 @@
+import { chooseProbe } from '../../probe'
 import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../document'
 import { evaluateDocument } from '../evaluate'
 import { previewTex } from './expr'
@@ -260,6 +261,72 @@ export function runMathChecks(): string[] {
 
   const degreeDerivative = evaluateDocument(appendMath(emptyDocument(), 'diff(sin(x), x)'), 0, 'deg').blocks.flatMap((block) => block.rows.map((row) => row.text))
   expect(degreeDerivative.some((text) => text.includes('pi') && text.includes('180')), `degree derivative follows the angle mode: ${degreeDerivative.join(' | ')}`)
+
+  const constantDerivative = evaluateDocument(appendMath(emptyDocument(), 'diff(x^3, x, 3)'))
+  const constantText = constantDerivative.blocks.flatMap((block) => block.rows.map((row) => row.text))
+  const constantPath = constantDerivative.bodies.filter((body) => body.role === 'plot').flatMap((body) => body.path)
+  const constantYs = constantPath.filter((point) => Number.isFinite(point.y)).map((point) => point.y)
+  expect(constantText.some((text) => text.includes('6')), `third derivative: ${constantText.join(' | ')}`)
+  expect(constantYs.length > 2 && constantYs.every((y) => Math.abs(y - 6) < 1e-6), 'a constant derivative is a horizontal line')
+  const atPoint = evaluateDocument(appendMath(emptyDocument(), 'diff(x^3, x, 3, 1)'))
+  expect(atPoint.bodies.filter((body) => body.role === 'plot').length === 0, 'a derivative at a point stays a number')
+
+  const integral = evaluateDocument(appendMath(emptyDocument(), 'integrate(x, x, 0, 1)'))
+  const integralBody = integral.bodies.find((body) => body.role === 'plot')
+  expect(Boolean(integralBody?.shade && integralBody.shade.from === 0 && integralBody.shade.to === 1 && !integralBody.hideStroke && integralBody.path.length > 2), 'a definite integral shades the integrand')
+  let shaded = emptyDocument()
+  shaded = appendMath(shaded, 'y = x')
+  shaded = appendMath(shaded, 'integrate(x, x, 0, 1)')
+  const shadedBodies = evaluateDocument(shaded).bodies.filter((body) => body.role === 'plot')
+  const shadedIntegral = shadedBodies.find((body) => body.shade)
+  expect(Boolean(shadedIntegral?.hideStroke) && shadedBodies.filter((body) => !body.hideStroke).length === 1, 'the integrand is not drawn twice')
+
+  let linear = emptyDocument()
+  for (const input of [
+    'dot([1, 2], [3, 4])',
+    'cross([1, 0, 0], [0, 1, 0])',
+    'unit([3, 4])',
+    'norm([3, 4])',
+    'det([[1, 2], [3, 4]])',
+    '[[1, 2], [3, 4]]*[1, 0]',
+    'r(t) = [cos(t), sin(t)]',
+    's(t) = [cos(t), sin(t), t]',
+  ]) linear = appendMath(linear, input)
+  const linearView = evaluateDocument(linear)
+  const linearText = linearView.blocks.flatMap((block) => block.rows.map((row) => row.text))
+  expect(linearText.some((text) => text.includes('dot') && text.includes('11')), `dot product: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('[0, 0, 1]')), `cross product: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('3/5') && text.includes('4/5')), `unit vector: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('norm') && text.includes('= 5')), `norm: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('-2')), `determinant: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('[1, 3]')), `matrix times vector: ${linearText.join(' | ')}`)
+  const circle = linearView.bodies.find((body) => body.label.includes('r(t)'))
+  expect(Boolean(circle && circle.path.filter((point) => Number.isFinite(point.x)).length > 20), 'a parametric curve is drawn')
+  expect(linearView.dimension === 3, 'a three-component vector function is 3D')
+  const arrow = evaluateDocument(appendMath(emptyDocument(), '[3, 4]')).bodies.find((body) => body.arrow)
+  expect(Boolean(arrow && arrow.path.some((point) => Math.abs(point.x - 3) < 1e-6 && Math.abs(point.y - 4) < 1e-6)), 'a constant vector is an arrow')
+
+  const scale = (x: number, y: number) => ({ x: x * 40, y: -y * 40 })
+  const crossing = chooseProbe(
+    [
+      [{ x: 0, y: 0 }, { x: 2, y: 2 }],
+      [{ x: 0, y: 2 }, { x: 2, y: 0 }],
+    ],
+    { x: 1.05, y: 0.95 },
+    scale,
+  )
+  const nearby = chooseProbe(
+    [
+      [{ x: 0, y: 0 }, { x: 2, y: 2 }],
+      [{ x: 0, y: 2 }, { x: 2, y: 0 }],
+    ],
+    { x: 0.5, y: 0.5 },
+    scale,
+  )
+  expect(crossing?.kind === 'intersection' && Math.abs((crossing?.x ?? 0) - 1) < 1e-6, `snap to an intersection: ${crossing?.text ?? 'none'}`)
+  expect(nearby?.kind === 'point' && Math.abs((nearby?.x ?? 0) - 1) > 0.4, `a click away from the crossing stays on the line: ${nearby?.text ?? 'none'}`)
+  const vertex = chooseProbe(yCurve ? [yCurve.path] : [], { x: 0.05, y: 0.2 }, scale)
+  expect(vertex?.kind === 'minimum' && Math.abs(vertex.x) < 1e-6 && Math.abs(vertex.y) < 1e-6, `snap to a minimum: ${vertex?.text ?? 'none'}`)
 
   return errors
 }

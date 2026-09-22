@@ -2,13 +2,14 @@
 // y = and x = are curves too. z = and z^2 = are surfaces. Other results stay in the console.
 
 import type { Statement } from '../document'
-import { containsCas, evaluateCas, rewriteAll, solveLinearSystem, type CasCurve, type CasPoint } from './cas'
+import { containsCas, evaluateCas, rewriteAll, solveLinearSystem, type CasArrow, type CasCurve, type CasParametric, type CasPoint } from './cas'
 import {
   MathError,
   applyEnv,
   approximate,
   freeSymbols,
   normalize,
+  numericConstant,
   numericValue,
   parseMathInput,
   plain,
@@ -63,6 +64,16 @@ export interface CurvePlot {
   dashed?: boolean
   /** A single point, drawn with a marker instead of a stroke. */
   marker?: boolean
+  /** Draw an arrowhead at the end of the path. */
+  arrow?: boolean
+  /** Fill between the curve and the axis. */
+  shade?: { from: number; to: number }
+  /** The curve is only the shaded region because the same function is already drawn. */
+  hideStroke?: boolean
+  /** Which coordinate the shade interval is measured along. */
+  along?: 'x' | 'y'
+  /** Plain expression, used to avoid drawing the same curve twice. */
+  exprKey?: string
 }
 
 export interface SurfacePlot {
@@ -93,12 +104,21 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
     return color
   }
 
-  const pushVisual = (id: string, input: string, label: string, text: string, formula: string, curves: CasCurve[], points: CasPoint[], visible: boolean, warn: string | null) => {
+  const pushVisual = (id: string, input: string, label: string, text: string, formula: string, curves: CasCurve[], points: CasPoint[], parametrics: CasParametric[], arrows: CasArrow[], visible: boolean, warn: string | null) => {
     const color = nextColor()
     let plotKind: 'curve' | null = null
     for (const curve of curves) {
-      const plot = curvePlot(id, curve.label, color, visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed })
+      const hideStroke = Boolean(curve.shade && curve.exprKey && plots.some((plot) => plot.kind === 'curve' && plot.visible && !plot.hideStroke && plot.exprKey === curve.exprKey))
+      const plot = curvePlot(id, curve.label, color, visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed, shade: curve.shade, exprKey: curve.exprKey, hideStroke, along: curve.along })
       plots.push(plot.plot)
+      plotKind = 'curve'
+    }
+    for (const parametric of parametrics) {
+      plots.push(parametricPlot(id, parametric.label, color, visible, parametric.components, parametric.param, env, angles, parametric.dashed))
+      plotKind = 'curve'
+    }
+    for (const arrow of arrows) {
+      plots.push(arrowPlot(id, arrow.label, color, visible, arrow.x, arrow.y, arrow.z))
       plotKind = 'curve'
     }
     for (const point of points) {
@@ -132,6 +152,14 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const formulaText = `${label} = ${plain(parsed.body)}`
         const body = rewriteAll(parsed.body, angles)
         env.set(parsed.name, { kind: 'fn', params: parsed.params, body })
+        if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
+          const color = nextColor()
+          const plot = parametricPlot(statement.id, label, color, statement.visible, body.args, parsed.params[0], env, angles)
+          const warn = hasGeometry(plot) ? null : 'No real values to plot for t from -10 to 10.'
+          plots.push(plot)
+          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
+          continue
+        }
         const missing = freeSymbols(body).filter((name) => !parsed.params.includes(name) && !env.has(name))
         const color = nextColor()
         const plot = parsed.params.length === 2
@@ -155,6 +183,11 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           const value = normalize(applyEnv(parsed.expr, env, 0), angles)
           env.set(parsed.name, { kind: 'expr', expr: value })
           const shown = described(parsed.expr, value, statement.input, angles)
+          const picture = vectorPicture(value)
+          if (picture) {
+            const color = nextColor()
+            plots.push(picture.kind === 'arrow' ? arrowPlot(statement.id, parsed.name, color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, parsed.name, color, statement.visible, picture.components, picture.param, env, angles))
+          }
           const nameTex = tex({ type: 'sym', name: parsed.name })
           const exactText = `${parsed.name} = ${shown.exactText ?? ''}`
           const exactTex = `${nameTex} = ${shown.exactTex ?? ''}`
@@ -172,8 +205,8 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
             approxTex,
             approxText,
             preferDecimal: useDecimal,
-            plotKind: null,
-            visible: true,
+            plotKind: picture ? 'curve' : null,
+            visible: statement.visible,
             warn: null,
           })
           continue
@@ -199,7 +232,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
       }
       if (parsed.kind === 'system') {
         const solved = solveLinearSystem(parsed.equations.map((equation) => applyEnv(equation, env, 0)), angles)
-        pushVisual(statement.id, statement.input, 'Solve', solved.text, solved.tex, solved.curves, solved.points, statement.visible, solved.warn)
+        pushVisual(statement.id, statement.input, 'Solve', solved.text, solved.tex, solved.curves, solved.points, solved.parametrics, solved.arrows, statement.visible, solved.warn)
         continue
       }
       if (parsed.kind === 'solve') {
@@ -227,10 +260,19 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
       const applied = applyEnv(expr, env, 0)
       const cas = evaluateCas(applied, angles)
       if (cas) {
-        pushVisual(statement.id, statement.input, casLabel(applied), cas.text, cas.tex, cas.curves, cas.points, statement.visible, cas.warn)
+        pushVisual(statement.id, statement.input, casLabel(applied), cas.text, cas.tex, cas.curves, cas.points, cas.parametrics, cas.arrows, statement.visible, cas.warn)
         continue
       }
       const value = normalize(rewriteAll(applied, angles), angles)
+      const picture = vectorPicture(value)
+      if (picture) {
+        const color = nextColor()
+        const drawn = picture.kind === 'arrow' ? arrowPlot(statement.id, 'vector', color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, picture.param, color, statement.visible, picture.components, picture.param, env, angles)
+        plots.push(drawn)
+        const shown = described(expr, value, statement.input, angles)
+        rows.push({ ...shown, statementId: statement.id, label: picture.kind === 'arrow' ? 'Vector' : picture.param, plotKind: 'curve', visible: statement.visible, warn: null })
+        continue
+      }
       if (containsCas(expr)) {
         const curve = singleCurve(value)
         if (curve) {
@@ -360,9 +402,48 @@ function hasGeometry(plot: CurvePlot | SurfacePlot): boolean {
   return plot.sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
-function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options?: { dashed?: boolean }): { plot: CurvePlot; warn: string | null } {
+function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options?: { dashed?: boolean; shade?: { from: number; to: number }; exprKey?: string; hideStroke?: boolean; along?: 'x' | 'y' }): { plot: CurvePlot; warn: string | null } {
   const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles) : [])
-  return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options?.dashed } }
+  const exprKey = options?.exprKey ?? (spec && spec.bodies.length === 1 ? plain(spec.bodies[0]) : undefined)
+  return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options?.dashed, shade: options?.shade, hideStroke: options?.hideStroke, along: options?.along ?? spec?.along, exprKey } }
+}
+
+const PARAM_SAMPLES = 241
+
+function parametricPlot(id: string, label: string, color: string, visible: boolean, components: Expr[], param: string, env: MathEnv, angles: AngleMode, dashed?: boolean): CurvePlot {
+  const sample = (_window: PlotWindow) => {
+    const path: { x: number; y: number; z: number }[] = []
+    for (let i = 0; i < PARAM_SAMPLES; i += 1) {
+      const t = sampleAt(i, PARAM_SAMPLES, -10, 10)
+      const local = bind(env, param, t)
+      const values = components.map((component) => numericValue(component, local, angles))
+      if (values.some((value) => value === null || !Number.isFinite(value))) {
+        path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
+        continue
+      }
+      path.push({ x: values[0] ?? Number.NaN, y: values[1] ?? Number.NaN, z: values[2] ?? 0 })
+    }
+    return path
+  }
+  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed, along: 'x' }
+}
+
+function arrowPlot(id: string, label: string, color: string, visible: boolean, x: number, y: number, z: number): CurvePlot {
+  const sample = () => [
+    { x: 0, y: 0, z: 0 },
+    { x, y, z },
+  ]
+  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(), arrow: true }
+}
+
+function vectorPicture(value: Expr): { kind: 'arrow'; x: number; y: number; z: number } | { kind: 'parametric'; components: Expr[]; param: string } | null {
+  if (value.type !== 'vec' || value.args.length < 2 || value.args.length > 3) return null
+  const symbols = freeSymbols(value)
+  if (symbols.length > 1) return null
+  if (symbols.length === 1) return { kind: 'parametric', components: value.args, param: symbols[0] }
+  const nums = value.args.map((arg) => numericConstant(arg))
+  if (nums.some((item) => item === null)) return null
+  return { kind: 'arrow', x: nums[0] ?? 0, y: nums[1] ?? 0, z: nums[2] ?? 0 }
 }
 
 function pointPlot(id: string, label: string, color: string, visible: boolean, x: number, y: number): CurvePlot {
