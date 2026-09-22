@@ -1,5 +1,6 @@
 import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../document'
 import { evaluateDocument } from '../evaluate'
+import { previewTex } from './expr'
 import { expandMathShortcut, looksLikeMath } from './shortcuts'
 
 export function runMathChecks(): string[] {
@@ -74,6 +75,51 @@ export function runMathChecks(): string[] {
   expect(looksLikeMath('sqrt(4)') && looksLikeMath('f(x) = x') && looksLikeMath('e') && !looksLikeMath('point'), 'math detection')
   expect(!looksLikeMath('speed'), 'speed stays a statement')
   expect(find('1/2').length > 0, 'fraction row')
+
+  const radical = evaluateDocument(appendMath(emptyDocument(), 'sqrt(23)'))
+  const radicalRow = radical.blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(radicalRow?.preferDecimal && radicalRow.text.includes('4.795')), `sqrt(23) decimal: ${radicalRow?.text}`)
+  expect(radicalRow?.input === 'sqrt(23)', `sqrt(23) input: ${radicalRow?.input}`)
+  expect(Boolean(radicalRow?.exactText?.includes('sqrt(23)') && radicalRow.approxText?.includes('4.795')), 'sqrt(23) keeps both forms')
+
+  const simplified = evaluateDocument(appendMath(emptyDocument(), 'sqrt(32)'))
+  const simplifiedRow = simplified.blocks.flatMap((block) => block.rows)[0]
+  expect(simplifiedRow?.preferDecimal === false && Boolean(simplifiedRow?.text.includes('sqrt(2)')), `sqrt(32) stays exact: ${simplifiedRow?.text}`)
+  expect(Boolean(simplifiedRow?.approxText && simplifiedRow.approxText !== simplifiedRow.exactText), 'sqrt(32) offers a decimal')
+
+  const parabola = evaluateDocument(appendMath(emptyDocument(), 'y = x^2'))
+  const yCurve = parabola.bodies.find((body) => body.label === 'y')
+  expect(parabola.dimension === 2 && Boolean(yCurve?.sample), 'y = x^2 is a 2D curve')
+  const shifted = yCurve?.sample?.({ xMin: 2, xMax: 4, yMin: 0, yMax: 20 }) ?? []
+  const xs = shifted.filter((point) => Number.isFinite(point.x)).map((point) => point.x)
+  expect(xs.length > 0 && Math.min(...xs) < 2.05 && Math.max(...xs) > 3.95, `y = x^2 fills the window: ${Math.min(...xs)} to ${Math.max(...xs)}`)
+
+  const sideways = evaluateDocument(appendMath(emptyDocument(), 'y^2 = x'))
+  const branch = sideways.bodies.find((body) => body.label === 'y^2')
+  const around4 = (branch?.path ?? []).filter((point) => Number.isFinite(point.y) && Math.abs(point.x - 4) < 0.2)
+  expect(around4.some((point) => point.y > 1) && around4.some((point) => point.y < -1), 'y^2 = x draws both branches')
+
+  const vertical = evaluateDocument(appendMath(emptyDocument(), 'x = 2'))
+  const line = vertical.bodies.find((body) => body.label === 'x')
+  const finiteLine = (line?.path ?? []).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+  expect(finiteLine.length > 10 && finiteLine.every((point) => Math.abs(point.x - 2) < 1e-6), 'x = 2 is a vertical line')
+  expect(Math.min(...finiteLine.map((point) => point.y)) < -9 && Math.max(...finiteLine.map((point) => point.y)) > 9, 'x = 2 spans the default window')
+
+  const saddle = evaluateDocument(appendMath(emptyDocument(), 'z = x^2 - y^2'))
+  expect(saddle.dimension === 3 && saddle.surfaces.length === 1, `z = is a surface: ${saddle.dimension}, ${saddle.surfaces.length}`)
+  const cone = evaluateDocument(appendMath(emptyDocument(), 'z^2 = x^2 + y^2'))
+  expect(cone.dimension === 3 && (cone.surfaces[0]?.sheets?.length ?? 0) === 2, `z^2 draws two sheets: ${cone.surfaces[0]?.sheets?.length}`)
+
+  const solved = evaluateDocument(appendMath(emptyDocument(), 'solve(x + 1 = 4)'))
+  const solvedRow = solved.blocks.flatMap((block) => block.rows)[0]
+  expect(solvedRow?.input === 'solve(x + 1 = 4)' && Boolean(solvedRow.text.includes('x = 3')), `solve keeps the input: ${solvedRow?.input} -> ${solvedRow?.text}`)
+
+  const sqrtPreview = previewTex('sqrt(4)')
+  expect(Boolean(sqrtPreview?.includes('\\sqrt') && !sqrtPreview.includes('= 2')), `preview keeps sqrt(4): ${sqrtPreview}`)
+  expect(Boolean(previewTex('ln(2)/3')?.includes('\\frac')), `fraction preview: ${previewTex('ln(2)/3')}`)
+  expect(Boolean(previewTex('x^2')?.includes('^')), `power preview: ${previewTex('x^2')}`)
+  expect(Boolean(previewTex('sqrt(')?.includes('\\square')), `open sqrt preview: ${previewTex('sqrt(')}`)
+  expect(Boolean(previewTex('2+')?.includes('\\square')), `trailing operator preview: ${previewTex('2+')}`)
 
   return errors
 }

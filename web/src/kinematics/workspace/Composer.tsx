@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react'
+import { useId, useRef, useState, type UIEvent } from 'react'
 import { Eq } from '../Eq'
 import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
@@ -22,6 +22,7 @@ function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string
 export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; onCommit: (commandId: string, args: Record<string, string>) => string | null; onMath: (input: string) => string | null }) {
   const listId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
@@ -128,6 +129,12 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         </div>
       ) : (
         <div className="composer-search">
+          <div className={preview ? 'composer-field is-math' : 'composer-field'}>
+            {preview && (
+              <div className="composer-math" ref={overlayRef} aria-hidden="true">
+                <Eq tex={preview} />
+              </div>
+            )}
           <input
             ref={inputRef}
             className="num-input"
@@ -135,14 +142,19 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
             aria-expanded={open}
             aria-controls={listId}
             aria-autocomplete="list"
+            aria-label="Type a statement"
             placeholder="Type a statement"
             value={query}
             onFocus={() => setOpen(true)}
             onBlur={() => setOpen(false)}
+            onScroll={(event: UIEvent<HTMLInputElement>) => {
+              if (overlayRef.current) overlayRef.current.style.transform = `translateX(${-event.currentTarget.scrollLeft}px)`
+            }}
             onChange={(event) => {
               setQuery(event.target.value)
               setHighlight(0)
               setOpen(true)
+              if (overlayRef.current) overlayRef.current.style.transform = 'translateX(0px)'
             }}
             onKeyDown={(event) => {
               const cursor = event.currentTarget.selectionStart ?? query.length
@@ -172,11 +184,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
               }
             }}
           />
-          {preview && (
-            <div className="composer-preview">
-              <Eq tex={preview} />
-            </div>
-          )}
+          </div>
           {open && !mathMode && (
             <ul className="composer-list" id={listId} role="listbox">
               {matches.length === 0 ? (

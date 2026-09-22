@@ -20,6 +20,13 @@ export interface Scene2DBody {
   hideMarker?: boolean
 }
 
+export interface Scene2DWindow {
+  xMin: number
+  xMax: number
+  yMin: number
+  yMax: number
+}
+
 interface Scene2DProps {
   bodies: Scene2DBody[]
   height?: number
@@ -28,6 +35,10 @@ interface Scene2DProps {
   aspectEqual?: boolean
   groundY?: number
   includeOrigin?: boolean
+  /** When set, draw this window exactly and let the pointer pan and zoom it. */
+  viewBox?: Scene2DWindow
+  onViewBox?: (box: Scene2DWindow) => void
+  onReset?: () => void
 }
 
 function niceTick(v: number): string {
@@ -37,9 +48,12 @@ function niceTick(v: number): string {
   return v.toFixed(abs < 1 ? 2 : abs < 10 ? 1 : 0)
 }
 
-export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY, includeOrigin = false }: Scene2DProps) {
+export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY, includeOrigin = false, viewBox, onViewBox, onReset }: Scene2DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const frameRef = useRef<{ marginL: number; marginT: number; plotW: number; plotH: number } | null>(null)
+  const liveRef = useRef(viewBox)
+  liveRef.current = viewBox
   const [width, setWidth] = useState(600)
 
   useEffect(() => {
@@ -117,7 +131,12 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     ymin -= padY
     ymax += padY
 
-    if (aspectEqual) {
+    if (viewBox && viewBox.xMax > viewBox.xMin && viewBox.yMax > viewBox.yMin) {
+      xmin = viewBox.xMin
+      xmax = viewBox.xMax
+      ymin = viewBox.yMin
+      ymax = viewBox.yMax
+    } else if (aspectEqual) {
       const dataAspect = (xmax - xmin) / (ymax - ymin)
       const plotAspect = plotW / plotH
       if (dataAspect > plotAspect) {
@@ -132,6 +151,7 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
         xmax = cx + targetXSpan / 2
       }
     }
+    frameRef.current = { marginL: margin.l, marginT: margin.t, plotW, plotH }
 
     const sx = (x: number) => margin.l + ((x - xmin) / (xmax - xmin)) * plotW
     const sy = (y: number) => margin.t + (1 - (y - ymin) / (ymax - ymin)) * plotH
@@ -198,6 +218,10 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     ctx.restore()
 
     // Bodies: path + current marker + optional velocity vector.
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(margin.l, margin.t, plotW, plotH)
+    ctx.clip()
     for (const b of bodies) {
       if (b.path.length === 0) continue
       ctx.strokeStyle = b.color
@@ -266,11 +290,81 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
         ctx.fill()
       }
     }
-  }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin])
+    ctx.restore()
+  }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin, viewBox])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !onViewBox) return
+    let dragging = false
+    const endDrag = () => {
+      dragging = false
+      canvas.classList.remove('is-grabbing')
+    }
+    const onDown = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      dragging = true
+      canvas.classList.add('is-grabbing')
+      canvas.setPointerCapture(event.pointerId)
+    }
+    const onMove = (event: PointerEvent) => {
+      if (!dragging) return
+      const frame = frameRef.current
+      const current = liveRef.current
+      if (!frame || !current) return
+      const xSpan = current.xMax - current.xMin
+      const ySpan = current.yMax - current.yMin
+      const dx = (event.movementX / frame.plotW) * xSpan
+      const dy = (event.movementY / frame.plotH) * ySpan
+      const next = { xMin: current.xMin - dx, xMax: current.xMax - dx, yMin: current.yMin + dy, yMax: current.yMax + dy }
+      liveRef.current = next
+      onViewBox(next)
+    }
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      const frame = frameRef.current
+      const current = liveRef.current
+      if (!frame || !current) return
+      const rect = canvas.getBoundingClientRect()
+      const px = event.clientX - rect.left
+      const py = event.clientY - rect.top
+      const xSpan = current.xMax - current.xMin
+      const ySpan = current.yMax - current.yMin
+      const mx = current.xMin + ((px - frame.marginL) / frame.plotW) * xSpan
+      const my = current.yMin + (1 - (py - frame.marginT) / frame.plotH) * ySpan
+      const factor = event.deltaY > 0 ? 1.12 : 1 / 1.12
+      const xMin = mx - (mx - current.xMin) * factor
+      const xMax = mx + (current.xMax - mx) * factor
+      const yMin = my - (my - current.yMin) * factor
+      const yMax = my + (current.yMax - my) * factor
+      if (xMax - xMin < 1e-4 || yMax - yMin < 1e-4 || xMax - xMin > 1e6 || yMax - yMin > 1e6) return
+      const next = { xMin, xMax, yMin, yMax }
+      liveRef.current = next
+      onViewBox(next)
+    }
+    const onDouble = (event: MouseEvent) => {
+      event.preventDefault()
+      onReset?.()
+    }
+    canvas.addEventListener('pointerdown', onDown)
+    canvas.addEventListener('pointermove', onMove)
+    canvas.addEventListener('pointerup', endDrag)
+    canvas.addEventListener('pointercancel', endDrag)
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    canvas.addEventListener('dblclick', onDouble)
+    return () => {
+      canvas.removeEventListener('pointerdown', onDown)
+      canvas.removeEventListener('pointermove', onMove)
+      canvas.removeEventListener('pointerup', endDrag)
+      canvas.removeEventListener('pointercancel', endDrag)
+      canvas.removeEventListener('wheel', onWheel)
+      canvas.removeEventListener('dblclick', onDouble)
+    }
+  }, [onViewBox, onReset])
 
   return (
     <div ref={containerRef} style={{ width: '100%' }}>
-      <canvas ref={canvasRef} className="chart-canvas" />
+      <canvas ref={canvasRef} className={onViewBox ? 'chart-canvas is-pannable' : 'chart-canvas'} />
       <div className="chart-legend">
         {bodies.map((b, index) => (
           <span className="item" key={`${b.label}-${index}`}>

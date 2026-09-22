@@ -1183,6 +1183,24 @@ button.statement-main:hover {
   color: var(--text-dim);
   font-size: 12px;
 }
+.statement-label.is-typed {
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.statement-typed {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.statement-typed code {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
 .statement-value {
   display: flex;
   flex-direction: column;
@@ -1304,9 +1322,75 @@ button.statement-main:hover {
   text-transform: none;
   letter-spacing: 0;
 }
-.composer-preview {
-  min-height: 1.4em;
-  overflow-x: auto;
+.composer-field {
+  position: relative;
+}
+.composer-field.is-math {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.composer-field.is-math:focus-within {
+  border-color: var(--accent-dim);
+}
+.composer-field.is-math .num-input {
+  color: transparent;
+  caret-color: var(--text);
+  background: transparent;
+  border-color: transparent;
+  min-height: 46px;
+  position: relative;
+  z-index: 2;
+}
+.composer-math {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+.composer-math .katex {
+  font-size: 1.15em;
+}
+.chart-canvas.is-pannable {
+  cursor: grab;
+  touch-action: none;
+}
+.chart-canvas.is-pannable.is-grabbing {
+  cursor: grabbing;
+}
+.figure-hint {
+  position: absolute;
+  left: 12px;
+  top: 8px;
+  z-index: 2;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.workspace-scene3d-canvas {
+  position: absolute;
+  inset: 0;
+}
+.scene3d-readout {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(8, 11, 16, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  pointer-events: none;
 }
 .composer-hint {
   min-height: 1.2em;

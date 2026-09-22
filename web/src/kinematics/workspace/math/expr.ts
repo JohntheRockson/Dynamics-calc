@@ -270,6 +270,10 @@ class Parser {
       if (BUILTIN_CALLS.has(name) && this.canStartPrimary()) return { type: 'call', name, args: [this.parseProduct()] }
       return { type: 'sym', name }
     }
+    if (c === '?') {
+      this.i += 1
+      return { type: 'sym', name: '?' }
+    }
     if (c === '(') {
       this.i += 1
       const inner = this.parseSum()
@@ -302,19 +306,34 @@ class Parser {
   }
 }
 
+/** Turn a half-typed line into something the preview can draw: `x^` and `sqrt(` become placeholders. */
+function cookPreview(input: string): string {
+  let source = input.trim()
+  let balance = 0
+  for (const ch of source) {
+    if (ch === '(') balance += 1
+    else if (ch === ')') balance -= 1
+    if (balance < 0) return source
+  }
+  if (balance > 0) source += ')'.repeat(balance)
+  source = source.replace(/\(\s*\)/g, '(?)')
+  if (/[+\-*/^,]$/.test(source)) source += '?'
+  return source
+}
+
 export function previewTex(input: string): string | null {
   try {
-    const parsed = parseMathInput(input)
+    const parsed = parseMathInput(cookPreview(input))
     if (parsed.kind === 'fn') {
       const params = parsed.params.join(', ')
-      return `${parsed.name}\\left(${params}\\right) = ${tex(normalize(parsed.body))}`
+      return `${parsed.name}\\left(${params}\\right) = ${tex(parsed.body)}`
     }
-    if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(normalize(parsed.expr))}`
+    if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(parsed.expr)}`
     if (parsed.kind === 'solve') {
       const eq = parsed.equation.type === 'eq' ? parsed.equation : { type: 'eq' as const, left: parsed.equation, right: ZERO_EXPR }
-      return `${tex(normalize(eq.left))} = ${tex(normalize(eq.right))}`
+      return `${tex(eq.left)} = ${tex(eq.right)}`
     }
-    return tex(normalize(parsed.expr))
+    return tex(parsed.expr)
   } catch {
     return null
   }
@@ -358,6 +377,15 @@ export function present(e: Expr): { tex: string; text: string } {
   if (snapped) return { tex: tex(snapped), text: plain(snapped) }
   const dec: Expr = { type: 'dec', text: trimNum(n), value: n }
   return { tex: tex(dec), text: plain(dec) }
+}
+
+/** A decimal for a fully numeric value. Radicals that did not simplify still have one. */
+export function approximate(e: Expr): { tex: string; text: string } | null {
+  if (hasFreeSymbol(e)) return null
+  const n = evalConst(e)
+  if (n === null || !Number.isFinite(n)) return null
+  const text = trimNum(n)
+  return { tex: text, text }
 }
 
 export function numericValue(e: Expr, env: MathEnv): number | null {
@@ -1034,6 +1062,7 @@ function texPrec(e: Expr): [string, number] {
 function texSymbol(name: string): string {
   if (name === 'pi') return '\\pi'
   if (name === 'theta') return '\\theta'
+  if (name === '?') return '\\square'
   return name
 }
 

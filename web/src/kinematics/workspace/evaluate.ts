@@ -19,7 +19,7 @@ import {
   type Statement,
   type WorkspaceDocument,
 } from './document'
-import { compileMath, type CurvePlot, type SurfacePlot } from './math/eval'
+import { compileMath, type CurvePlot, type PlotWindow, type SurfacePlot } from './math/eval'
 
 export interface RowModel {
   id: string
@@ -34,6 +34,13 @@ export interface RowModel {
   visible?: boolean
   /** Plain text is kept for checks. Hide it when TeX already shows the same line. */
   showText?: boolean
+  /** The line the user typed, when this row came from the math console. */
+  input?: string
+  exactTex?: string | null
+  exactText?: string | null
+  approxTex?: string | null
+  approxText?: string | null
+  preferDecimal?: boolean
 }
 
 export interface BlockModel {
@@ -55,12 +62,15 @@ export interface FigureBody {
   hideMarker?: boolean
   velocity?: { x: number; y: number; z: number }
   role?: 'plot'
+  /** Resample a math curve across the window that is on screen. */
+  sample?: (window: PlotWindow) => { x: number; y: number; z: number }[]
 }
 
 export interface FigureSurface {
   label: string
   color: string
   grid: { x: number; y: number; z: number }[][]
+  sheets?: { x: number; y: number; z: number }[][][]
 }
 
 export interface WorkspaceView {
@@ -136,6 +146,11 @@ const TRACE_STEPS = 180
 
 function isSolverKey(key: PropertyKey): key is Extract<PropertyKey, Qty> {
   return key !== 'z' && key !== 'vz' && key !== 'az'
+}
+
+function surfaceHasFiniteZ(plot: SurfacePlot): boolean {
+  const sheets = plot.sheets.length > 0 ? plot.sheets : [plot.grid]
+  return sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
 function nearlyEqual(a: number, b: number): boolean {
@@ -350,9 +365,15 @@ export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
     plotKind: row.plotKind,
     visible: row.visible,
     showText: row.plotKind ? Boolean(row.warn) : !row.tex,
+    input: row.input,
+    exactTex: row.exactTex,
+    exactText: row.exactText,
+    approxTex: row.approxTex,
+    approxText: row.approxText,
+    preferDecimal: row.preferDecimal,
   }))
   const duration = points.reduce((max, point) => Math.max(max, point.simulate ?? 0), 0)
-  const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && plot.grid.some((row) => row.some((point) => Number.isFinite(point.z))))
+  const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && surfaceHasFiniteZ(plot))
   const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible ? 3 : 2
   const fitKey = `${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
   return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey }
@@ -580,15 +601,14 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
 
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'curve') continue
-    if (!plot.path.some((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) continue
-    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, hideMarker: true, role: 'plot' })
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, hideMarker: true, role: 'plot', sample: plot.sample })
   }
 
   const surfaces: FigureSurface[] = []
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'surface') continue
-    if (!plot.grid.some((row) => row.some((point) => Number.isFinite(point.z)))) continue
-    surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid })
+    if (!surfaceHasFiniteZ(plot)) continue
+    surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid, sheets: plot.sheets })
   }
 
   return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces }

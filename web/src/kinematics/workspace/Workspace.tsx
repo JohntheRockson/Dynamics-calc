@@ -14,19 +14,26 @@ const EXAMPLES: { id: ExampleId; label: string }[] = [
   { id: 'helix', label: 'Helix' },
 ]
 
-function RowView({ row, open, onToggle, onRemove, onToggleVisible, showRemove }: { row: RowModel; open: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; showRemove: boolean }) {
+function RowView({ row, open, decimal, onToggle, onRemove, onToggleVisible, onToggleDecimal, showRemove }: { row: RowModel; open: boolean; decimal: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; showRemove: boolean }) {
+  const typed = row.input
+  const showTypedLabel = Boolean(typed && !row.plotKind)
+  const canApproximate = Boolean(row.exactTex && row.approxTex && row.exactTex !== row.approxTex)
+  const shownTex = decimal && row.approxTex ? row.approxTex : (row.exactTex ?? row.tex)
+  const expandable = Boolean(row.formula || typed)
   const body = (
     <>
-      <span className="statement-label">{row.label}</span>
+      <span className={showTypedLabel ? 'statement-label is-typed' : 'statement-label'} title={showTypedLabel ? typed : undefined}>
+        {showTypedLabel ? typed : row.label}
+      </span>
       <span className="statement-value">
-        {row.tex && <Eq tex={row.tex} />}
+        {shownTex && <Eq tex={shownTex} />}
         {row.text && row.showText !== false && <span>{row.text}</span>}
       </span>
     </>
   )
   return (
     <li className={`statement-row is-${row.source}`}>
-      {row.formula ? (
+      {expandable ? (
         <button type="button" className="statement-main" onClick={onToggle} aria-expanded={open}>
           {body}
         </button>
@@ -34,6 +41,11 @@ function RowView({ row, open, onToggle, onRemove, onToggleVisible, showRemove }:
         <div className="statement-main">{body}</div>
       )}
       <div className="statement-actions">
+        {canApproximate && (
+          <button type="button" className="btn btn-ghost statement-eye" onClick={onToggleDecimal} aria-label={decimal ? 'Show the exact value' : 'Show a decimal approximation'}>
+            {decimal ? 'Exact' : 'Decimal'}
+          </button>
+        )}
         {row.plotKind && (
           <button type="button" className="btn btn-ghost statement-eye" aria-pressed={row.visible !== false} onClick={onToggleVisible} aria-label={row.visible === false ? `Show ${row.label} on the figure` : `Hide ${row.label} on the figure`}>
             {row.visible === false ? 'Show' : 'Hide'}
@@ -45,9 +57,14 @@ function RowView({ row, open, onToggle, onRemove, onToggleVisible, showRemove }:
           </button>
         )}
       </div>
-      {open && row.formula && (
+      {open && expandable && (
         <div className="statement-formula">
-          <Eq tex={row.formula} />
+          {typed && (
+            <p className="statement-typed">
+              <span>Typed</span> <code>{typed}</code>
+            </p>
+          )}
+          {row.formula && <Eq tex={row.formula} />}
         </div>
       )}
     </li>
@@ -57,6 +74,7 @@ function RowView({ row, open, onToggle, onRemove, onToggleVisible, showRemove }:
 export function Workspace() {
   const [doc, setDoc] = useState<WorkspaceDocument>(() => exampleDocument('circular'))
   const [openRow, setOpenRow] = useState<string | null>(null)
+  const [decimal, setDecimal] = useState<Record<string, boolean>>({})
   const compiled = useMemo(() => compileDocument(doc), [doc])
   const playback = usePlayback(Math.max(compiled.duration, 0.001))
 
@@ -119,6 +137,7 @@ export function Workspace() {
                     key={row.id}
                     row={row}
                     open={openRow === row.id}
+                    decimal={decimal[row.id] ?? Boolean(row.preferDecimal)}
                     onToggle={() => setOpenRow((current) => (current === row.id ? null : row.id))}
                     onRemove={() => {
                       if (row.statementId) setDoc((current) => removeStatement(current, row.statementId!))
@@ -126,6 +145,10 @@ export function Workspace() {
                     onToggleVisible={() => {
                       if (!row.statementId || !row.plotKind) return
                       setDoc((current) => setMathVisible(current, row.statementId!, row.visible === false))
+                    }}
+                    onToggleDecimal={() => {
+                      const showing = decimal[row.id] ?? Boolean(row.preferDecimal)
+                      setDecimal((current) => ({ ...current, [row.id]: !showing }))
                     }}
                     showRemove={row.statementId !== null && row.statementId !== block.removeId}
                   />
