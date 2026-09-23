@@ -4,9 +4,9 @@ import { evaluateDocument } from '../evaluate'
 import { previewTex, validateMath } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
 import { formatTick, tickMarks } from '../../ticks'
-import { moveMathCursor } from './inputView'
+import { closeOpenGroups, moveMathCursor } from './inputView'
 import { expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
-import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './shortcuts'
+import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './shortcuts'
 
 export function runMathChecks(): string[] {
   const errors: string[] = []
@@ -422,6 +422,41 @@ export function runMathChecks(): string[] {
   const missingDomain = evaluateDocument(appendMath(emptyDocument(), 'solve(10 = sigma*(cos(theta))^2, 5 = sigma*(sin(theta))^2)'))
   const missingRow = missingDomain.blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(missingRow?.text.includes('domain')), `a nonlinear system asks for a domain: ${missingRow?.text}`)
+
+  expect(moveMathCursor('sigma', 3, 'right') === 5 && moveMathCursor('sigma', 3, 'left') === 0, 'arrows jump a whole name')
+  expect(moveMathCursor('sigma', 0, 'right') === 5 && moveMathCursor('sigma', 5, 'left') === 0, 'arrows cross a name in one step')
+  const splitName = previewTex('sigma', 3) ?? ''
+  expect(splitName.includes('\\sigma') && splitName.includes('\\rule') && !splitName.includes('\\cdot'), `a caret inside a name stays one symbol: ${splitName}`)
+  const named = '15*cos(30)/(2)'
+  expect(moveMathCursor(named, named.indexOf('c'), 'right') === named.indexOf('('), 'a name jump stops before a parenthesis')
+  const braced = 'e_{' + 'theta}'
+  expect(moveMathCursor(braced, braced.indexOf('h'), 'right') === braced.length, 'right leaves a subscript')
+  const emptySub = 'e_{}'
+  expect(moveMathCursor(emptySub, emptySub.indexOf('}'), 'left') === emptySub.indexOf('_'), 'left leaves a subscript')
+  expect(moveMathCursor(emptySub, emptySub.indexOf('}'), 'right') === emptySub.length, 'right at a brace leaves the subscript')
+  const exponent = 'x^()'
+  expect(moveMathCursor(exponent, exponent.indexOf('^'), 'right') === exponent.length - 1, 'right enters an exponent')
+  expect(moveMathCursor(exponent, exponent.length - 1, 'right') === exponent.length, 'right leaves an exponent')
+  expect(moveMathCursor(exponent, exponent.length - 1, 'left') === exponent.indexOf('^'), 'left leaves an exponent')
+  const nested = '15/x^(2)'
+  expect(moveMathCursor(nested, nested.indexOf('2'), 'up') === nested.indexOf('/'), 'up still leaves a fraction')
+  expect(expandMathShortcut('sqrt', 4, '^') === null, 'a caret does not turn sqrt into a call')
+  const opened = insertMathSlot('x', 1, 1, '^')
+  expect(opened?.value === 'x^()' && opened.cursor === 3, `caret opens an exponent: ${opened?.value}`)
+  const subscripted = insertMathSlot('e', 1, 1, '_')
+  expect(subscripted?.value === 'e_{}' && subscripted.cursor === 3, `underscore opens a subscript: ${subscripted?.value}`)
+  const wrapped = insertMathSlot('', 0, 0, '(')
+  expect(wrapped?.value === '()' && wrapped.cursor === 1, `an opening parenthesis inserts a pair: ${wrapped?.value}`)
+  expect(insertMathSlot('point', 5, 5, '(')?.value === 'point' && !looksLikeMath('point('), 'point stays a statement')
+  expect(insertMathSlot('cos(30)', 6, 6, ')')?.cursor === 7, 'a typed parenthesis steps past the closer')
+  expect(closeOpenGroups('cos(30') === 'cos(30)' && closeOpenGroups('decimal(') === 'decimal()', 'right closes an open group')
+  const emptyParens = previewTex('()', 1) ?? ''
+  expect(emptyParens.includes('\\rule') && emptyParens.includes('\\vphantom') && !emptyParens.includes('\\left('), `empty parentheses stay one size: ${emptyParens}`)
+  const powerTex = previewTex('x^(2*3)') ?? ''
+  const exponentTex = powerTex.split('^')[1] ?? ''
+  expect(powerTex.includes('\\cdot') && !exponentTex.includes('\\left('), `an exponent drops one set of parentheses: ${powerTex}`)
+  const subCaret = previewTex('e_{}', 3) ?? ''
+  expect(subCaret.includes('_{') && subCaret.includes('\\rule') && subCaret.includes('\\mathbf{e}'), `the subscript caret sits in the subscript: ${subCaret}`)
 
   return errors
 }

@@ -27,7 +27,7 @@ export type Expr =
   | { type: 'mat'; rows: Expr[][] }
   | { type: 'eq'; left: Expr; right: Expr }
   | { type: 'group'; body: Expr }
-  | { type: 'caret'; place: 'pre' | 'post'; body: Expr | null; split?: number }
+  | { type: 'caret'; place: 'pre' | 'post' | 'sub'; body: Expr | null; split?: number }
 
 export type Binding =
   | { kind: 'expr'; expr: Expr }
@@ -391,35 +391,43 @@ class Parser {
     return { type: 'call', name: 'Dt', args: [expr] }
   }
 
-  withSubscript(expr: Expr, sub: string): Expr {
+  withSubscript(expr: Expr, sub: { name: string; split: number | null }): Expr {
     if (expr.type !== 'sym') throw new MathError('Use _ after a name, for example e_r or theta_0.')
     if (expr.sub) throw new MathError('That name already has a subscript.')
-    return { ...expr, sub }
+    if (sub.split === null) return { ...expr, sub: sub.name }
+    return { type: 'caret', place: 'sub', body: { ...expr, sub: sub.name }, split: sub.split }
   }
 
-  parseSubscript(): string {
+  parseSubscript(): { name: string; split: number | null } {
     if (!this.eat('_')) throw new MathError('Use _ after a name, for example e_r or theta_0.')
     if (this.eat('{')) {
       const start = this.i
       while (this.i < this.src.length && this.src[this.i] !== '}') this.i += 1
-      const body = this.src.slice(start, this.i).trim()
+      const raw = this.src.slice(start, this.i)
       if (!this.eat('}')) throw new MathError('Close the subscript with }.')
-      return subscriptName(body)
+      const caretAt = raw.indexOf(MATH_CARET)
+      if (caretAt >= 0) {
+        const name = raw.replaceAll(MATH_CARET, '').trim()
+        const before = raw.slice(0, caretAt).replaceAll(MATH_CARET, '').trim()
+        if (!name) return { name: '', split: 0 }
+        return { name: subscriptName(name), split: before.length }
+      }
+      return { name: subscriptName(raw.trim()), split: null }
     }
     const ch = this.src[this.i] ?? ''
     const fromChar = greekCharName(ch)
     if (fromChar) {
       this.i += 1
-      return fromChar
+      return { name: fromChar, split: null }
     }
     if (ch === '?' || ch === MATH_CARET) {
       this.i += 1
-      return ch === MATH_CARET ? 'CARET' : '?'
+      return { name: ch === MATH_CARET ? 'CARET' : '?', split: null }
     }
     if (!/[A-Za-z0-9]/.test(ch)) throw new MathError('Use _ after a name, for example e_r or theta_0.')
     const start = this.i
     while (this.i < this.src.length && /[A-Za-z0-9]/.test(this.src[this.i] ?? '')) this.i += 1
-    return subscriptName(this.src.slice(start, this.i))
+    return { name: subscriptName(this.src.slice(start, this.i)), split: null }
   }
 
   parsePrimary(): Expr {
@@ -597,9 +605,26 @@ function cookPreview(input: string): string {
   return source
 }
 
+const IDENT_PART = /[A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]/
+const IDENT_START = /[A-Za-zαβγδεζηθικλμνξπρστυφχψω]/
+
+/** A caret sitting inside sigma still draws one symbol, with the bar after it. */
+function snapIdentCaret(input: string, cursor: number): number {
+  if (cursor <= 0 || cursor >= input.length) return cursor
+  const prev = input[cursor - 1] ?? ''
+  const next = input[cursor] ?? ''
+  if (!IDENT_PART.test(prev) || !IDENT_PART.test(next)) return cursor
+  let start = cursor
+  while (start > 0 && IDENT_PART.test(input[start - 1] ?? '')) start -= 1
+  if (!IDENT_START.test(input[start] ?? '')) return cursor
+  let end = cursor
+  while (end < input.length && IDENT_PART.test(input[end] ?? '')) end += 1
+  return end
+}
+
 export function previewTex(input: string, cursor?: number): string | null {
   try {
-    const at = cursor === undefined ? null : Math.max(0, Math.min(cursor, input.length))
+    const at = cursor === undefined ? null : snapIdentCaret(input, Math.max(0, Math.min(cursor, input.length)))
     const marked = at === null ? input : `${input.slice(0, at)}${MATH_CARET}${input.slice(at)}`
     const parsed = parseMathInput(cookPreview(marked))
     if (parsed.kind === 'fn') {
@@ -1568,9 +1593,11 @@ function texPrec(e: Expr): [string, number] {
       return [texMul(e.args), P_MUL]
     case 'div':
       return [`\\frac{${texAt(peelGroup(e.num), 0)}}{${texAt(peelGroup(e.den), 0)}}`, P_ATOM]
-    case 'pow':
-      if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`\\sqrt{${texAt(e.base, 0)}}`, P_ATOM]
-      return [`${texAt(e.base, P_POW + 1)}^{${texAt(e.exp, 0)}}`, P_POW]
+    case 'pow': {
+      const exp = peelGroup(e.exp)
+      if (exp.type === 'rat' && exp.n === 1n && exp.d === 2n) return [`\\sqrt{${texAt(e.base, 0)}}`, P_ATOM]
+      return [`${texAt(e.base, P_POW + 1)}^{${texAt(exp, 0)}}`, P_POW]
+    }
     case 'call':
       return [texCall(e.name, e.args), P_ATOM]
     case 'vec':
@@ -1580,6 +1607,7 @@ function texPrec(e: Expr): [string, number] {
     case 'eq':
       return [`${texAt(e.left, 0)} = ${texAt(e.right, 0)}`, 0]
     case 'group':
+      if (isBareCaret(e.body)) return [`(${CARET_TEX}\\vphantom{0})`, P_ATOM]
       return [`\\left(${texAt(e.body, 0)}\\right)`, P_ATOM]
     case 'caret':
       return [texCaret(e), P_ATOM]
@@ -1590,9 +1618,14 @@ function peelGroup(e: Expr): Expr {
   return e.type === 'group' ? e.body : e
 }
 
-const CARET_TEX = '\\textcolor{#d6dee8}{\\rule{1.4px}{1.05em}}'
+const CARET_TEX = '\\textcolor{#d6dee8}{\\smash{\\rule{1.4px}{0.9em}}}'
+
+function isBareCaret(e: Expr): boolean {
+  return e.type === 'caret' && e.body === null
+}
 
 function texCaret(e: Extract<Expr, { type: 'caret' }>): string {
+  if (e.place === 'sub' && e.body?.type === 'sym') return texNamed(e.body, subscriptCaretTex(e.body.sub ?? '', e.split ?? 0))
   if (!e.body) return CARET_TEX
   if (e.split !== undefined && (e.body.type === 'dec' || (e.body.type === 'rat' && e.body.d === 1n))) {
     const text = e.body.type === 'dec' ? e.body.text : e.body.n.toString()
@@ -1601,6 +1634,13 @@ function texCaret(e: Extract<Expr, { type: 'caret' }>): string {
   }
   const inner = texAt(e.body, 0)
   return e.place === 'pre' ? `${CARET_TEX}${inner}` : `${inner}${CARET_TEX}`
+}
+
+function subscriptCaretTex(sub: string, split: number): string {
+  if (!sub) return CARET_TEX
+  if (isGreekName(sub)) return split !== 0 ? `${texSymbol(sub)}${CARET_TEX}` : `${CARET_TEX}${texSymbol(sub)}`
+  const at = Math.max(0, Math.min(split, sub.length))
+  return `${sub.slice(0, at)}${CARET_TEX}${sub.slice(at)}`
 }
 
 const GREEK: Record<string, string> = {
@@ -1682,6 +1722,7 @@ function canonicalGreek(name: string): string {
 
 function subscriptName(body: string): string {
   if (body === '?') return '?'
+  if (body.length === 1 && greekCharName(body)) return greekCharName(body) ?? body
   if (!/^[A-Za-z0-9]+$/.test(body)) throw new MathError('Use _ after a name, for example e_r or theta_0.')
   return canonicalGreek(body)
 }
@@ -1696,10 +1737,11 @@ function texSymbol(name: string): string {
   return GREEK[name] ?? name
 }
 
-function texNamed(e: { name: string; sub?: string; dots?: number }): string {
+function texNamed(e: { name: string; sub?: string; dots?: number }, subTex?: string): string {
   let body = texSymbol(e.name)
-  if (e.name === 'e' && e.sub) body = `\\mathbf{${body}}`
-  if (e.sub) body = `${body}_{${texSymbol(e.sub)}}`
+  if (e.name === 'e' && (Boolean(e.sub) || subTex !== undefined)) body = `\\mathbf{${body}}`
+  if (subTex !== undefined) body = `${body}_{${subTex}}`
+  else if (e.sub) body = `${body}_{${texSymbol(e.sub)}}`
   const dots = e.dots ?? 0
   if (dots === 1) return `\\dot{${body}}`
   if (dots === 2) return `\\ddot{${body}}`
@@ -1769,6 +1811,7 @@ function texCall(name: string, args: Expr[]): string {
   const macro: Record<string, string> = { sin: '\\sin', cos: '\\cos', tan: '\\tan', ln: '\\ln', log: '\\log', exp: '\\exp', asin: '\\arcsin', acos: '\\arccos', atan: '\\arctan' }
   if (name === 'log' && args.length === 2) return `\\log_{${texAt(args[1], 0)}}\\left(${texAt(args[0], 0)}\\right)`
   const head = macro[name] ?? name
+  if (args.length === 1 && isBareCaret(args[0])) return `${head}(${CARET_TEX}\\vphantom{0})`
   return `${head}\\left(${args.map((arg) => texAt(arg, 0)).join(', ')}\\right)`
 }
 

@@ -215,15 +215,70 @@ interface FractionSpan {
   end: number
 }
 
-/** Move through the fraction that contains the caret. Other arrows step one character. */
+const IDENT_START = /[A-Za-zαβγδεζηθικλμνξπρστυφχψω]/
+const IDENT_PART = /[A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]/
+
+interface Slot {
+  start: number
+  end: number
+  move: (at: number, dir: 'left' | 'right' | 'up' | 'down') => number | null
+}
+
+/**
+ * Move through the innermost fraction, exponent, or subscript.
+ * A name such as sigma is one step. Other arrows step one character.
+ */
 export function moveMathCursor(source: string, cursor: number, dir: 'left' | 'right' | 'up' | 'down'): number {
   const at = Math.max(0, Math.min(cursor, source.length))
-  const frac = innermostFraction(source, at)
-  if (!frac) {
-    if (dir === 'left') return Math.max(0, at - 1)
-    if (dir === 'right') return Math.min(source.length, at + 1)
-    return at
+  const slots = findSlots(source)
+    .filter((slot) => at >= slot.start && at <= slot.end)
+    .sort((a, b) => a.end - a.start - (b.end - b.start))
+  for (const slot of slots) {
+    const next = slot.move(at, dir)
+    if (next !== null) return next
   }
+  if (dir === 'left' || dir === 'right') return jumpToken(source, at, dir)
+  return at
+}
+
+/** Append the closers for groups that are still open, so Right can leave cos(30. */
+export function closeOpenGroups(source: string): string {
+  const stack: string[] = []
+  const closer: Record<string, string> = { '(': ')', '[': ']', '{': '}' }
+  const opener: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
+  for (const ch of source) {
+    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch)
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (stack[stack.length - 1] !== opener[ch]) return source
+      stack.pop()
+    }
+  }
+  if (stack.length === 0) return source
+  let out = source
+  for (let i = stack.length - 1; i >= 0; i -= 1) out += closer[stack[i] ?? ''] ?? ''
+  return out
+}
+
+function findSlots(source: string): Slot[] {
+  return [...findFractions(source), ...findExponents(source), ...findSubscripts(source)]
+}
+
+function findFractions(source: string): Slot[] {
+  const spans: Slot[] = []
+  for (let i = 0; i < source.length; i += 1) {
+    if (source[i] !== '/' || source[i + 1] === '/' || source[i - 1] === '/') continue
+    const den = denominatorSpan(source, i)
+    const frac: FractionSpan = { slash: i, numStart: numeratorStart(source, i), denStart: den.start, denExit: den.exit, end: den.end }
+    spans.push({
+      start: frac.numStart,
+      end: frac.end,
+      move: (at, dir) => moveFraction(frac, at, dir),
+    })
+  }
+  return spans
+}
+
+function moveFraction(frac: FractionSpan, at: number, dir: 'left' | 'right' | 'up' | 'down'): number | null {
   const inNumerator = at >= frac.numStart && at <= frac.slash
   const inDenominator = at >= frac.denStart && at <= frac.denExit
   if (dir === 'down' && inNumerator) return frac.denExit
@@ -233,26 +288,101 @@ export function moveMathCursor(source: string, cursor: number, dir: 'left' | 'ri
   if (dir === 'right' && at > frac.slash && at < frac.denStart) return frac.denStart
   if (dir === 'left' && at === frac.end) return frac.slash
   if (dir === 'left' && (at === frac.denStart || (at > frac.slash && at < frac.denStart))) return frac.slash
-  if (dir === 'left') return Math.max(0, at - 1)
-  if (dir === 'right') return Math.min(source.length, at + 1)
-  return at
+  return null
 }
 
-function innermostFraction(source: string, cursor: number): FractionSpan | null {
-  const hits = findFractions(source).filter((frac) => cursor >= frac.numStart && cursor <= frac.end)
-  if (hits.length === 0) return null
-  hits.sort((a, b) => a.end - a.numStart - (b.end - b.numStart) || b.slash - a.slash)
-  return hits[0] ?? null
-}
-
-function findFractions(source: string): FractionSpan[] {
-  const spans: FractionSpan[] = []
+function findExponents(source: string): Slot[] {
+  const spans: Slot[] = []
   for (let i = 0; i < source.length; i += 1) {
-    if (source[i] !== '/' || source[i + 1] === '/' || source[i - 1] === '/') continue
-    const den = denominatorSpan(source, i)
-    spans.push({ slash: i, numStart: numeratorStart(source, i), denStart: den.start, denExit: den.exit, end: den.end })
+    if (source[i] !== '^') continue
+    let j = i + 1
+    while (j < source.length && /\s/.test(source[j] ?? '')) j += 1
+    if (j >= source.length) continue
+    if (source[j] === '(') {
+      const close = matchDelim(source, j, '(', ')')
+      const end = close < 0 ? source.length : close + 1
+      const contentStart = j + 1
+      const closeAt = close < 0 ? source.length : close
+      spans.push({
+        start: i,
+        end,
+        move: (at, dir) => moveWrapped(i, contentStart, closeAt, end, at, dir),
+      })
+      continue
+    }
+    const end = atomEnd(source, j)
+    spans.push({
+      start: i,
+      end,
+      move: (at, dir) => moveWrapped(i, j, end, end, at, dir),
+    })
   }
   return spans
+}
+
+function findSubscripts(source: string): Slot[] {
+  const spans: Slot[] = []
+  for (let i = 0; i < source.length; i += 1) {
+    if (source[i] !== '_') continue
+    let j = i + 1
+    while (j < source.length && /\s/.test(source[j] ?? '')) j += 1
+    if (j >= source.length) continue
+    if (source[j] === '{') {
+      const close = matchDelim(source, j, '{', '}')
+      const end = close < 0 ? source.length : close + 1
+      const closeAt = close < 0 ? source.length : close
+      spans.push({
+        start: i,
+        end,
+        move: (at, dir) => moveWrapped(i, j + 1, closeAt, end, at, dir),
+      })
+      continue
+    }
+    let end = j
+    if (IDENT_START.test(source[j] ?? '')) {
+      while (end < source.length && IDENT_PART.test(source[end] ?? '')) end += 1
+    } else end += 1
+    spans.push({
+      start: i,
+      end,
+      move: (at, dir) => moveWrapped(i, j, end, end, at, dir),
+    })
+  }
+  return spans
+}
+
+/** Right at the opener enters the slot. Right at the closer leaves it. Left at the content returns to the opener. */
+function moveWrapped(opener: number, contentStart: number, closeAt: number, end: number, at: number, dir: 'left' | 'right' | 'up' | 'down'): number | null {
+  if (dir === 'right' && (at === opener || (at > opener && at < contentStart))) return contentStart
+  if (dir === 'right' && closeAt !== end && at === closeAt) return end
+  if (dir === 'left' && at === contentStart) return opener
+  return null
+}
+
+function jumpToken(source: string, at: number, dir: 'left' | 'right'): number {
+  if (dir === 'right') {
+    const run = identRun(source, at)
+    if (run && at < run.end) {
+      if (source[run.end] === '}' && source[run.start - 1] === '{') return Math.min(source.length, run.end + 1)
+      return run.end
+    }
+    return Math.min(source.length, at + 1)
+  }
+  if (at > 0) {
+    const run = identRun(source, at - 1)
+    if (run && at > run.start && at <= run.end) return run.start
+  }
+  return Math.max(0, at - 1)
+}
+
+function identRun(source: string, index: number): { start: number; end: number } | null {
+  if (!IDENT_PART.test(source[index] ?? '')) return null
+  let start = index
+  while (start > 0 && IDENT_PART.test(source[start - 1] ?? '')) start -= 1
+  if (!IDENT_START.test(source[start] ?? '')) return null
+  let end = index + 1
+  while (end < source.length && IDENT_PART.test(source[end] ?? '')) end += 1
+  return { start, end }
 }
 
 function numeratorStart(source: string, slash: number): number {
@@ -322,8 +452,8 @@ function atomEnd(source: string, start: number): number {
   } else if (/[0-9.]/.test(source[i] ?? '')) {
     const matched = /^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i.exec(source.slice(i))
     i += matched ? matched[0].length : 1
-  } else if (/[A-Za-z]/.test(source[i] ?? '')) {
-    while (i < source.length && /[A-Za-z0-9]/.test(source[i] ?? '')) i += 1
+  } else if (IDENT_START.test(source[i] ?? '')) {
+    while (i < source.length && IDENT_PART.test(source[i] ?? '')) i += 1
     if (source[i] === '(') {
       const close = matchDelim(source, i, '(', ')')
       i = close < 0 ? source.length : close + 1
@@ -336,7 +466,7 @@ function atomEnd(source: string, start: number): number {
       const close = matchDelim(source, i, '{', '}')
       i = close < 0 ? source.length : close + 1
     } else {
-      while (i < source.length && /[A-Za-z0-9]/.test(source[i] ?? '')) i += 1
+      while (i < source.length && IDENT_PART.test(source[i] ?? '')) i += 1
     }
     while (source[i] === "'") i += 1
   }

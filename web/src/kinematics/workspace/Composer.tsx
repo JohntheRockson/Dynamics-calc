@@ -4,8 +4,8 @@ import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
 import { MATH_SECTIONS } from './math/catalog'
 import { previewTex } from './math/expr'
-import { latexToSource, moveMathCursor } from './math/inputView'
-import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './math/shortcuts'
+import { closeOpenGroups, latexToSource, moveMathCursor } from './math/inputView'
+import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './math/shortcuts'
 
 function MathLine({ tex }: { tex: string }) {
   return (
@@ -230,7 +230,34 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
                 })
                 return
               }
+              const slotted = insertMathSlot(typed, caret, end, event.key)
+              if (slotted) {
+                event.preventDefault()
+                setQuery(slotted.value)
+                setCursor(slotted.cursor)
+                setHighlight(0)
+                setError(null)
+                const placed = slotted.value
+                const placedCursor = slotted.cursor
+                requestAnimationFrame(() => {
+                  if (input.value === placed) input.setSelectionRange(placedCursor, placedCursor)
+                })
+                return
+              }
               if (liveMath && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+                if (event.key === 'ArrowRight' && caret === end && caret === typed.length) {
+                  const closed = closeOpenGroups(typed)
+                  if (closed !== typed) {
+                    event.preventDefault()
+                    setQuery(closed)
+                    setCursor(closed.length)
+                    const placed = closed
+                    requestAnimationFrame(() => {
+                      if (input.value === placed) input.setSelectionRange(placed.length, placed.length)
+                    })
+                    return
+                  }
+                }
                 event.preventDefault()
                 const dir = event.key === 'ArrowLeft' ? 'left' : event.key === 'ArrowRight' ? 'right' : event.key === 'ArrowUp' ? 'up' : 'down'
                 const next = moveMathCursor(typed, caret, dir)
@@ -306,7 +333,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         <button type="button" className="btn btn-ghost workspace-clear" aria-expanded={menu} onClick={() => setMenu((current) => !current)}>
           Functions
         </button>
-        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y). Up and down move between the top and bottom of a fraction, and left and right move across. A prime dots the previous symbol, and _ writes a subscript. plotpoints, maxrecursion, and exclusions tune a graph. A domain such as (0, 2*pi) searches a nonlinear system.' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
+        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y). Up and down move between the top and bottom of a fraction, and left and right move across a name. ^ and ( open a slot, and Right leaves it. A prime dots the previous symbol, and _ writes a subscript. plotpoints, maxrecursion, and exclusions tune a graph. A domain such as (0, 2*pi) searches a nonlinear system.' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
       </div>
     </form>
   )
