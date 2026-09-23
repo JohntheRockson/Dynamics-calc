@@ -43,8 +43,16 @@ export interface Scene2DWindow {
   yMax: number
 }
 
+export interface Scene2DMarker {
+  x: number
+  y: number
+  label: string
+  color?: string
+}
+
 interface Scene2DProps {
   bodies: Scene2DBody[]
+  markers?: Scene2DMarker[]
   height?: number
   xLabel?: string
   yLabel?: string
@@ -65,7 +73,9 @@ interface TickLabel {
   baseline: CanvasTextBaseline
 }
 
-export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY, includeOrigin = false, viewBox, onViewBox, onReset }: Scene2DProps) {
+const NO_MARKERS: Scene2DMarker[] = []
+
+export function Scene2D({ bodies, markers = NO_MARKERS, height = 260, xLabel = 'x (m)', yLabel = 'y (m)', aspectEqual = false, groundY, includeOrigin = false, viewBox, onViewBox, onReset }: Scene2DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const frameRef = useRef<{ marginL: number; marginT: number; plotW: number; plotH: number } | null>(null)
@@ -131,6 +141,12 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
         if (pt.y < ymin) ymin = pt.y
         if (pt.y > ymax) ymax = pt.y
       }
+    }
+    for (const m of markers) {
+      if (m.x < xmin) xmin = m.x
+      if (m.x > xmax) xmax = m.x
+      if (m.y < ymin) ymin = m.y
+      if (m.y > ymax) ymax = m.y
     }
     if (groundY !== undefined) {
       ymin = Math.min(ymin, groundY)
@@ -370,6 +386,21 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     }
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'
+    for (const m of markers) {
+      const px = sx(m.x)
+      const py = sy(m.y)
+      const color = m.color ?? '#e7edf5'
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(px, py, 4, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#05080c'
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+      ctx.font = '700 13px var(--font-sans), sans-serif'
+      ctx.fillStyle = color
+      ctx.fillText(m.label, px + 7, py - 7)
+    }
     if (probe) {
       const px = sx(probe.x)
       const py = sy(probe.y)
@@ -381,7 +412,7 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
-  }, [bodies, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin, viewBox, probe])
+  }, [bodies, markers, width, height, xLabel, yLabel, aspectEqual, groundY, includeOrigin, viewBox, probe])
 
   useEffect(() => {
     const canvas = canvasRef.current

@@ -68,8 +68,12 @@ fn eval_expr(expr: &Expr, t: f64, degrees: bool) -> Option<f64> {
             "e" => std::f64::consts::E,
             _ => t,
         },
-        Expr::Add { args } => args.iter().try_fold(0.0, |sum, arg| Some(sum + eval_expr(arg, t, degrees)?))?,
-        Expr::Mul { args } => args.iter().try_fold(1.0, |product, arg| Some(product * eval_expr(arg, t, degrees)?))?,
+        Expr::Add { args } => args
+            .iter()
+            .try_fold(0.0, |sum, arg| Some(sum + eval_expr(arg, t, degrees)?))?,
+        Expr::Mul { args } => args.iter().try_fold(1.0, |product, arg| {
+            Some(product * eval_expr(arg, t, degrees)?)
+        })?,
         Expr::Div { num, den } => {
             let den = eval_expr(den, t, degrees)?;
             if den == 0.0 || !den.is_finite() {
@@ -94,13 +98,29 @@ fn eval_expr(expr: &Expr, t: f64, degrees: bool) -> Option<f64> {
         }
         Expr::Group { body } => eval_expr(body, t, degrees)?,
     };
-    if value.is_finite() { Some(value) } else { None }
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn call_number(name: &str, args: &[f64], degrees: bool) -> Option<f64> {
     let x = *args.first()?;
-    let to_rad = |n: f64| if degrees { n * std::f64::consts::PI / 180.0 } else { n };
-    let from_rad = |n: f64| if degrees { n * 180.0 / std::f64::consts::PI } else { n };
+    let to_rad = |n: f64| {
+        if degrees {
+            n * std::f64::consts::PI / 180.0
+        } else {
+            n
+        }
+    };
+    let from_rad = |n: f64| {
+        if degrees {
+            n * 180.0 / std::f64::consts::PI
+        } else {
+            n
+        }
+    };
     let value = match name {
         "sqrt" if args.len() == 1 => x.sqrt(),
         "ln" if args.len() == 1 => x.ln(),
@@ -116,7 +136,11 @@ fn call_number(name: &str, args: &[f64], degrees: bool) -> Option<f64> {
         "atan" if args.len() == 1 => from_rad(x.atan()),
         _ => return None,
     };
-    if value.is_finite() { Some(value) } else { None }
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn sample_at(index: u32, count: u32, min: f64, max: f64) -> f64 {
@@ -162,16 +186,27 @@ fn sample_curve(request: &Request) -> Vec<Node> {
         times.push(sample_at(index, count, request.min, request.max));
     }
     if request.min < 0.0 && request.max > 0.0 {
-        if let Some((index, _)) = times.iter().enumerate().min_by(|left, right| left.1.abs().partial_cmp(&right.1.abs()).unwrap_or(std::cmp::Ordering::Equal)) {
+        if let Some((index, _)) = times.iter().enumerate().min_by(|left, right| {
+            left.1
+                .abs()
+                .partial_cmp(&right.1.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
             if times[index].abs() > 1e-12 {
                 times[index] = 0.0;
-                times.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+                times.sort_by(|left, right| {
+                    left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
         }
     }
     let mut nodes = Vec::with_capacity(times.len());
     for t in times {
-        nodes.push(Node { t, y: at(t), cut: false });
+        nodes.push(Node {
+            t,
+            y: at(t),
+            cut: false,
+        });
     }
     for level in 0..=recursion {
         let last = level == recursion;
@@ -180,12 +215,24 @@ fn sample_curve(request: &Request) -> Vec<Node> {
         for pair in nodes.windows(2) {
             let left = &pair[0];
             let right = &pair[1];
-            next.push(Node { t: left.t, y: left.y, cut: false });
+            next.push(Node {
+                t: left.t,
+                y: left.y,
+                cut: false,
+            });
             let mid_t = (left.t + right.t) / 2.0;
             let too_fine = right.t - left.t < span / 10000.0;
             let mid_y = at(mid_t);
-            if !last && !too_fine && nodes.len() < MAX_NODES && should_split(left.y, mid_y, right.y, y_span) {
-                next.push(Node { t: mid_t, y: mid_y, cut: false });
+            if !last
+                && !too_fine
+                && nodes.len() < MAX_NODES
+                && should_split(left.y, mid_y, right.y, y_span)
+            {
+                next.push(Node {
+                    t: mid_t,
+                    y: mid_y,
+                    cut: false,
+                });
                 grew = true;
             } else if request.exclusions && is_discontinuity(left.y, mid_y, right.y, y_span) {
                 if let Some(node) = next.last_mut() {
@@ -194,7 +241,11 @@ fn sample_curve(request: &Request) -> Vec<Node> {
             }
         }
         if let Some(tail) = nodes.last() {
-            next.push(Node { t: tail.t, y: tail.y, cut: false });
+            next.push(Node {
+                t: tail.t,
+                y: tail.y,
+                cut: false,
+            });
         }
         nodes = next;
         if !grew {
@@ -213,7 +264,9 @@ fn mark_spikes(nodes: &mut [Node], y_span: f64) {
         return;
     }
     for index in 1..nodes.len() - 1 {
-        let (Some(left), Some(mid), Some(right)) = (nodes[index - 1].y, nodes[index].y, nodes[index + 1].y) else {
+        let (Some(left), Some(mid), Some(right)) =
+            (nodes[index - 1].y, nodes[index].y, nodes[index + 1].y)
+        else {
             continue;
         };
         let peak = left.abs().max(right.abs());
@@ -227,7 +280,10 @@ fn mark_spikes(nodes: &mut [Node], y_span: f64) {
 fn sample_json(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let request: Request = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     let nodes = sample_curve(&request);
-    let payload: Vec<(f64, Option<f64>, bool)> = nodes.into_iter().map(|node| (node.t, node.y, node.cut)).collect();
+    let payload: Vec<(f64, Option<f64>, bool)> = nodes
+        .into_iter()
+        .map(|node| (node.t, node.y, node.cut))
+        .collect();
     serde_json::to_vec(&payload).map_err(|error| error.to_string())
 }
 
@@ -250,14 +306,19 @@ pub extern "C" fn plot_input_ptr(len: i32) -> *mut u8 {
 }
 
 /// Sample the curve described by the JSON at `ptr`. Returns the output length, or -1.
+///
+/// # Safety
+///
+/// `ptr` must point to `len` readable bytes, such as the buffer returned by `plot_input_ptr(len)`.
 #[no_mangle]
-pub extern "C" fn plot_sample(ptr: *const u8, len: i32) -> i32 {
+pub unsafe extern "C" fn plot_sample(ptr: *const u8, len: i32) -> i32 {
     if ptr.is_null() || len < 0 {
         return -1;
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
     let output = sample_json(bytes).unwrap_or_else(|error| {
-        serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap_or_else(|_| b"{\"error\":\"plot\"}".to_vec())
+        serde_json::to_vec(&serde_json::json!({ "error": error }))
+            .unwrap_or_else(|_| b"{\"error\":\"plot\"}".to_vec())
     });
     let size = output.len() as i32;
     OUTPUT.with(|cell| *cell.borrow_mut() = output);
@@ -288,13 +349,25 @@ mod tests {
     }
 
     fn request(expr: Expr, points: u32, recursion: u32, exclusions: bool) -> Request {
-        Request { min: -10.0, max: 10.0, points, recursion, exclusions, yspan: 20.0, degrees: false, expr }
+        Request {
+            min: -10.0,
+            max: 10.0,
+            points,
+            recursion,
+            exclusions,
+            yspan: 20.0,
+            degrees: false,
+            expr,
+        }
     }
 
     #[test]
     fn a_smooth_sine_stays_connected() {
         let nodes = sample_curve(&request(
-            Expr::Call { name: "sin".into(), args: vec![Expr::Sym { name: "x".into() }] },
+            Expr::Call {
+                name: "sin".into(),
+                args: vec![Expr::Sym { name: "x".into() }],
+            },
             64,
             3,
             true,
@@ -324,7 +397,10 @@ mod tests {
     #[test]
     fn plot_points_set_the_initial_grid_when_recursion_is_off() {
         let nodes = sample_curve(&request(
-            Expr::Call { name: "sin".into(), args: vec![Expr::Sym { name: "x".into() }] },
+            Expr::Call {
+                name: "sin".into(),
+                args: vec![Expr::Sym { name: "x".into() }],
+            },
             20,
             0,
             false,
