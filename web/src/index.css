@@ -1358,6 +1358,18 @@ button.statement-main:hover {
   gap: 10px;
   min-width: 0;
 }
+.statement-math-line.is-output {
+  justify-content: flex-end;
+}
+.statement-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex-shrink: 0;
+}
 .statement-math-line .eq-inline {
   min-width: 0;
   overflow-x: auto;

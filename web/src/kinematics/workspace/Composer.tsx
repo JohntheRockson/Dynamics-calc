@@ -4,32 +4,13 @@ import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
 import { MATH_SECTIONS } from './math/catalog'
 import { previewTex } from './math/expr'
+import { latexToSource, moveMathCursor } from './math/inputView'
 import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './math/shortcuts'
 
-function MathLine({ tex, value, cursor }: { tex: string; value: string; cursor: number }) {
-  if (cursor >= value.length) {
-    return (
-      <div className="composer-math" aria-hidden="true">
-        <Eq tex={tex} />
-        <span className="math-caret" />
-      </div>
-    )
-  }
-  const left = previewTex(value.slice(0, cursor))
-  const right = previewTex(value.slice(cursor))
-  if (!left || !right) {
-    return (
-      <div className="composer-math" aria-hidden="true">
-        <Eq tex={tex} />
-        <span className="math-caret" />
-      </div>
-    )
-  }
+function MathLine({ tex }: { tex: string }) {
   return (
     <div className="composer-math" aria-hidden="true">
-      <Eq tex={left} />
-      <span className="math-caret" />
-      <Eq tex={right} />
+      <Eq tex={tex} />
     </div>
   )
 }
@@ -64,7 +45,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
   const matches = mathMode ? [] : filterCommands(query)
   const names = pointNames(doc)
   const activeIndex = Math.min(highlight, Math.max(matches.length - 1, 0))
-  const preview = mathMode ? previewTex(query) : null
+  const preview = mathMode ? previewTex(query, cursor) : null
 
   const choose = (next: CommandDef) => {
     setCommand(next)
@@ -84,7 +65,8 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
   }
 
   const commitMath = () => {
-    const message = onMath(query)
+    const live = latexToSource(inputRef.current?.value ?? query)
+    const message = onMath(live)
     if (message) {
       setError(message)
       return
@@ -130,8 +112,9 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
       className="composer"
       onSubmit={(event) => {
         event.preventDefault()
+        const live = latexToSource(inputRef.current?.value ?? query)
         if (command) submit()
-        else if (mathMode || (query.trim() && matches.length === 0)) commitMath()
+        else if (looksLikeMath(live) || (live.trim() && filterCommands(live).length === 0)) commitMath()
         else if (matches[activeIndex]) choose(matches[activeIndex])
       }}
     >
@@ -178,7 +161,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
       ) : (
         <div className="composer-search">
           <div className={preview ? 'composer-field is-math' : 'composer-field'}>
-            {preview && <MathLine tex={preview} value={query} cursor={cursor} />}
+            {preview && <MathLine tex={preview} />}
           <input
             ref={inputRef}
             className="num-input"
@@ -194,10 +177,19 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
             onFocus={() => setOpen(true)}
             onBlur={() => setOpen(false)}
             onChange={(event) => {
-              setQuery(event.target.value)
-              setCursor(event.target.selectionStart ?? event.target.value.length)
+              const raw = event.target.value
+              const ascii = latexToSource(raw)
+              const nextCursor = ascii === raw ? (event.target.selectionStart ?? ascii.length) : ascii.length
+              setQuery(ascii)
+              setCursor(nextCursor)
               setHighlight(0)
               setOpen(true)
+              if (ascii !== raw) {
+                const placed = ascii
+                requestAnimationFrame(() => {
+                  if (event.target.value === placed) event.target.setSelectionRange(placed.length, placed.length)
+                })
+              }
             }}
             onSelect={(event) => setCursor(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
             onKeyUp={(event) => setCursor(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
@@ -206,20 +198,47 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
               const input = event.currentTarget
               const typed = input.value
               const caret = input.selectionStart ?? typed.length
+              const end = input.selectionEnd ?? caret
+              const liveMath = looksLikeMath(typed)
               const expanded = emptyFunctionShortcut(typed, caret, event.key) ?? expandMathShortcut(typed, caret, event.key)
               if (expanded) {
                 event.preventDefault()
-                const input = event.currentTarget
                 setQuery(expanded.value)
                 setCursor(expanded.cursor)
                 setHighlight(0)
                 setError(null)
+                const placed = expanded.value
+                const placedCursor = expanded.cursor
                 requestAnimationFrame(() => {
-                  input.setSelectionRange(expanded.cursor, expanded.cursor)
+                  if (input.value === placed) input.setSelectionRange(placedCursor, placedCursor)
                 })
                 return
               }
-              if (mathMode) {
+              if (event.key === '/' && typed.slice(0, caret).trim() !== '' && looksLikeMath(typed.slice(0, caret))) {
+                event.preventDefault()
+                const left = typed.slice(0, caret)
+                const right = typed.slice(end)
+                const value = `${left}/()${right}`
+                const next = left.length + 2
+                setQuery(value)
+                setCursor(next)
+                setHighlight(0)
+                setError(null)
+                const placed = value
+                requestAnimationFrame(() => {
+                  if (input.value === placed) input.setSelectionRange(next, next)
+                })
+                return
+              }
+              if (liveMath && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+                event.preventDefault()
+                const dir = event.key === 'ArrowLeft' ? 'left' : event.key === 'ArrowRight' ? 'right' : event.key === 'ArrowUp' ? 'up' : 'down'
+                const next = moveMathCursor(typed, caret, dir)
+                setCursor(next)
+                input.setSelectionRange(next, next)
+                return
+              }
+              if (liveMath) {
                 if (event.key === 'Escape') {
                   setOpen(false)
                   setMenu(false)
@@ -287,7 +306,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         <button type="button" className="btn btn-ghost workspace-clear" aria-expanded={menu} onClick={() => setMenu((current) => !current)}>
           Functions
         </button>
-        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? "Enter adds this calculation. / starts f(x), and // starts f(x, y). A prime dots the previous symbol, and _ writes a subscript." : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
+        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y). Up and down move between the top and bottom of a fraction, and left and right move across. A prime dots the previous symbol, and _ writes a subscript.' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
       </div>
     </form>
   )

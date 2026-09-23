@@ -15,7 +15,7 @@ let lastFunctionSlash = 0
 export function looksLikeMath(query: string): boolean {
   const text = query.trim()
   if (!text) return false
-  if (/[0-9=+\-*/^(),'_]/.test(text) || containsGreekLetter(text)) return true
+  if (/[0-9=+\-*/^(),'\\_]/.test(text) || containsGreekLetter(text)) return true
   const match = /^[A-Za-z]+/.exec(text)
   if (!match) return false
   const word = match[0].toLowerCase()
@@ -47,18 +47,23 @@ export function emptyFunctionShortcut(value: string, cursor: number, key: string
 
 /**
  * Turn a finished function name into a call.
- * `sqrt` then space, Tab, or a digit becomes `sqrt(`.
+ * `sqrt` then space or Tab becomes `sqrt()`, with the caret inside.
+ * A digit becomes `sqrt(4)`, still inside the parentheses.
  */
 export function expandMathShortcut(value: string, cursor: number, key: string): { value: string; cursor: number } | null {
-  if (key === '(') return null
-  const typed = key === ' ' || key === 'Tab' || /^[0-9.+\-*/^,]$/.test(key)
+  if (key === '(' || key === '/') return null
+  const typed = key === ' ' || key === 'Tab' || /^[0-9.+\-*^,]$/.test(key)
   if (!typed) return null
   const match = /([A-Za-z]+)$/.exec(value.slice(0, cursor))
   if (!match || !CALLS.has(match[1].toLowerCase())) return null
   const start = cursor - match[1].length
   if (start > 0 && /[A-Za-z0-9]/.test(value[start - 1] ?? '')) return null
   const word = match[1].toLowerCase()
+  const rest = value.slice(cursor)
+  if (key === ' ' || key === 'Tab') {
+    const head = `${value.slice(0, start)}${word}()`
+    return { value: `${head}${rest}`, cursor: head.length - 1 }
+  }
   const head = `${value.slice(0, start)}${word}(`
-  if (key === ' ' || key === 'Tab') return { value: `${head}${value.slice(cursor)}`, cursor: head.length }
-  return { value: `${head}${key}${value.slice(cursor)}`, cursor: head.length + key.length }
+  return { value: `${head}${key})${rest}`, cursor: head.length + key.length }
 }

@@ -117,6 +117,10 @@ function mapChildren(e: Expr, visit: (child: Expr) => Expr): Expr {
       return { type: 'mat', rows: e.rows.map((row) => row.map(visit)) }
     case 'eq':
       return { type: 'eq', left: visit(e.left), right: visit(e.right) }
+    case 'group':
+      return visit(e.body)
+    case 'caret':
+      return e.body ? visit(e.body) : e
     default:
       return e
   }
@@ -247,6 +251,10 @@ function derivative(e: Expr, variable: string, angles: AngleMode, dependent?: { 
       return diffCall(e, variable, angles, dependent, total)
     case 'eq':
       throw new MathError('Differentiate an expression, or use idiff for an equation.')
+    case 'group':
+      return derivative(e.body, variable, angles, dependent, total)
+    case 'caret':
+      return e.body ? derivative(e.body, variable, angles, dependent, total) : ZERO
   }
 }
 
@@ -340,6 +348,7 @@ function hasDot(e: Expr): boolean {
   if (e.type === 'div') return hasDot(e.num) || hasDot(e.den)
   if (e.type === 'pow') return hasDot(e.base) || hasDot(e.exp)
   if (e.type === 'eq') return hasDot(e.left) || hasDot(e.right)
+  if ((e.type === 'group' || e.type === 'caret') && e.body) return hasDot(e.body)
   return false
 }
 
@@ -347,6 +356,7 @@ function constantFactor(e: Expr): boolean {
   if (e.type === 'rat' || e.type === 'dec') return true
   if (e.type === 'sym') return e.name === 'pi' || (e.name === 'e' && !e.sub && !(e.dots && e.dots > 0))
   if (e.type === 'mul') return e.args.every(constantFactor)
+  if ((e.type === 'group' || e.type === 'caret') && e.body) return constantFactor(e.body)
   return false
 }
 
@@ -362,6 +372,7 @@ function undot(e: Expr): Expr | null {
     if (args.some((arg) => arg === null)) return null
     return add(args as Expr[])
   }
+  if ((e.type === 'group' || e.type === 'caret') && e.body) return undot(e.body)
   if (e.type === 'mul') {
     const index = e.args.findIndex((arg) => hasDot(arg))
     if (index < 0) return null
@@ -375,6 +386,7 @@ function undot(e: Expr): Expr | null {
 }
 
 function antiderivative(e: Expr, variable: string, angles: AngleMode): Expr {
+  if (e.type === 'group' || e.type === 'caret') return e.body ? antiderivative(e.body, variable, angles) : ZERO
   if (e.type === 'vec') return { type: 'vec', args: e.args.map((arg) => antiderivative(arg, variable, angles)) }
   if (e.type === 'mat') return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => antiderivative(arg, variable, angles))) }
   if (variable === 't') {

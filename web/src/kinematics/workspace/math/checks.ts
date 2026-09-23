@@ -1,9 +1,10 @@
 import { chooseProbe } from '../../probe'
 import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../document'
 import { evaluateDocument } from '../evaluate'
-import { previewTex } from './expr'
+import { previewTex, validateMath } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
 import { tickMarks } from '../../ticks'
+import { moveMathCursor } from './inputView'
 import { expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './shortcuts'
 
@@ -73,9 +74,9 @@ export function runMathChecks(): string[] {
   expect(withHelix.bodies.some((body) => body.label === 'p(x)'), 'curve joins the 3D figure')
 
   const shortcut = expandMathShortcut('sqrt', 4, ' ')
-  expect(shortcut?.value === 'sqrt(' && shortcut.cursor === 5, `sqrt shortcut: ${shortcut?.value}`)
+  expect(shortcut?.value === 'sqrt()' && shortcut.cursor === 5, `sqrt shortcut: ${shortcut?.value}`)
   const digit = expandMathShortcut('sqrt', 4, '4')
-  expect(digit?.value === 'sqrt(4' && digit.cursor === 6, `sqrt digit: ${digit?.value}`)
+  expect(digit?.value === 'sqrt(4)' && digit.cursor === 6, `sqrt digit: ${digit?.value}`)
   expect(looksLikeMath('sqrt(4)') && looksLikeMath('f(x) = x') && looksLikeMath('e') && !looksLikeMath('point'), 'math detection')
   expect(!looksLikeMath('speed'), 'speed stays a statement')
   expect(find('1/2').length > 0, 'fraction row')
@@ -351,6 +352,35 @@ export function runMathChecks(): string[] {
   expect(Boolean(chain?.text.includes('cos') && chain.text.includes("theta'")), `theta depends on time: ${chain?.text}`)
   const undone = evaluateDocument(appendMath(emptyDocument(), "integrate(theta', t)")).blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(undone?.tex?.includes('\\theta') && undone.tex.includes('C') && !undone.tex.includes('\\dot')), `a dot integrates back: ${undone?.tex}`)
+
+  const decimalPreview = previewTex('32.2')
+  expect(Boolean(decimalPreview?.includes('32.2') && !decimalPreview.includes('161')), `a typed decimal stays a decimal: ${decimalPreview}`)
+  const decimalRow = evaluateDocument(appendMath(emptyDocument(), '32.2')).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(decimalRow?.text.includes('32.2') && !decimalRow.text.includes('161')), `decimal output: ${decimalRow?.text}`)
+  expect(Boolean(previewTex('(1+2)')?.includes('\\left(')), `grouping parentheses stay visible: ${previewTex('(1+2)')}`)
+  const flatFraction = previewTex('15*cos(30)/2*30') ?? ''
+  expect(flatFraction.includes('\\frac') && flatFraction.includes('}{2}') && flatFraction.includes('\\cdot'), `a product after a fraction stays outside: ${flatFraction}`)
+  const heldFraction = previewTex('15*cos(30)/(2*30)') ?? ''
+  expect(/\\frac\{[^}]+\}\{[^}]*2[^}]*30[^}]*\}/.test(heldFraction), `parentheses keep the product in the denominator: ${heldFraction}`)
+  const starPreview = previewTex('15*', 3) ?? ''
+  expect(starPreview.includes('\\cdot') && starPreview.includes('\\rule') && !starPreview.includes('\\square'), `a trailing star keeps a caret: ${starPreview}`)
+  const insideCall = previewTex('cos(30)', 4) ?? ''
+  const cosAt = insideCall.indexOf('\\cos')
+  const parenAt = insideCall.indexOf('\\left(')
+  const ruleAt = insideCall.indexOf('\\rule')
+  const thirtyAt = insideCall.indexOf('30')
+  expect(cosAt >= 0 && parenAt > cosAt && ruleAt > parenAt && thirtyAt > ruleAt, `the caret sits inside the call: ${insideCall}`)
+  expect(validateMath('\\frac{1}{2}') === null, 'a latex fraction parses')
+  const pastedHalf = evaluateDocument(appendMath(emptyDocument(), '\\frac{1}{2}')).blocks.flatMap((block) => block.rows)[0]
+  expect(pastedHalf?.source !== 'error' && Boolean(pastedHalf?.text.includes('1/2')), `latex fraction evaluates: ${pastedHalf?.text}`)
+  const pastedCos = evaluateDocument(appendMath(emptyDocument(), '\\frac{15\\cos\\left(30\\right)}{2 \\cdot 30 + 15\\sin\\left(30\\right)}')).blocks.flatMap((block) => block.rows)[0]
+  expect(pastedCos?.source !== 'error', `latex cosine fraction evaluates: ${pastedCos?.text}`)
+  const slot = '15*cos(30)/(2)'
+  const closing = slot.lastIndexOf(')')
+  expect(moveMathCursor(slot, closing, 'right') === slot.length, 'right leaves the denominator')
+  expect(moveMathCursor(slot, closing, 'up') === slot.indexOf('/'), 'up returns to the numerator')
+  const groupedProduct = evaluateDocument(appendMath(emptyDocument(), '(1+2)*3')).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(groupedProduct?.text.includes('9')), `grouping still multiplies: ${groupedProduct?.text}`)
 
   return errors
 }

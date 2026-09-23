@@ -2,6 +2,7 @@
 // linear or quadratic equations. Trig angles follow the active unit.
 
 import { MATH_FUNCTION_NAMES } from './catalog'
+import { MATH_CARET, latexToSource } from './inputView'
 import { containsAggregate, reduceAlgebra } from './linear'
 
 export type AngleMode = 'rad' | 'deg'
@@ -25,6 +26,8 @@ export type Expr =
   | { type: 'vec'; args: Expr[] }
   | { type: 'mat'; rows: Expr[][] }
   | { type: 'eq'; left: Expr; right: Expr }
+  | { type: 'group'; body: Expr }
+  | { type: 'caret'; place: 'pre' | 'post'; body: Expr | null; split?: number }
 
 export type Binding =
   | { kind: 'expr'; expr: Expr }
@@ -101,7 +104,7 @@ function divRat(a: Rat, b: Rat): Rat {
 }
 
 export function parseMathInput(input: string): MathInput {
-  const raw = autoClose(input.trim())
+  const raw = autoClose(latexToSource(input).trim())
   if (!raw) throw new MathError('Enter a calculation.')
   const fn2 = /^([A-Za-z][A-Za-z0-9]*)\s*\(\s*([A-Za-z][A-Za-z0-9]*)\s*,\s*([A-Za-z][A-Za-z0-9]*)\s*\)\s*=\s*([\s\S]+)$/.exec(raw)
   if (fn2) {
@@ -228,7 +231,7 @@ class Parser {
 
   canStartPrimary(): boolean {
     const c = this.peek()
-    return c === '(' || c === '[' || /[A-Za-z0-9.]/.test(c) || greekCharName(c) !== null
+    return c === '(' || c === '[' || c === '?' || /[A-Za-z0-9.]/.test(c) || greekCharName(c) !== null
   }
 
   startsImplicit(): boolean {
@@ -259,7 +262,13 @@ class Parser {
   /** Primes and underscores bind to the name just typed: theta'^2 is (theta-dot)^2, and e_theta is e with a subscript. */
   parsePostfix(expr: Expr): Expr {
     let current = expr
+    let trailing = false
     for (;;) {
+      if (this.src[this.i] === MATH_CARET) {
+        this.i += 1
+        trailing = true
+        continue
+      }
       if (this.eat("'")) {
         current = this.withPrime(current)
         continue
@@ -270,18 +279,28 @@ class Parser {
       }
       break
     }
-    return current
+    return trailing ? { type: 'caret', place: 'post', body: current } : current
   }
 
   /** A prime after a finished power wraps that power: theta^2' is d/dt of theta^2. */
   consumePrimes(expr: Expr): Expr {
     let current = expr
-    while (this.eat("'")) current = this.withPrime(current)
-    return current
+    let trailing = false
+    for (;;) {
+      if (this.src[this.i] === MATH_CARET) {
+        this.i += 1
+        trailing = true
+        continue
+      }
+      if (!this.eat("'")) break
+      current = this.withPrime(current)
+    }
+    return trailing ? { type: 'caret', place: 'post', body: current } : current
   }
 
   withPrime(expr: Expr): Expr {
-    if (expr.type === 'sym') return { ...expr, dots: (expr.dots ?? 0) + 1 }
+    const target = expr.type === 'group' ? expr.body : expr
+    if (target.type === 'sym') return { ...target, dots: (target.dots ?? 0) + 1 }
     return { type: 'call', name: 'Dt', args: [expr] }
   }
 
@@ -306,9 +325,9 @@ class Parser {
       this.i += 1
       return fromChar
     }
-    if (ch === '?') {
+    if (ch === '?' || ch === MATH_CARET) {
       this.i += 1
-      return '?'
+      return ch === MATH_CARET ? 'CARET' : '?'
     }
     if (!/[A-Za-z0-9]/.test(ch)) throw new MathError('Use _ after a name, for example e_r or theta_0.')
     const start = this.i
@@ -318,6 +337,12 @@ class Parser {
 
   parsePrimary(): Expr {
     const c = this.peek()
+    if (c === MATH_CARET) {
+      this.i += 1
+      this.skip()
+      if (!this.canStartPrimary()) return { type: 'caret', place: 'pre', body: null }
+      return { type: 'caret', place: 'pre', body: this.parsePostfix(this.parsePrimary()) }
+    }
     if (!c) throw new MathError('Could not read that. Check the operators and parentheses.')
     if (/[0-9.]/.test(c)) return this.parseNumber()
     if (greekCharName(c) || /[A-Za-z]/.test(c)) {
@@ -351,7 +376,7 @@ class Parser {
         return { type: 'vec', args }
       }
       if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
-      return inner
+      return { type: 'group', body: inner }
     }
     throw new MathError('Could not read that. Check the operators and parentheses.')
   }
@@ -398,17 +423,64 @@ class Parser {
   }
 
   parseNumber(): Expr {
-    const m = /^(\d+\.?\d*|\.\d+)(?:e([+-]?\d+))?/i.exec(this.src.slice(this.i))
-    if (!m) throw new MathError('Could not read that number.')
-    this.i += m[0].length
-    const exp = m[2] ? Number(m[2]) : 0
-    if (!Number.isFinite(exp)) throw new MathError('Could not read that number.')
-    const [whole, frac = ''] = m[1].split('.')
-    const digits = `${whole}${frac}`.replace(/^0+(?=\d)/, '') || '0'
-    const scale = frac.length - exp
-    if (scale >= 0) return rat(BigInt(digits), 10n ** BigInt(scale))
-    return rat(BigInt(digits) * 10n ** BigInt(-scale), 1n)
+    const s = this.src
+    let i = this.i
+    let raw = ''
+    let split: number | null = null
+    const pullDigits = () => {
+      while (i < s.length && /[0-9]/.test(s[i] ?? '')) {
+        raw += s[i]
+        i += 1
+      }
+    }
+    const pullInteriorCaret = () => {
+      if (split !== null || s[i] !== MATH_CARET) return
+      if (!/[0-9.]/.test(s[i + 1] ?? '')) return
+      split = raw.length
+      i += 1
+    }
+    if (s[i] === '.') {
+      raw = '.'
+      i += 1
+      pullInteriorCaret()
+      pullDigits()
+    } else {
+      pullDigits()
+      pullInteriorCaret()
+      pullDigits()
+      if (s[i] === '.') {
+        raw += '.'
+        i += 1
+        pullInteriorCaret()
+        pullDigits()
+      }
+    }
+    if (!/\d/.test(raw)) throw new MathError('Could not read that number.')
+    if ((s[i] === 'e' || s[i] === 'E') && /[0-9+-]/.test(s[i + 1] ?? '')) {
+      const expStart = i
+      let j = i + 1
+      if (s[j] === '+' || s[j] === '-') j += 1
+      if (/[0-9]/.test(s[j] ?? '')) {
+        while (/[0-9]/.test(s[j] ?? '')) j += 1
+        raw += s.slice(expStart, j)
+        i = j
+      }
+    }
+    this.i = i
+    const expr = literalNumber(raw)
+    if (split === null) return expr
+    return { type: 'caret', place: 'post', body: expr, split }
   }
+}
+
+function literalNumber(literal: string): Expr {
+  if (/[eE.]/.test(literal)) {
+    const value = Number(literal)
+    if (!Number.isFinite(value)) throw new MathError('Could not read that number.')
+    return { type: 'dec', text: literal, value }
+  }
+  const digits = literal.replace(/^0+(?=\d)/, '') || '0'
+  return rat(BigInt(digits), 1n)
 }
 
 /** Turn a half-typed line into something the preview can draw: `x^` and `sqrt(` become placeholders. */
@@ -431,15 +503,18 @@ function cookPreview(input: string): string {
   source = source.replace(/\(\s*\)/g, '(?)')
   source = source.replace(/\[\s*\]/g, '[?]')
   source = source.replace(/\{\s*\}/g, '{?}')
-  if (/[+\-*/^,]$/.test(source)) source += '?'
-  else if (/_$/.test(source)) source += '?'
-  else if (/=\s*$/.test(source)) source += '?'
+  const held = source.endsWith(MATH_CARET)
+  if (!held && /[+\-*/^,]$/.test(source)) source += '?'
+  else if (!held && /_$/.test(source)) source += '?'
+  else if (!held && /=\s*$/.test(source)) source += '?'
   return source
 }
 
-export function previewTex(input: string): string | null {
+export function previewTex(input: string, cursor?: number): string | null {
   try {
-    const parsed = parseMathInput(cookPreview(input))
+    const at = cursor === undefined ? null : Math.max(0, Math.min(cursor, input.length))
+    const marked = at === null ? input : `${input.slice(0, at)}${MATH_CARET}${input.slice(at)}`
+    const parsed = parseMathInput(cookPreview(marked))
     if (parsed.kind === 'fn') {
       const params = parsed.params.join(', ')
       return `${parsed.name}\\left(${params}\\right) = ${tex(parsed.body)}`
@@ -480,6 +555,7 @@ export function normalize(e: Expr, angles: AngleMode = 'rad'): Expr {
 export function present(e: Expr, angles: AngleMode = 'rad'): { tex: string; text: string } {
   const unknown = firstUnknown(e)
   if (unknown) throw new MathError(`${unknown} is not defined.`)
+  if (e.type === 'dec') return { tex: e.text, text: e.text }
   if (e.type === 'sym' && (e.name === 'e' || e.name === 'pi')) {
     const n = evalConst(e, angles)
     if (n === null) return { tex: tex(e), text: plain(e) }
@@ -573,6 +649,10 @@ export function applyEnv(e: Expr, env: MathEnv, depth: number): Expr {
       return { type: 'vec', args: e.args.map((arg) => applyEnv(arg, env, depth)) }
     case 'mat':
       return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => applyEnv(arg, env, depth))) }
+    case 'group':
+      return applyEnv(e.body, env, depth)
+    case 'caret':
+      return e.body ? applyEnv(e.body, env, depth) : e
   }
 }
 
@@ -666,6 +746,10 @@ export function substitute(e: Expr, map: Map<string, Expr>): Expr {
       return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => substitute(arg, map))) }
     case 'eq':
       return { type: 'eq', left: substitute(e.left, map), right: substitute(e.right, map) }
+    case 'group':
+      return substitute(e.body, map)
+    case 'caret':
+      return e.body ? substitute(e.body, map) : e
   }
 }
 
@@ -731,6 +815,10 @@ function fold(e: Expr, angles: AngleMode = 'rad'): Expr {
       return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => fold(arg, angles))) }
     case 'eq':
       return { type: 'eq', left: fold(e.left, angles), right: fold(e.right, angles) }
+    case 'group':
+      return fold(e.body, angles)
+    case 'caret':
+      return e.body ? fold(e.body, angles) : e
   }
 }
 
@@ -979,6 +1067,10 @@ function toSum(e: Expr): Term[] {
     case 'vec':
     case 'mat':
       return [{ coeff: ONE, atoms: [atomOf(e)] }]
+    case 'group':
+      return toSum(e.body)
+    case 'caret':
+      return e.body ? toSum(e.body) : []
   }
 }
 
@@ -1131,6 +1223,7 @@ function isNegative(e: Expr): boolean {
   if (e.type === 'rat') return e.n < 0n
   if (e.type === 'mul' && e.args[0]?.type === 'rat' && e.args[0].n < 0n) return true
   if (e.type === 'div') return isNegative(e.num)
+  if ((e.type === 'group' || e.type === 'caret') && e.body) return isNegative(e.body)
   return false
 }
 
@@ -1177,6 +1270,7 @@ function depends(e: Expr, variable: string): boolean {
   if (e.type === 'pow') return depends(e.base, variable) || depends(e.exp, variable)
   if (e.type === 'call') return e.args.some((arg) => depends(arg, variable))
   if (e.type === 'eq') return depends(e.left, variable) || depends(e.right, variable)
+  if ((e.type === 'group' || e.type === 'caret') && e.body) return depends(e.body, variable)
   return false
 }
 
@@ -1206,6 +1300,7 @@ function keepSymbolic(e: Expr): boolean {
   if (e.type === 'vec') return e.args.some(keepSymbolic)
   if (e.type === 'mat') return e.rows.some((row) => row.some(keepSymbolic))
   if (e.type === 'eq') return keepSymbolic(e.left) || keepSymbolic(e.right)
+  if ((e.type === 'group' || e.type === 'caret') && e.body) return keepSymbolic(e.body)
   return false
 }
 
@@ -1251,6 +1346,12 @@ function walk(e: Expr, visit: (node: Expr) => void): void {
     case 'eq':
       walk(e.left, visit)
       walk(e.right, visit)
+      break
+    case 'group':
+      walk(e.body, visit)
+      break
+    case 'caret':
+      if (e.body) walk(e.body, visit)
       break
     default:
       break
@@ -1299,6 +1400,10 @@ function evalConst(e: Expr, angles: AngleMode = 'rad'): number | null {
     case 'mat':
     case 'eq':
       return null
+    case 'group':
+      return evalConst(e.body, angles)
+    case 'caret':
+      return e.body ? evalConst(e.body, angles) : null
   }
 }
 
@@ -1375,7 +1480,7 @@ function texPrec(e: Expr): [string, number] {
     case 'mul':
       return [texMul(e.args), P_MUL]
     case 'div':
-      return [`\\frac{${texAt(e.num, 0)}}{${texAt(e.den, 0)}}`, P_ATOM]
+      return [`\\frac{${texAt(peelGroup(e.num), 0)}}{${texAt(peelGroup(e.den), 0)}}`, P_ATOM]
     case 'pow':
       if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`\\sqrt{${texAt(e.base, 0)}}`, P_ATOM]
       return [`${texAt(e.base, P_POW + 1)}^{${texAt(e.exp, 0)}}`, P_POW]
@@ -1387,7 +1492,28 @@ function texPrec(e: Expr): [string, number] {
       return [`\\begin{bmatrix}${e.rows.map((row) => row.map((arg) => texAt(arg, 0)).join(' & ')).join(' \\\\ ')}\\end{bmatrix}`, P_ATOM]
     case 'eq':
       return [`${texAt(e.left, 0)} = ${texAt(e.right, 0)}`, 0]
+    case 'group':
+      return [`\\left(${texAt(e.body, 0)}\\right)`, P_ATOM]
+    case 'caret':
+      return [texCaret(e), P_ATOM]
   }
+}
+
+function peelGroup(e: Expr): Expr {
+  return e.type === 'group' ? e.body : e
+}
+
+const CARET_TEX = '\\textcolor{#d6dee8}{\\rule{1.4px}{1.05em}}'
+
+function texCaret(e: Extract<Expr, { type: 'caret' }>): string {
+  if (!e.body) return CARET_TEX
+  if (e.split !== undefined && (e.body.type === 'dec' || (e.body.type === 'rat' && e.body.d === 1n))) {
+    const text = e.body.type === 'dec' ? e.body.text : e.body.n.toString()
+    const at = Math.max(0, Math.min(e.split, text.length))
+    return `${text.slice(0, at)}${CARET_TEX}${text.slice(at)}`
+  }
+  const inner = texAt(e.body, 0)
+  return e.place === 'pre' ? `${CARET_TEX}${inner}` : `${inner}${CARET_TEX}`
 }
 
 const GREEK: Record<string, string> = {
@@ -1475,6 +1601,7 @@ function subscriptName(body: string): string {
 
 function texSymbol(name: string): string {
   if (name === '?') return '\\square'
+  if (name === 'CARET') return CARET_TEX
   return GREEK[name] ?? name
 }
 
@@ -1523,8 +1650,10 @@ function texMul(args: Expr[]): string {
     .map((arg, index) => {
       const piece = texAt(arg, P_MUL)
       if (index === 0) return piece
+      if (arg.type === 'caret' && arg.body === null) return ` \\cdot ${piece}`
       const prev = args[index - 1]
-      const juxtapose = (prev.type === 'rat' || prev.type === 'dec') && (arg.type === 'sym' || arg.type === 'call' || arg.type === 'pow')
+      const prevCore = prev.type === 'caret' && prev.body ? prev.body : prev
+      const juxtapose = (prevCore.type === 'rat' || prevCore.type === 'dec') && (arg.type === 'sym' || arg.type === 'call' || arg.type === 'pow' || arg.type === 'group')
       return juxtapose ? piece : ` \\cdot ${piece}`
     })
     .join('')
@@ -1575,7 +1704,7 @@ function plainPrec(e: Expr): [string, number] {
     case 'mul':
       return [plainMul(e.args), P_MUL]
     case 'div':
-      return [`${plainAt(e.num, P_MUL)}/${plainAt(e.den, P_MUL)}`, P_MUL]
+      return [`${plainAt(peelGroup(e.num), P_MUL)}/${plainAt(peelGroup(e.den), P_MUL)}`, P_MUL]
     case 'pow':
       if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`sqrt(${plainAt(e.base, 0)})`, P_ATOM]
       return [`${plainAt(e.base, P_POW + 1)}^${plainAt(e.exp, P_POW)}`, P_POW]
@@ -1588,6 +1717,10 @@ function plainPrec(e: Expr): [string, number] {
       return [`[${e.rows.map((row) => `[${row.map((arg) => plainAt(arg, 0)).join(', ')}]`).join(', ')}]`, P_ATOM]
     case 'eq':
       return [`${plainAt(e.left, 0)} = ${plainAt(e.right, 0)}`, 0]
+    case 'group':
+      return [`(${plainAt(e.body, 0)})`, P_ATOM]
+    case 'caret':
+      return [e.body ? plainAt(e.body, 0) : '', P_ATOM]
   }
 }
 
@@ -1643,5 +1776,9 @@ function exprKey(e: Expr): string {
       return `M(${e.rows.map((row) => row.map(exprKey).join(',')).join(';')})`
     case 'eq':
       return `q(${exprKey(e.left)}=${exprKey(e.right)})`
+    case 'group':
+      return exprKey(e.body)
+    case 'caret':
+      return e.body ? exprKey(e.body) : 'caret'
   }
 }

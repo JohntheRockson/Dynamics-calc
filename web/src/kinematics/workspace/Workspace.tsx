@@ -60,6 +60,22 @@ function copyLatexFallback(value: string): void {
   area.remove()
 }
 
+function CopyIcon({ copied }: { copied: boolean }) {
+  if (copied) {
+    return (
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <path d="M3.2 8.2 6.4 11.6 12.8 4.2" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+      <rect x="5.2" y="1.6" width="8.2" height="9.4" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <rect x="2.4" y="4.6" width="8.2" height="9.4" rx="1.2" fill="var(--panel)" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
 function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisible, onToggleDecimal, onTogglePlane, showRemove }: { row: RowModel; open: boolean; decimal: boolean; plane: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; onTogglePlane: () => void; showRemove: boolean }) {
   const [copied, setCopied] = useState<'input' | 'output' | null>(null)
   const typed = row.input
@@ -106,21 +122,16 @@ function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisibl
           <div className="statement-math-line">
             <Eq tex={inputTex} />
             <span className="statement-copies">
-              <button type="button" className="btn btn-ghost statement-eye" onClick={() => copy(inputTex, 'input')}>
-                {copied === 'input' ? 'Copied' : 'Copy input'}
+              <button type="button" className="btn btn-ghost statement-copy" aria-label={copied === 'input' ? 'Copied' : 'Copy input'} onClick={() => copy(inputTex, 'input')}>
+                <CopyIcon copied={copied === 'input'} />
               </button>
-              {same && shownTex && (
-                <button type="button" className="btn btn-ghost statement-eye" onClick={() => copy(shownTex, 'output')}>
-                  {copied === 'output' ? 'Copied' : 'Copy output'}
-                </button>
-              )}
             </span>
           </div>
           {shownTex && !same && (
-            <div className="statement-math-line">
-              <Eq tex={shownTex} />
-              <button type="button" className="btn btn-ghost statement-eye" onClick={() => copy(shownTex, 'output')}>
-                {copied === 'output' ? 'Copied' : 'Copy output'}
+            <div className="statement-math-line is-output">
+              <Eq tex={`=\\;${shownTex}`} />
+              <button type="button" className="btn btn-ghost statement-copy" aria-label={copied === 'output' ? 'Copied' : 'Copy output'} onClick={() => copy(shownTex, 'output')}>
+                <CopyIcon copied={copied === 'output'} />
               </button>
             </div>
           )}

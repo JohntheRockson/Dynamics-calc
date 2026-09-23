@@ -17,7 +17,7 @@ export function containsAggregate(expr: Expr): boolean {
     else if (node.type === 'div' || node.type === 'pow' || node.type === 'eq') {
       visit(node.type === 'eq' ? node.left : node.type === 'div' ? node.num : node.base)
       visit(node.type === 'eq' ? node.right : node.type === 'div' ? node.den : node.exp)
-    }
+    } else if ((node.type === 'group' || node.type === 'caret') && node.body) visit(node.body)
   }
   visit(expr)
   return found
