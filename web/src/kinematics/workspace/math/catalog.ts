@@ -55,6 +55,7 @@ export const MATH_SECTIONS: MathSection[] = [
     title: 'Calculus',
     items: [
       { name: 'Derivative', template: 'diff(x^2, x)', blurb: 'Derivative with respect to a variable' },
+      { name: 'Time derivative', template: "diff(r*theta'*e_theta, t)", blurb: 'Every symbol depends on time. A prime writes a dot.' },
       { name: 'Second derivative', template: 'diff(x^3, x, 2)', blurb: 'Differentiate more than once' },
       { name: 'Derivative at a point', template: 'diff(x^2, x, 1, 3)', blurb: 'diff(expr, x, order, point)' },
       { name: 'Integral', template: 'integrate(x^2, x)', blurb: 'Indefinite integral' },
@@ -86,6 +87,7 @@ export const MATH_FUNCTION_NAMES = [
   'zeros',
   'solve',
   'diff',
+  'Dt',
   'integrate',
   'limit',
   'sum',

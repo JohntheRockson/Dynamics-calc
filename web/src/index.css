@@ -1344,34 +1344,76 @@ button.statement-main:hover {
 .composer-field {
   position: relative;
 }
-.composer-field.is-math {
+.statement-stack {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 2px 6px;
+}
+.statement-math-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.statement-math-line .eq-inline {
+  min-width: 0;
+  overflow-x: auto;
+}
+.statement-copies {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+.composer-field.is-math {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 46px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 6px 10px 2px;
+  padding: 8px 10px;
 }
 .composer-field.is-math:focus-within {
   border-color: var(--accent-dim);
 }
 .composer-field.is-math .num-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  color: transparent;
+  caret-color: transparent;
   background: transparent;
   border-color: transparent;
-  min-height: 32px;
-  padding-left: 0;
-  padding-right: 0;
-  color: var(--text);
-  caret-color: var(--text);
 }
-.composer-preview {
-  overflow: hidden;
+.composer-math {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  min-height: 1.35em;
   pointer-events: none;
   line-height: 1.2;
 }
-.composer-preview .katex {
+.composer-math .katex {
   font-size: 1.2em;
+}
+.math-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 1.15em;
+  margin-left: 1px;
+  background: var(--text);
+  animation: math-caret-blink 1.05s steps(1) infinite;
+}
+@keyframes math-caret-blink {
+  50% { opacity: 0; }
 }
 .scene3d-labels {
   position: absolute;

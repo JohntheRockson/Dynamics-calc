@@ -58,7 +58,7 @@ export interface CasVisual {
 
 const ZERO: Expr = { type: 'rat', n: 0n, d: 1n }
 const ONE: Expr = { type: 'rat', n: 1n, d: 1n }
-const REDUCIBLE = new Set(['diff', 'integrate', 'limit', 'sum', 'prod', 'expand', 'decimal', 'fraction', 'gcd', 'lcm', 'mod', 'rem', 'tangent', 'normal', 'series'])
+const REDUCIBLE = new Set(['diff', 'integrate', 'limit', 'sum', 'prod', 'expand', 'decimal', 'fraction', 'gcd', 'lcm', 'mod', 'rem', 'tangent', 'normal', 'series', 'Dt'])
 
 function R(n: bigint, d = 1n): Expr {
   return { type: 'rat', n, d }
@@ -164,7 +164,7 @@ function isZero(e: Expr, angles: AngleMode): boolean {
 }
 
 function symbolOf(e: Expr, fallback: string): string {
-  if (e.type !== 'sym' || e.name === 'pi' || e.name === 'e') throw new MathError(`Use a variable such as ${fallback}.`)
+  if (e.type !== 'sym' || e.sub || (e.dots ?? 0) > 0 || e.name === 'pi' || e.name === 'e') throw new MathError(`Use a variable such as ${fallback}.`)
   return e.name
 }
 
@@ -215,45 +215,57 @@ function angleOut(angles: AngleMode): Expr {
   return angles === 'deg' ? div(R(180n), S('pi')) : ONE
 }
 
-function derivative(e: Expr, variable: string, angles: AngleMode, dependent?: { name: string; symbol: string }): Expr {
+function derivative(e: Expr, variable: string, angles: AngleMode, dependent?: { name: string; symbol: string }, total = false): Expr {
   switch (e.type) {
     case 'rat':
     case 'dec':
       return ZERO
     case 'sym':
-      if (e.name === variable) return ONE
-      if (dependent && e.name === dependent.name) return S(dependent.symbol)
-      return ZERO
+      return derivativeSymbol(e, variable, dependent, total)
     case 'vec':
-      return { type: 'vec', args: e.args.map((arg) => derivative(arg, variable, angles, dependent)) }
+      return { type: 'vec', args: e.args.map((arg) => derivative(arg, variable, angles, dependent, total)) }
     case 'mat':
-      return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => derivative(arg, variable, angles, dependent))) }
+      return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => derivative(arg, variable, angles, dependent, total))) }
     case 'add':
-      return add(e.args.map((arg) => derivative(arg, variable, angles, dependent)))
+      return add(e.args.map((arg) => derivative(arg, variable, angles, dependent, total)))
     case 'mul': {
       const parts: Expr[] = []
       for (let index = 0; index < e.args.length; index += 1) {
-        parts.push(mul(e.args.map((item, itemIndex) => (itemIndex === index ? derivative(item, variable, angles, dependent) : item))))
+        parts.push(mul(e.args.map((item, itemIndex) => (itemIndex === index ? derivative(item, variable, angles, dependent, total) : item))))
       }
       return add(parts)
     }
     case 'div': {
-      const num = derivative(e.num, variable, angles, dependent)
-      const den = derivative(e.den, variable, angles, dependent)
+      const num = derivative(e.num, variable, angles, dependent, total)
+      const den = derivative(e.den, variable, angles, dependent, total)
       return div(sub(mul([num, e.den]), mul([e.num, den])), pow(e.den, R(2n)))
     }
     case 'pow':
-      return diffPow(e, variable, angles, dependent)
+      return diffPow(e, variable, angles, dependent, total)
     case 'call':
-      return diffCall(e, variable, angles, dependent)
+      if (total && e.name === 'Dt' && e.args.length === 1) return derivative(derivative(e.args[0], 't', angles, undefined, true), variable, angles, dependent, true)
+      return diffCall(e, variable, angles, dependent, total)
     case 'eq':
       throw new MathError('Differentiate an expression, or use idiff for an equation.')
   }
 }
 
-function diffPow(e: Extract<Expr, { type: 'pow' }>, variable: string, angles: AngleMode, dependent?: { name: string; symbol: string }): Expr {
-  const base = derivative(e.base, variable, angles, dependent)
-  const exp = derivative(e.exp, variable, angles, dependent)
+function derivativeSymbol(e: Extract<Expr, { type: 'sym' }>, variable: string, dependent: { name: string; symbol: string } | undefined, total: boolean): Expr {
+  const marked = Boolean(e.sub) || (e.dots ?? 0) > 0
+  if (!marked && e.name === variable) return ONE
+  if (total) {
+    if (e.name === 'pi' || (e.name === 'e' && !e.sub)) return ZERO
+    if (!marked && e.name === 't') return ONE
+    if (e.name === 't') return ZERO
+    return { type: 'sym', name: e.name, sub: e.sub, dots: (e.dots ?? 0) + 1 }
+  }
+  if (dependent && !marked && e.name === dependent.name) return S(dependent.symbol)
+  return ZERO
+}
+
+function diffPow(e: Extract<Expr, { type: 'pow' }>, variable: string, angles: AngleMode, dependent: { name: string; symbol: string } | undefined, total: boolean): Expr {
+  const base = derivative(e.base, variable, angles, dependent, total)
+  const exp = derivative(e.exp, variable, angles, dependent, total)
   const expConstant = isZero(exp, angles)
   const baseConstant = isZero(base, angles)
   if (expConstant && baseConstant) return ZERO
@@ -262,10 +274,10 @@ function diffPow(e: Extract<Expr, { type: 'pow' }>, variable: string, angles: An
   return mul([e, add([mul([exp, call('ln', [e.base])]), div(mul([e.exp, base]), e.base)])])
 }
 
-function diffCall(e: Extract<Expr, { type: 'call' }>, variable: string, angles: AngleMode, dependent?: { name: string; symbol: string }): Expr {
+function diffCall(e: Extract<Expr, { type: 'call' }>, variable: string, angles: AngleMode, dependent: { name: string; symbol: string } | undefined, total: boolean): Expr {
   if (e.args.length === 0) throw new MathError(`Cannot differentiate ${e.name} yet.`)
   const arg = e.args[0]
-  const inner = derivative(arg, variable, angles, dependent)
+  const inner = derivative(arg, variable, angles, dependent, total)
   const scale = angleIn(angles)
   const chain = mul([inner, scale])
   const inv = mul([inner, angleOut(angles)])
@@ -313,14 +325,63 @@ function diffValue(args: Expr[], angles: AngleMode): { value: Expr; variable: st
     }
   }
   let value = args[0]
-  for (let i = 0; i < order; i += 1) value = derivative(value, variable, angles)
+  const total = variable === 't'
+  for (let i = 0; i < order; i += 1) value = derivative(value, variable, angles, undefined, total)
   if (at) value = substitute(value, new Map([[variable, at]]))
   return { value, variable, at }
+}
+
+function hasDot(e: Expr): boolean {
+  if (e.type === 'sym') return (e.dots ?? 0) > 0
+  if (e.type === 'call' && e.name === 'Dt') return true
+  if (e.type === 'add' || e.type === 'mul' || e.type === 'call') return e.args.some(hasDot)
+  if (e.type === 'vec') return e.args.some(hasDot)
+  if (e.type === 'mat') return e.rows.some((row) => row.some(hasDot))
+  if (e.type === 'div') return hasDot(e.num) || hasDot(e.den)
+  if (e.type === 'pow') return hasDot(e.base) || hasDot(e.exp)
+  if (e.type === 'eq') return hasDot(e.left) || hasDot(e.right)
+  return false
+}
+
+function constantFactor(e: Expr): boolean {
+  if (e.type === 'rat' || e.type === 'dec') return true
+  if (e.type === 'sym') return e.name === 'pi' || (e.name === 'e' && !e.sub && !(e.dots && e.dots > 0))
+  if (e.type === 'mul') return e.args.every(constantFactor)
+  return false
+}
+
+/** Undo one time dot. A number times a dotted symbol integrates; two dotted factors do not. */
+function undot(e: Expr): Expr | null {
+  if (e.type === 'sym' && (e.dots ?? 0) > 0) {
+    const dots = (e.dots ?? 0) - 1
+    return dots > 0 ? { ...e, dots } : { type: 'sym', name: e.name, sub: e.sub }
+  }
+  if (e.type === 'call' && e.name === 'Dt' && e.args.length === 1) return e.args[0]
+  if (e.type === 'add') {
+    const args = e.args.map(undot)
+    if (args.some((arg) => arg === null)) return null
+    return add(args as Expr[])
+  }
+  if (e.type === 'mul') {
+    const index = e.args.findIndex((arg) => hasDot(arg))
+    if (index < 0) return null
+    if (e.args.some((arg, i) => i !== index && hasDot(arg))) return null
+    if (e.args.some((arg, i) => i !== index && !constantFactor(arg))) return null
+    const next = undot(e.args[index])
+    if (!next) return null
+    return mul(e.args.map((arg, i) => (i === index ? next : arg)))
+  }
+  return null
 }
 
 function antiderivative(e: Expr, variable: string, angles: AngleMode): Expr {
   if (e.type === 'vec') return { type: 'vec', args: e.args.map((arg) => antiderivative(arg, variable, angles)) }
   if (e.type === 'mat') return { type: 'mat', rows: e.rows.map((row) => row.map((arg) => antiderivative(arg, variable, angles))) }
+  if (variable === 't') {
+    const undone = undot(e)
+    if (undone) return undone
+    if (hasDot(e)) throw new MathError('Cannot integrate that yet.')
+  }
   if (!freeSymbols(e).includes(variable)) return mul([e, S(variable)])
   if (e.type === 'add') return add(e.args.map((arg) => antiderivative(arg, variable, angles)))
   if (e.type === 'mul') {
@@ -850,6 +911,9 @@ export function rewriteAll(e: Expr, angles: AngleMode, depth = 0): Expr {
 
 function reduceNamed(name: string, args: Expr[], angles: AngleMode): Expr {
   switch (name) {
+    case 'Dt':
+      if (args.length !== 1) throw new MathError('Use Dt(expr) for a time derivative.')
+      return derivative(args[0], 't', angles, undefined, true)
     case 'diff':
       return diffValue(args, angles).value
     case 'integrate': {

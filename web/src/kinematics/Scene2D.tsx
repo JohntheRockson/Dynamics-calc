@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import { Eq } from './Eq'
 import { chooseProbe, type ProbePoint } from './probe'
 import { formatTick, niceStep, tickMarks } from './ticks'
+import { containsGreekLetter, isGreekName, previewTex } from './workspace/math/expr'
+
+function LegendLabel({ label }: { label: string }) {
+  if (/\s/.test(label)) return label
+  if (!/[\\^_=()+\-*/']/.test(label) && !isGreekName(label) && !containsGreekLetter(label)) return label
+  const tex = previewTex(label)
+  if (!tex) return label
+  return <Eq tex={tex} />
+}
 
 export interface Scene2DVector {
   vx: number
@@ -477,7 +487,7 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
         {bodies.filter((body) => !body.hideStroke).map((b, index) => (
           <span className="item" key={`${b.label}-${index}`}>
             <span className="swatch" style={{ background: b.color, opacity: b.dashed ? 0.7 : 1 }} />
-            {b.label}
+            <LegendLabel label={b.label} />
           </span>
         ))}
       </div>

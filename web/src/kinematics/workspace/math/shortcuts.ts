@@ -1,7 +1,13 @@
+import { COMMANDS } from '../commands'
 import { MATH_FUNCTION_NAMES } from './catalog'
+import { containsGreekLetter, isGreekName, isGreekPrefix } from './expr'
 
 const CALLS = new Set(['sqrt', 'ln', 'log', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan', ...MATH_FUNCTION_NAMES])
 const MATH_WORDS = new Set([...CALLS, 'pi', 'e'])
+
+function commandPrefix(word: string): boolean {
+  return COMMANDS.some((command) => [command.title, ...command.aliases].some((name) => name.toLowerCase().startsWith(word)))
+}
 
 let lastFunctionSlash = 0
 
@@ -9,13 +15,15 @@ let lastFunctionSlash = 0
 export function looksLikeMath(query: string): boolean {
   const text = query.trim()
   if (!text) return false
-  if (/[0-9=+\-*/^(),π]/.test(text)) return true
+  if (/[0-9=+\-*/^(),'_]/.test(text) || containsGreekLetter(text)) return true
   const match = /^[A-Za-z]+/.exec(text)
   if (!match) return false
   const word = match[0].toLowerCase()
   const rest = text.slice(match[0].length)
-  if (MATH_WORDS.has(word) && (rest === '' || /^[^A-Za-z]/.test(rest))) return true
+  const boundary = rest === '' || /^[^A-Za-z]/.test(rest)
+  if (boundary && (MATH_WORDS.has(word) || isGreekName(word))) return true
   if (/^[A-Za-z][A-Za-z0-9]*\s*\(/.test(text)) return true
+  if (boundary && word.length >= 2 && isGreekPrefix(word) && !commandPrefix(word)) return true
   return false
 }
 

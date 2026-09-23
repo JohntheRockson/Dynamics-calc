@@ -16,7 +16,7 @@ export class MathError extends Error {
 export type Expr =
   | { type: 'rat'; n: bigint; d: bigint }
   | { type: 'dec'; text: string; value: number }
-  | { type: 'sym'; name: string }
+  | { type: 'sym'; name: string; sub?: string; dots?: number }
   | { type: 'add'; args: Expr[] }
   | { type: 'mul'; args: Expr[] }
   | { type: 'div'; num: Expr; den: Expr }
@@ -33,7 +33,7 @@ export type Binding =
 export type MathEnv = Map<string, Binding>
 
 type Atom =
-  | { kind: 'var'; name: string; exp: number }
+  | { kind: 'var'; name: string; sub?: string; dots?: number; exp: number }
   | { kind: 'expr'; expr: Expr; exp: number }
 
 interface Term {
@@ -140,8 +140,8 @@ function parseSolve(expr: Expr, raw: string): MathInput {
   if (expr.type !== 'call') throw new MathError('Use solve(equation) or solve(equation, x).')
   if (expr.args.length >= 2 && expr.args.every((arg) => arg.type === 'eq')) return { kind: 'system', equations: expr.args, raw }
   if (expr.args.length === 1) return { kind: 'solve', equation: expr.args[0], variable: null, raw }
-  if (expr.args.length === 2 && expr.args[1].type === 'sym') {
-    if (expr.args[1].name === 'pi' || expr.args[1].name === 'e') throw new MathError(`${expr.args[1].name} is a constant.`)
+    if (expr.args.length === 2 && expr.args[1].type === 'sym') {
+    if (bareConstant(expr.args[1])) throw new MathError(`${expr.args[1].name} is a constant.`)
     return { kind: 'solve', equation: expr.args[0], variable: expr.args[1].name, raw }
   }
   throw new MathError('Use solve(equation), solve(equation, x), or solve(eq1, eq2).')
@@ -228,12 +228,12 @@ class Parser {
 
   canStartPrimary(): boolean {
     const c = this.peek()
-    return c === '(' || c === '[' || /[A-Za-zπ0-9.]/.test(c)
+    return c === '(' || c === '[' || /[A-Za-z0-9.]/.test(c) || greekCharName(c) !== null
   }
 
   startsImplicit(): boolean {
     const c = this.peek()
-    if (c === '(' || c === '[' || /[A-Za-zπ]/.test(c)) return true
+    if (c === '(' || c === '[' || /[A-Za-z]/.test(c) || greekCharName(c) !== null) return true
     if (/[0-9.]/.test(c)) return this.prevNonSpace() === ')'
     return false
   }
@@ -247,25 +247,81 @@ class Parser {
   parseUnary(): Expr {
     if (this.eat('+')) return this.parseUnary()
     if (this.eat('-')) return { type: 'mul', args: [rat(-1n), this.parseUnary()] }
-    return this.parsePower()
+    return this.consumePrimes(this.parsePower())
   }
 
   parsePower(): Expr {
-    const base = this.parsePrimary()
+    const base = this.parsePostfix(this.parsePrimary())
     if (!this.eat('^')) return base
     return { type: 'pow', base, exp: this.parseUnary() }
+  }
+
+  /** Primes and underscores bind to the name just typed: theta'^2 is (theta-dot)^2, and e_theta is e with a subscript. */
+  parsePostfix(expr: Expr): Expr {
+    let current = expr
+    for (;;) {
+      if (this.eat("'")) {
+        current = this.withPrime(current)
+        continue
+      }
+      if (this.peek() === '_') {
+        current = this.withSubscript(current, this.parseSubscript())
+        continue
+      }
+      break
+    }
+    return current
+  }
+
+  /** A prime after a finished power wraps that power: theta^2' is d/dt of theta^2. */
+  consumePrimes(expr: Expr): Expr {
+    let current = expr
+    while (this.eat("'")) current = this.withPrime(current)
+    return current
+  }
+
+  withPrime(expr: Expr): Expr {
+    if (expr.type === 'sym') return { ...expr, dots: (expr.dots ?? 0) + 1 }
+    return { type: 'call', name: 'Dt', args: [expr] }
+  }
+
+  withSubscript(expr: Expr, sub: string): Expr {
+    if (expr.type !== 'sym') throw new MathError('Use _ after a name, for example e_r or theta_0.')
+    if (expr.sub) throw new MathError('That name already has a subscript.')
+    return { ...expr, sub }
+  }
+
+  parseSubscript(): string {
+    if (!this.eat('_')) throw new MathError('Use _ after a name, for example e_r or theta_0.')
+    if (this.eat('{')) {
+      const start = this.i
+      while (this.i < this.src.length && this.src[this.i] !== '}') this.i += 1
+      const body = this.src.slice(start, this.i).trim()
+      if (!this.eat('}')) throw new MathError('Close the subscript with }.')
+      return subscriptName(body)
+    }
+    const ch = this.src[this.i] ?? ''
+    const fromChar = greekCharName(ch)
+    if (fromChar) {
+      this.i += 1
+      return fromChar
+    }
+    if (ch === '?') {
+      this.i += 1
+      return '?'
+    }
+    if (!/[A-Za-z0-9]/.test(ch)) throw new MathError('Use _ after a name, for example e_r or theta_0.')
+    const start = this.i
+    while (this.i < this.src.length && /[A-Za-z0-9]/.test(this.src[this.i] ?? '')) this.i += 1
+    return subscriptName(this.src.slice(start, this.i))
   }
 
   parsePrimary(): Expr {
     const c = this.peek()
     if (!c) throw new MathError('Could not read that. Check the operators and parentheses.')
     if (/[0-9.]/.test(c)) return this.parseNumber()
-    if (c === 'π') {
-      this.i += 1
-      return { type: 'sym', name: 'pi' }
-    }
-      if (/[A-Za-z]/.test(c)) {
-      const name = this.parseIdent()
+    if (greekCharName(c) || /[A-Za-z]/.test(c)) {
+      const ident = this.parseIdent()
       if (this.peek() === '(') {
         this.i += 1
         const args: Expr[] = []
@@ -274,11 +330,11 @@ class Parser {
           while (this.eat(',')) args.push(this.parseEquation())
         }
         if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
-        checkCall(name, args)
-        return { type: 'call', name, args }
+        checkCall(ident.name, args)
+        return { type: 'call', name: ident.name, args }
       }
-      if (BUILTIN_CALLS.has(name) && this.canStartPrimary()) return { type: 'call', name, args: [this.parseProduct()] }
-      return { type: 'sym', name }
+      if (BUILTIN_CALLS.has(ident.name) && this.canStartPrimary()) return { type: 'call', name: ident.name, args: [this.parseProduct()] }
+      return { type: 'sym', name: ident.name }
     }
     if (c === '?') {
       this.i += 1
@@ -329,13 +385,16 @@ class Parser {
     return items
   }
 
-  parseIdent(): string {
+  parseIdent(): { name: string } {
+    const fromChar = greekCharName(this.src[this.i] ?? '')
+    if (fromChar) {
+      this.i += 1
+      return { name: fromChar }
+    }
     const start = this.i
     this.i += 1
     while (this.i < this.src.length && /[A-Za-z0-9]/.test(this.src[this.i])) this.i += 1
-    const word = this.src.slice(start, this.i)
-    if (word === 'pi') return 'pi'
-    return word
+    return { name: canonicalGreek(this.src.slice(start, this.i)) }
   }
 
   parseNumber(): Expr {
@@ -356,20 +415,24 @@ class Parser {
 function cookPreview(input: string): string {
   let source = input.trim()
   const stack: string[] = []
+  const closer: Record<string, string> = { '(': ')', '[': ']', '{': '}' }
+  const opener: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
   for (const ch of source) {
-    if (ch === '(' || ch === '[') stack.push(ch)
-    else if (ch === ')' || ch === ']') {
+    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch)
+    else if (ch === ')' || ch === ']' || ch === '}') {
       const open = stack.pop()
-      if (open !== (ch === ')' ? '(' : '[')) return source
+      if (open !== opener[ch]) return source
     }
   }
   while (stack.length > 0) {
     const open = stack.pop()
-    source += open === '[' ? ']' : ')'
+    if (open) source += closer[open]
   }
   source = source.replace(/\(\s*\)/g, '(?)')
   source = source.replace(/\[\s*\]/g, '[?]')
+  source = source.replace(/\{\s*\}/g, '{?}')
   if (/[+\-*/^,]$/.test(source)) source += '?'
+  else if (/_$/.test(source)) source += '?'
   else if (/=\s*$/.test(source)) source += '?'
   return source
 }
@@ -479,6 +542,7 @@ export function applyEnv(e: Expr, env: MathEnv, depth: number): Expr {
     case 'dec':
       return e
     case 'sym': {
+      if (e.sub || (e.dots ?? 0) > 0) return e
       const binding = env.get(e.name)
       if (binding?.kind === 'expr') return applyEnv(binding.expr, env, depth + 1)
       return e
@@ -515,7 +579,7 @@ export function applyEnv(e: Expr, env: MathEnv, depth: number): Expr {
 export function freeSymbols(e: Expr): string[] {
   const names = new Set<string>()
   walk(e, (node) => {
-    if (node.type === 'sym' && node.name !== 'pi' && node.name !== 'e') names.add(node.name)
+    if (node.type === 'sym' && !bareConstant(node)) names.add(symbolKey(node))
   })
   return [...names]
 }
@@ -582,6 +646,7 @@ function sqrtOf(e: Expr): Expr {
 export function substitute(e: Expr, map: Map<string, Expr>): Expr {
   switch (e.type) {
     case 'sym':
+      if (e.sub || (e.dots ?? 0) > 0) return e
       return map.get(e.name) ?? e
     case 'rat':
     case 'dec':
@@ -649,7 +714,7 @@ function fold(e: Expr, angles: AngleMode = 'rad'): Expr {
     case 'call': {
       const args = e.args.map((arg) => fold(arg, angles))
       if (e.name === 'sqrt' && args.length === 1 && args[0].type === 'rat') return exactSqrt(args[0])
-      if (e.name === 'ln' && args.length === 1 && args[0].type === 'sym' && args[0].name === 'e') return rat(1n)
+      if (e.name === 'ln' && args.length === 1 && args[0].type === 'sym' && bareConstant(args[0]) && args[0].name === 'e') return rat(1n)
       if (e.name === 'log' && args.length === 1 && args[0].type === 'rat') {
         const exact = log10Rat(args[0])
         if (exact) return exact
@@ -905,7 +970,7 @@ function toSum(e: Expr): Term[] {
         return acc
       }
       if (e.base.type === 'sym' && e.exp.type === 'rat' && e.exp.d === 1n && e.exp.n > -12n && e.exp.n < 12n) {
-        return [{ coeff: ONE, atoms: [{ kind: 'var', name: e.base.name, exp: Number(e.exp.n) }] }]
+        return [{ coeff: ONE, atoms: [{ kind: 'var', name: e.base.name, sub: e.base.sub, dots: e.base.dots, exp: Number(e.exp.n) }] }]
       }
       return [{ coeff: ONE, atoms: [atomOf(e)] }]
     }
@@ -918,7 +983,7 @@ function toSum(e: Expr): Term[] {
 }
 
 function atomOf(e: Expr): Atom {
-  if (e.type === 'sym') return { kind: 'var', name: e.name, exp: 1 }
+  if (e.type === 'sym') return { kind: 'var', name: e.name, sub: e.sub, dots: e.dots, exp: 1 }
   return { kind: 'expr', expr: e, exp: 1 }
 }
 
@@ -951,7 +1016,7 @@ function mergeTerms(terms: Term[]): Term[] {
 function mergeAtoms(atoms: Atom[]): Atom[] {
   const map = new Map<string, Atom>()
   for (const atom of atoms) {
-    const key = atom.kind === 'var' ? `v:${atom.name}` : `e:${exprKey(atom.expr)}`
+    const key = atom.kind === 'var' ? `v:${atom.name}:${atom.sub ?? ''}:${atom.dots ?? 0}` : `e:${exprKey(atom.expr)}`
     const prev = map.get(key)
     if (!prev) map.set(key, { ...atom })
     else prev.exp += atom.exp
@@ -960,7 +1025,7 @@ function mergeAtoms(atoms: Atom[]): Atom[] {
 }
 
 function atomKey(atom: Atom): string {
-  if (atom.kind === 'var') return `v:${atom.name}^${atom.exp}`
+  if (atom.kind === 'var') return `v:${atom.name}:${atom.sub ?? ''}:${atom.dots ?? 0}^${atom.exp}`
   return `e:${exprKey(atom.expr)}^${atom.exp}`
 }
 
@@ -982,7 +1047,16 @@ function atomListKey(term: Term): string {
 }
 
 function requireSymbol(arg: Expr | undefined, example: string): void {
-  if (!arg || arg.type !== 'sym' || arg.name === 'pi' || arg.name === 'e' || arg.name === '?') throw new MathError(example)
+  if (!arg || arg.type !== 'sym' || arg.sub || (arg.dots ?? 0) > 0 || arg.name === 'pi' || arg.name === 'e' || arg.name === '?') throw new MathError(example)
+}
+
+function bareConstant(e: { name: string; sub?: string; dots?: number }): boolean {
+  return !e.sub && !(e.dots && e.dots > 0) && (e.name === 'pi' || e.name === 'e')
+}
+
+function symbolKey(e: { name: string; sub?: string; dots?: number }): string {
+  const base = e.sub ? `${e.name}_${e.sub}` : e.name
+  return base + "'".repeat(e.dots ?? 0)
 }
 
 function checkCall(name: string, args: Expr[]): void {
@@ -1020,6 +1094,7 @@ function checkCall(name: string, args: Expr[]): void {
   if ((name === 'dot' || name === 'cross') && args.length !== 2) throw new MathError(`Use ${name}(u, v).`)
   if ((name === 'unit' || name === 'norm' || name === 'mag') && args.length !== 1) throw new MathError(`Use ${name}(v) on a vector.`)
   if ((name === 'det' || name === 'transpose' || name === 'inv' || name === 'trace') && args.length !== 1) throw new MathError(`Use ${name}(matrix).`)
+  if (name === 'Dt' && args.length !== 1) throw new MathError('Use Dt(expr) for a time derivative.')
 }
 
 function termToExpr(term: Term): Expr {
@@ -1030,7 +1105,7 @@ function termToExpr(term: Term): Expr {
   if (coeff.d !== 1n) den.push(rat(coeff.d))
   if (coeff.n !== 1n) num.push(rat(coeff.n))
   for (const atom of term.atoms) {
-    const base: Expr = atom.kind === 'var' ? { type: 'sym', name: atom.name } : atom.expr
+    const base: Expr = atom.kind === 'var' ? { type: 'sym', name: atom.name, sub: atom.sub, dots: atom.dots } : atom.expr
     const exp = atom.exp
     const piece: Expr = Math.abs(exp) === 1 ? base : { type: 'pow', base, exp: rat(BigInt(Math.abs(exp))) }
     if (exp > 0) num.push(piece)
@@ -1093,7 +1168,7 @@ function isZeroExpr(e: Expr): boolean {
 }
 
 function depends(e: Expr, variable: string): boolean {
-  if (e.type === 'sym') return e.name === variable
+  if (e.type === 'sym') return symbolKey(e) === variable || (!e.sub && !(e.dots && e.dots > 0) && e.name === variable)
   if (e.type === 'rat' || e.type === 'dec') return false
   if (e.type === 'vec') return e.args.some((arg) => depends(arg, variable))
   if (e.type === 'mat') return e.rows.some((row) => row.some((arg) => depends(arg, variable)))
@@ -1112,7 +1187,7 @@ function hasFreeSymbol(e: Expr): boolean {
 function containsConstantSym(e: Expr): boolean {
   let found = false
   walk(e, (node) => {
-    if (node.type === 'sym' && (node.name === 'pi' || node.name === 'e')) found = true
+    if (node.type === 'sym' && bareConstant(node)) found = true
   })
   return found
 }
@@ -1189,6 +1264,7 @@ function evalConst(e: Expr, angles: AngleMode = 'rad'): number | null {
     case 'dec':
       return e.value
     case 'sym':
+      if (!bareConstant(e)) return null
       if (e.name === 'pi') return Math.PI
       if (e.name === 'e') return Math.E
       return null
@@ -1293,7 +1369,7 @@ function texPrec(e: Expr): [string, number] {
     case 'dec':
       return [e.text, P_ATOM]
     case 'sym':
-      return [texSymbol(e.name), P_ATOM]
+      return [texNamed(e), P_ATOM]
     case 'add':
       return [texAdd(e.args), P_ADD]
     case 'mul':
@@ -1314,11 +1390,104 @@ function texPrec(e: Expr): [string, number] {
   }
 }
 
+const GREEK: Record<string, string> = {
+  alpha: '\\alpha',
+  beta: '\\beta',
+  gamma: '\\gamma',
+  delta: '\\delta',
+  epsilon: '\\epsilon',
+  zeta: '\\zeta',
+  eta: '\\eta',
+  theta: '\\theta',
+  iota: '\\iota',
+  kappa: '\\kappa',
+  lambda: '\\lambda',
+  mu: '\\mu',
+  nu: '\\nu',
+  xi: '\\xi',
+  pi: '\\pi',
+  rho: '\\rho',
+  sigma: '\\sigma',
+  tau: '\\tau',
+  upsilon: '\\upsilon',
+  phi: '\\phi',
+  chi: '\\chi',
+  psi: '\\psi',
+  omega: '\\omega',
+}
+
+const GREEK_CHAR: Record<string, string> = {
+  α: 'alpha',
+  β: 'beta',
+  γ: 'gamma',
+  δ: 'delta',
+  ε: 'epsilon',
+  ζ: 'zeta',
+  η: 'eta',
+  θ: 'theta',
+  ι: 'iota',
+  κ: 'kappa',
+  λ: 'lambda',
+  μ: 'mu',
+  ν: 'nu',
+  ξ: 'xi',
+  π: 'pi',
+  ρ: 'rho',
+  σ: 'sigma',
+  τ: 'tau',
+  υ: 'upsilon',
+  φ: 'phi',
+  χ: 'chi',
+  ψ: 'psi',
+  ω: 'omega',
+}
+
+/** True when the whole word is a Greek letter name, the way `pi` is. */
+export function isGreekName(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(GREEK, name.toLowerCase())
+}
+
+/** True when more letters could still finish a Greek name: `th` is on the way to `theta`. */
+export function isGreekPrefix(name: string): boolean {
+  const lower = name.toLowerCase()
+  if (!lower) return false
+  return Object.keys(GREEK).some((greek) => greek.startsWith(lower))
+}
+
+export function containsGreekLetter(text: string): boolean {
+  return [...text].some((ch) => greekCharName(ch) !== null)
+}
+
+function greekCharName(char: string): string | null {
+  return GREEK_CHAR[char] ?? null
+}
+
+function canonicalGreek(name: string): string {
+  const lower = name.toLowerCase()
+  return Object.prototype.hasOwnProperty.call(GREEK, lower) ? lower : name
+}
+
+function subscriptName(body: string): string {
+  if (body === '?') return '?'
+  if (!/^[A-Za-z0-9]+$/.test(body)) throw new MathError('Use _ after a name, for example e_r or theta_0.')
+  return canonicalGreek(body)
+}
+
 function texSymbol(name: string): string {
-  if (name === 'pi') return '\\pi'
-  if (name === 'theta') return '\\theta'
   if (name === '?') return '\\square'
-  return name
+  return GREEK[name] ?? name
+}
+
+function texNamed(e: { name: string; sub?: string; dots?: number }): string {
+  let body = texSymbol(e.name)
+  if (e.name === 'e' && e.sub) body = `\\mathbf{${body}}`
+  if (e.sub) body = `${body}_{${texSymbol(e.sub)}}`
+  const dots = e.dots ?? 0
+  if (dots === 1) return `\\dot{${body}}`
+  if (dots === 2) return `\\ddot{${body}}`
+  if (dots === 3) return `\\dddot{${body}}`
+  if (dots > 3) return `\\overset{(${dots})}{${body}}`
+  return body
 }
 
 function texAdd(args: Expr[]): string {
@@ -1361,7 +1530,20 @@ function texMul(args: Expr[]): string {
     .join('')
 }
 
+function texTimeDerivative(arg: Expr, order: number): string {
+  let body = arg
+  let count = order
+  while (body.type === 'call' && body.name === 'Dt' && body.args.length === 1) {
+    body = body.args[0]
+    count += 1
+  }
+  const inner = texAt(body, 0)
+  if (count === 1) return `\\frac{d}{dt}\\left(${inner}\\right)`
+  return `\\frac{d^{${count}}}{dt^{${count}}}\\left(${inner}\\right)`
+}
+
 function texCall(name: string, args: Expr[]): string {
+  if (name === 'Dt' && args.length === 1) return texTimeDerivative(args[0], 1)
   if (name === 'sqrt' && args.length === 1) return `\\sqrt{${texAt(args[0], 0)}}`
   if (name === 'abs' && args.length === 1) return `\\left|${texAt(args[0], 0)}\\right|`
   const macro: Record<string, string> = { sin: '\\sin', cos: '\\cos', tan: '\\tan', ln: '\\ln', log: '\\log', exp: '\\exp', asin: '\\arcsin', acos: '\\arccos', atan: '\\arctan' }
@@ -1387,7 +1569,7 @@ function plainPrec(e: Expr): [string, number] {
     case 'dec':
       return [e.text, P_ATOM]
     case 'sym':
-      return [e.name, P_ATOM]
+      return [symbolKey(e), P_ATOM]
     case 'add':
       return [plainAdd(e.args), P_ADD]
     case 'mul':
@@ -1444,7 +1626,7 @@ function exprKey(e: Expr): string {
     case 'dec':
       return `d${e.text}`
     case 'sym':
-      return `s${e.name}`
+      return `s${symbolKey(e)}`
     case 'add':
       return `a(${e.args.map(exprKey).join(',')})`
     case 'mul':

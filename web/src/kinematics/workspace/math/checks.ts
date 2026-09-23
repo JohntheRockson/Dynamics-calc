@@ -328,5 +328,29 @@ export function runMathChecks(): string[] {
   const vertex = chooseProbe(yCurve ? [yCurve.path] : [], { x: 0.05, y: 0.2 }, scale)
   expect(vertex?.kind === 'minimum' && Math.abs(vertex.x) < 1e-6 && Math.abs(vertex.y) < 1e-6, `snap to a minimum: ${vertex?.text ?? 'none'}`)
 
+  expect(looksLikeMath('theta') && looksLikeMath('alpha') && looksLikeMath('e_r') && looksLikeMath("theta'"), 'greek names and subscripts are math')
+  expect(!looksLikeMath('point') && !looksLikeMath('speed'), 'statement names stay statements')
+  const thetaPreview = previewTex('theta')
+  const alphaPreview = previewTex('alpha')
+  const subscriptPreview = previewTex('e_theta')
+  const openSubscript = previewTex('e_')
+  const dottedPower = previewTex("theta'^2")
+  expect(Boolean(thetaPreview?.includes('\\theta')), `theta previews as a symbol: ${thetaPreview}`)
+  expect(Boolean(alphaPreview?.includes('\\alpha')), `alpha previews as a symbol: ${alphaPreview}`)
+  expect(Boolean(subscriptPreview?.includes('\\mathbf{e}') && subscriptPreview.includes('\\theta')), `e_theta is a subscript: ${subscriptPreview}`)
+  expect(Boolean(openSubscript?.includes('\\square')), `a trailing _ keeps a subscript hole: ${openSubscript}`)
+  expect(Boolean(dottedPower?.includes('\\dot') && dottedPower.includes('^')), `a prime binds before a power: ${dottedPower}`)
+
+  const timeDerivative = evaluateDocument(appendMath(emptyDocument(), "diff(r*theta'*e_theta, t)"))
+  const motionRow = timeDerivative.blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(motionRow?.text.includes("r'") && motionRow.text.includes("theta''") && motionRow.text.includes("e_theta'")), `time derivative: ${motionRow?.text}`)
+  expect(Boolean(motionRow?.tex?.includes('\\dot') && motionRow.tex.includes('\\ddot') && motionRow.tex.includes('\\mathbf{e}') && motionRow.tex.includes('\\theta')), `time derivative tex: ${motionRow?.tex}`)
+  const partial = evaluateDocument(appendMath(emptyDocument(), 'diff(x^2, x)')).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(partial?.text.includes('2x') && !partial.text.includes("x'")), `partial derivative stays partial: ${partial?.text}`)
+  const chain = evaluateDocument(appendMath(emptyDocument(), 'diff(sin(theta), t)')).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(chain?.text.includes('cos') && chain.text.includes("theta'")), `theta depends on time: ${chain?.text}`)
+  const undone = evaluateDocument(appendMath(emptyDocument(), "integrate(theta', t)")).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(undone?.tex?.includes('\\theta') && undone.tex.includes('C') && !undone.tex.includes('\\dot')), `a dot integrates back: ${undone?.tex}`)
+
   return errors
 }

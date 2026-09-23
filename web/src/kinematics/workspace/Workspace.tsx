@@ -3,7 +3,7 @@ import { Eq } from '../Eq'
 import { usePlayback } from '../../hooks/usePlayback'
 import { Composer } from './Composer'
 import { appendMath, commitCommand, emptyDocument, exampleDocument, removeStatement, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
-import { validateMath, type AngleMode } from './math/expr'
+import { previewTex, validateMath, type AngleMode } from './math/expr'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
 import { FigurePane } from './FigurePane'
 
@@ -14,20 +14,135 @@ const EXAMPLES: { id: ExampleId; label: string }[] = [
   { id: 'helix', label: 'Helix' },
 ]
 
+function unitTex(unit: string): string {
+  if (unit.endsWith('²')) return `\\mathrm{${unit.slice(0, -1)}}^{2}`
+  if (unit.endsWith('³')) return `\\mathrm{${unit.slice(0, -1)}}^{3}`
+  return `\\mathrm{${unit}}`
+}
+
+/** A kinematics quantity such as `25 m/s` or `(0, 0) m`, drawn as math instead of a sentence. */
+function quantityTex(text: string): string | null {
+  const trimmed = text.trim()
+  const tuple = /^\(([^)]+)\)\s+(\S+)$/.exec(trimmed)
+  if (tuple) {
+    const parts = tuple[1].split(',').map((part) => part.trim())
+    if (parts.every((part) => /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/.test(part))) return `\\left(${parts.join(', ')}\\right)\\,${unitTex(tuple[2])}`
+  }
+  const match = /^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?|∞)\s+(\S+)$/.exec(trimmed)
+  if (!match) return null
+  const n = match[1] === '∞' ? '\\infty' : match[1]
+  return `${n}\\,${unitTex(match[2])}`
+}
+
+function trailingNote(text: string): string | null {
+  const match = /\s\(([^()]*)\)\s*$/.exec(text.trim())
+  return match?.[1] ?? null
+}
+
+function copyLatex(value: string): void {
+  const write = navigator.clipboard?.writeText(value)
+  if (write) {
+    void write.catch(() => copyLatexFallback(value))
+    return
+  }
+  copyLatexFallback(value)
+}
+
+function copyLatexFallback(value: string): void {
+  const area = document.createElement('textarea')
+  area.value = value
+  area.setAttribute('readonly', '')
+  area.style.position = 'fixed'
+  area.style.left = '-9999px'
+  document.body.appendChild(area)
+  area.select()
+  document.execCommand('copy')
+  area.remove()
+}
+
 function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisible, onToggleDecimal, onTogglePlane, showRemove }: { row: RowModel; open: boolean; decimal: boolean; plane: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; onTogglePlane: () => void; showRemove: boolean }) {
+  const [copied, setCopied] = useState<'input' | 'output' | null>(null)
   const typed = row.input
-  const showTypedLabel = Boolean(typed && !row.plotKind)
+  const inputTex = typed ? previewTex(typed) : null
   const canApproximate = Boolean(row.exactTex && row.approxTex && row.exactTex !== row.approxTex)
   const shownTex = decimal && row.approxTex ? row.approxTex : (row.exactTex ?? row.tex)
-  const expandable = Boolean(row.formula || typed)
+  const quantity = quantityTex(row.text)
+  const note = trailingNote(row.text)
+  const expandable = Boolean(row.formula)
+  const copy = (value: string, which: 'input' | 'output') => {
+    copyLatex(value)
+    setCopied(which)
+    window.setTimeout(() => setCopied((current) => (current === which ? null : current)), 1200)
+  }
+  const actions = (
+    <div className="statement-actions">
+      {canApproximate && (
+        <button type="button" className="btn btn-ghost statement-eye" onClick={onToggleDecimal} aria-label={decimal ? 'Show the exact value' : 'Show a decimal approximation'}>
+          {decimal ? 'Exact' : 'Decimal'}
+        </button>
+      )}
+      {row.plotKind === 'curve' && (
+        <button type="button" className="btn btn-ghost statement-eye" aria-pressed={plane} onClick={onTogglePlane} aria-label={plane ? `Draw ${row.label} as a curve` : `Extend ${row.label} into a plane`}>
+          {plane ? 'Curve' : 'Plane'}
+        </button>
+      )}
+      {row.plotKind && (
+        <button type="button" className="btn btn-ghost statement-eye" aria-pressed={row.visible !== false} onClick={onToggleVisible} aria-label={row.visible === false ? `Show ${row.label} on the figure` : `Hide ${row.label} on the figure`}>
+          {row.visible === false ? 'Show' : 'Hide'}
+        </button>
+      )}
+      {showRemove && (
+        <button type="button" className="btn btn-ghost statement-remove" onClick={onRemove} aria-label={`Remove ${row.label}`}>
+          Remove
+        </button>
+      )}
+    </div>
+  )
+  if (inputTex) {
+    const same = Boolean(shownTex && shownTex === inputTex)
+    return (
+      <li className={`statement-row is-${row.source} is-math`}>
+        <div className="statement-stack">
+          <div className="statement-math-line">
+            <Eq tex={inputTex} />
+            <span className="statement-copies">
+              <button type="button" className="btn btn-ghost statement-eye" onClick={() => copy(inputTex, 'input')}>
+                {copied === 'input' ? 'Copied' : 'Copy input'}
+              </button>
+              {same && shownTex && (
+                <button type="button" className="btn btn-ghost statement-eye" onClick={() => copy(shownTex, 'output')}>
+                  {copied === 'output' ? 'Copied' : 'Copy output'}
+                </button>
+              )}
+            </span>
+          </div>
+          {shownTex && !same && (
+            <div className="statement-math-line">
+              <Eq tex={shownTex} />
+              <button type="button" className="btn btn-ghost statement-eye" onClick={() => copy(shownTex, 'output')}>
+                {copied === 'output' ? 'Copied' : 'Copy output'}
+              </button>
+            </div>
+          )}
+          {row.source === 'error' && <p className="statement-note">{row.text}</p>}
+          {row.source !== 'error' && note && <p className="statement-note">{note}</p>}
+        </div>
+        {actions}
+        {open && expandable && row.formula && (
+          <div className="statement-formula">
+            <Eq tex={row.formula} />
+          </div>
+        )}
+      </li>
+    )
+  }
   const body = (
     <>
-      <span className={showTypedLabel ? 'statement-label is-typed' : 'statement-label'} title={showTypedLabel ? typed : undefined}>
-        {showTypedLabel ? typed : row.label}
-      </span>
+      <span className="statement-label">{row.label}</span>
       <span className="statement-value">
+        {quantity && <Eq tex={quantity} />}
         {shownTex && <Eq tex={shownTex} />}
-        {row.text && row.showText !== false && <span>{row.text}</span>}
+        {!quantity && !shownTex && row.text && <span>{row.text}</span>}
       </span>
     </>
   )
@@ -40,36 +155,10 @@ function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisibl
       ) : (
         <div className="statement-main">{body}</div>
       )}
-      <div className="statement-actions">
-        {canApproximate && (
-          <button type="button" className="btn btn-ghost statement-eye" onClick={onToggleDecimal} aria-label={decimal ? 'Show the exact value' : 'Show a decimal approximation'}>
-            {decimal ? 'Exact' : 'Decimal'}
-          </button>
-        )}
-        {row.plotKind === 'curve' && (
-          <button type="button" className="btn btn-ghost statement-eye" aria-pressed={plane} onClick={onTogglePlane} aria-label={plane ? `Draw ${row.label} as a curve` : `Extend ${row.label} into a plane`}>
-            {plane ? 'Curve' : 'Plane'}
-          </button>
-        )}
-        {row.plotKind && (
-          <button type="button" className="btn btn-ghost statement-eye" aria-pressed={row.visible !== false} onClick={onToggleVisible} aria-label={row.visible === false ? `Show ${row.label} on the figure` : `Hide ${row.label} on the figure`}>
-            {row.visible === false ? 'Show' : 'Hide'}
-          </button>
-        )}
-        {showRemove && (
-          <button type="button" className="btn btn-ghost statement-remove" onClick={onRemove} aria-label={`Remove ${row.label}`}>
-            Remove
-          </button>
-        )}
-      </div>
-      {open && expandable && (
+      {actions}
+      {open && expandable && row.formula && (
         <div className="statement-formula">
-          {typed && (
-            <p className="statement-typed">
-              <span>Typed</span> <code>{typed}</code>
-            </p>
-          )}
-          {row.formula && <Eq tex={row.formula} />}
+          <Eq tex={row.formula} />
         </div>
       )}
     </li>
