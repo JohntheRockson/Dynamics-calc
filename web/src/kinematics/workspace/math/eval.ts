@@ -73,12 +73,8 @@ export interface CurvePlot {
   arrow?: boolean
   /** Fill between the curve and the axis. */
   shade?: { from: number; to: number }
-  /** The curve is only the shaded region because the same function is already drawn. */
-  hideStroke?: boolean
   /** Which coordinate the shade interval is measured along. */
   along?: 'x' | 'y'
-  /** Plain expression, used to avoid drawing the same curve twice. */
-  exprKey?: string
 }
 
 export interface SurfacePlot {
@@ -123,11 +119,13 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
     const color = colorFor(plot)
     let plotKind: 'curve' | null = null
     let warn = visual.warn
+    const shaded = visual.curves.find((curve) => !curve.dashed) ?? visual.curves[0]
+    if (!shaded) warn = warn ?? curveOnlyShade(plot)
     for (const curve of visual.curves) {
-      const hideStroke = Boolean(curve.shade && curve.exprKey && plots.some((other) => other.kind === 'curve' && other.visible && !other.hideStroke && other.exprKey === curve.exprKey))
       const clip = rangeOf(plot, curve.along, env, angles)
-      warn = warn ?? clip.warn
-      plots.push(curvePlot(statement.id, curve.label, color, statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed || plot.dashed, shade: curve.shade, exprKey: curve.exprKey, hideStroke, along: curve.along, plot, clip: clip.interval }))
+      const fill = curve === shaded ? shadeOf(plot, clip.interval, env, angles) : NO_SHADE
+      warn = warn ?? clip.warn ?? fill.warn
+      plots.push(curvePlot(statement.id, curve.label, color, statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed || plot.dashed, shade: fill.shade, along: curve.along, plot, clip: clip.interval }))
       plotKind = 'curve'
     }
     for (const parametric of visual.parametrics) {
@@ -178,7 +176,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
           const range = rangeOf(parsed.plot, param, env, angles)
           const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, body.args, param, env, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
-          const warn = range.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, range.interval ?? DEFAULT_RANGE))
+          const warn = range.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(param, range.interval ?? DEFAULT_RANGE))
           plots.push(drawn)
           rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
           continue
@@ -189,14 +187,15 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           const names: [string, string] = [param, parsed.params[1] ?? 'y']
           const clips = surfaceRanges(parsed.plot, names, env, angles)
           const drawn = surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [body], names, env, angles, parsed.plot, clips)
-          const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, null)))
+          const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(param, null)))
           plots.push(drawn)
           rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, warn))
           continue
         }
         const clip = rangeOf(parsed.plot, param, env, angles)
-        const drawn = curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param, along: 'x' }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed })
-        const warn = missing.length > 0 ? giveValue(missing) : (clip.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, clip.interval)))
+        const fill = shadeOf(parsed.plot, clip.interval, env, angles)
+        const drawn = curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param, along: 'x' }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed, shade: fill.shade })
+        const warn = missing.length > 0 ? giveValue(missing) : (clip.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, clip.interval)))
         plots.push(drawn)
         rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
         continue
@@ -217,10 +216,11 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           let warn: string | null = null
           if (picture) {
             const color = colorFor(parsed.plot)
+            warn = curveOnlyShade(parsed.plot)
             if (picture.kind === 'arrow') plots.push(arrowPlot(statement.id, parsed.name, color, statement.visible, picture.x, picture.y, picture.z))
             else {
               const range = rangeOf(parsed.plot, picture.param, env, angles)
-              warn = range.warn
+              warn = range.warn ?? warn
               plots.push(parametricPlot(statement.id, parsed.name, color, statement.visible, picture.components, picture.param, env, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed))
             }
           }
@@ -258,14 +258,15 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           if (plotted.kind === 'surface') {
             const clips = surfaceRanges(parsed.plot, ['x', 'y'], env, angles)
             const drawn = surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, ['x', 'y'], env, angles, parsed.plot, clips)
-            const warn = plotted.warn ?? clips.warn ?? (hasGeometry(drawn) ? null : emptyWarning('x', null))
+            const warn = plotted.warn ?? clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning('x', null))
             plots.push(drawn)
             rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, warn))
             continue
           }
           const clip = rangeOf(parsed.plot, plotted.param, env, angles)
-          const drawn = curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed })
-          const warn = plotted.warn ?? clip.warn ?? (hasGeometry(drawn) ? null : emptyWarning(plotted.param, clip.interval))
+          const fill = shadeOf(parsed.plot, clip.interval, env, angles)
+          const drawn = curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed, shade: fill.shade })
+          const warn = plotted.warn ?? clip.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(plotted.param, clip.interval))
           plots.push(drawn)
           rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
           continue
@@ -294,13 +295,14 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         if (value.type === 'vec') {
           if (value.args.length < 2 || value.args.length > 3) throw new MathError('Plot draws a list of two or three expressions as a curve, for example Plot([cos(t), sin(t)], t).')
           const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? [] : value.args, parsed.variable, local, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
-          const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval ?? DEFAULT_RANGE)))
+          const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval ?? DEFAULT_RANGE)))
           plots.push(drawn)
           rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
           continue
         }
-        const drawn = curvePlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? null : { bodies: [value], param: parsed.variable, along: 'x' }, local, angles, { plot: parsed.plot, clip: range.interval, dashed: parsed.plot.dashed })
-        const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval)))
+        const fill = shadeOf(parsed.plot, range.interval, env, angles)
+        const drawn = curvePlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? null : { bodies: [value], param: parsed.variable, along: 'x' }, local, angles, { plot: parsed.plot, clip: range.interval, dashed: parsed.plot.dashed, shade: fill.shade })
+        const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval)))
         plots.push(drawn)
         rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
         continue
@@ -312,7 +314,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const missing = freeSymbols(value).filter((name) => !names.includes(name))
         const clips = surfaceRanges(parsed.plot, names, env, angles)
         const drawn = surfacePlot(statement.id, shortLabel(parsed.expr, 'Plot3D'), colorFor(parsed.plot), statement.visible, missing.length ? [] : [value], names, local, angles, parsed.plot, clips)
-        const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? (hasGeometry(drawn) ? null : emptyWarning(names[0], null)))
+        const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(names[0], null)))
         const formula = echo ?? `\\operatorname{Plot3D}\\left(${tex(parsed.expr)}, ${texName(names[0])}, ${texName(names[1])}\\right)`
         plots.push(drawn)
         rows.push(rowBase(statement.id, statement.input, 'Plot3D', `Plot3D(${plain(parsed.expr)}, ${names[0]}, ${names[1]})`, formula, 'surface', statement.visible, warn))
@@ -334,7 +336,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const drawn = picture.kind === 'arrow' ? arrowPlot(statement.id, 'vector', color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, picture.param, color, statement.visible, picture.components, picture.param, env, angles, parsed.plot, range?.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
         plots.push(drawn)
         const shown = described(expr, value, statement.input, angles)
-        const warn = picture.kind === 'arrow' ? null : (range?.warn ?? (hasGeometry(drawn) ? null : emptyWarning(picture.param, range?.interval ?? DEFAULT_RANGE)))
+        const warn = picture.kind === 'arrow' ? curveOnlyShade(parsed.plot) : (range?.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(picture.param, range?.interval ?? DEFAULT_RANGE)))
         rows.push({ ...shown, text: warn ? `${shown.text} (${warn})` : shown.text, statementId: statement.id, label: picture.kind === 'arrow' ? 'Vector' : picture.param, plotKind: 'curve', visible: statement.visible, warn })
         continue
       }
@@ -342,10 +344,12 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const curve = singleCurve(value)
         if (curve) {
           const clip = rangeOf(parsed.plot, curve.along, env, angles)
-          const drawn = curvePlot(statement.id, curve.label, colorFor(parsed.plot), statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed })
+          const fill = shadeOf(parsed.plot, clip.interval, env, angles)
+          const drawn = curvePlot(statement.id, curve.label, colorFor(parsed.plot), statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed, shade: fill.shade })
           plots.push(drawn)
           const shown = described(expr, value, statement.input, angles)
-          rows.push({ ...shown, text: clip.warn ? `${shown.text} (${clip.warn})` : shown.text, statementId: statement.id, label: curve.label, plotKind: 'curve', visible: statement.visible, warn: clip.warn })
+          const warn = clip.warn ?? fill.warn
+          rows.push({ ...shown, text: warn ? `${shown.text} (${warn})` : shown.text, statementId: statement.id, label: curve.label, plotKind: 'curve', visible: statement.visible, warn })
           continue
         }
       }
@@ -498,8 +502,6 @@ function hasGeometry(plot: CurvePlot | SurfacePlot): boolean {
 interface CurveOptions {
   dashed?: boolean
   shade?: { from: number; to: number }
-  exprKey?: string
-  hideStroke?: boolean
   along?: 'x' | 'y'
   plot?: PlotOptions
   /** Only draw this interval of the input, as a Domain setting asks. */
@@ -510,8 +512,7 @@ function curvePlot(id: string, label: string, color: string, visible: boolean, s
   const style = options.plot ?? DEFAULT_PLOT
   const clip = options.clip ?? null
   const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles, style, clip) : [])
-  const exprKey = options.exprKey ?? (spec && spec.bodies.length === 1 ? plain(spec.bodies[0]) : undefined)
-  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options.dashed, shade: options.shade, hideStroke: options.hideStroke, along: options.along ?? spec?.along, exprKey }
+  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options.dashed, shade: options.shade, along: options.along ?? spec?.along }
 }
 
 function parametricPlot(id: string, label: string, color: string, visible: boolean, components: Expr[], param: string, env: MathEnv, angles: AngleMode, style: PlotOptions, range: Interval, dashed?: boolean): CurvePlot {
@@ -707,6 +708,21 @@ function rangeOf(plot: PlotOptions, param: string, env: MathEnv, angles: AngleMo
   }
   const interval = readInterval(domain, env, angles)
   return { interval, warn: interval ? null : `The domain of ${param} needs two different numbers, for example {${param}: 0..2*pi}.` }
+}
+
+const NO_SHADE: { shade: undefined; warn: null } = { shade: undefined, warn: null }
+
+/** Shade: a..b fills that interval. Shade: true fills the drawn interval, or the whole curve. */
+function shadeOf(plot: PlotOptions, clip: Interval | null, env: MathEnv, angles: AngleMode): { shade: { from: number; to: number } | undefined; warn: string | null } {
+  if (!plot.shade) return NO_SHADE
+  if (plot.shade === 'all') return { shade: { from: clip?.min ?? -Infinity, to: clip?.max ?? Infinity }, warn: null }
+  const interval = readInterval({ name: 'shade', ...plot.shade }, env, angles)
+  if (!interval) return { shade: undefined, warn: 'Shade needs two different numbers, for example {Shade: 0..2}.' }
+  return { shade: { from: interval.min, to: interval.max }, warn: null }
+}
+
+function curveOnlyShade(plot: PlotOptions): string | null {
+  return plot.shade ? 'Shade only fills under a curve such as y = f(x), not a parametric curve, vector, or surface.' : null
 }
 
 /** A surface can trim either input by name. A plain Domain trims both. */

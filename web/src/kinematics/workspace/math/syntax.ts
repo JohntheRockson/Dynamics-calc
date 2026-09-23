@@ -4,7 +4,7 @@
 // graph. Reading is lenient so a half-typed line still previews; binding checks every input and
 // setting against the function table and hands the kernel plain positional calls.
 
-import { GRAPH_OPTIONS, findFunction, findOption, functionByKernel, isGraphOption, optionKey, optionsFor, parseColor, suggestName, type FunctionSpec, type OptionSpec } from './functions'
+import { GRAPH_OPTIONS, canonicalOptionName, findFunction, findOption, functionByKernel, isGraphOption, optionKey, optionsFor, parseColor, suggestName, type FunctionSpec, type OptionSpec } from './functions'
 import {
   CARET_TEX,
   MathError,
@@ -371,6 +371,8 @@ function unknownSetting(owner: string, key: string, options: OptionSpec[], plotH
   const typed = key.trim()
   const head = options.length === 0 ? `${owner} has no settings.` : `${owner} has no setting ${typed}.`
   if (pointer) return new MathError(`${head} ${pointer}`)
+  const graphHint = isGraphOption(typed) ? findFunction(owner)?.graphHint : undefined
+  if (graphHint) return new MathError(`${owner} has no setting ${canonicalOptionName(typed) ?? typed}. ${graphHint}`)
   if (options.length === 0) {
     const hint = plotHint && isGraphOption(typed) ? ` To draw it, use Plot(${owner}(x), x){${typed}: …}.` : ''
     return new MathError(`${head}${hint}`)
@@ -707,7 +709,17 @@ function applyGraphSetting(plot: PlotOptions, entry: OptionEntry): void {
     case 'domain':
       plot.domain = { name: 'domain', ...readRange('Domain', entry, option.example) }
       break
+    case 'shade':
+      plot.shade = readShade(option, entry)
+      break
   }
+}
+
+function readShade(option: OptionSpec, entry: OptionEntry): PlotOptions['shade'] {
+  const word = entry.value === null ? 'true' : entry.value.trim().toLowerCase()
+  if (['true', 'yes', 'on', 'all'].includes(word)) return 'all'
+  if (['false', 'no', 'off', 'none'].includes(word)) return null
+  return readRange(option.name, entry, option.example)
 }
 
 /** A setting at the end of the line that the line's function did not take styles the graph. */

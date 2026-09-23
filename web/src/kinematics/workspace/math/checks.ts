@@ -296,15 +296,11 @@ export function runMathChecks(): string[] {
   const atPoint = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^3, x){Order: 3, At: 1}'))
   expect(atPoint.bodies.filter((body) => body.role === 'plot').length === 0, 'a derivative at a point stays a number')
 
-  const integral = evaluateDocument(appendMath(emptyDocument(), 'Integrate(x, x){Domain: 0..1}'))
-  const integralBody = integral.bodies.find((body) => body.role === 'plot')
-  expect(Boolean(integralBody?.shade && integralBody.shade.from === 0 && integralBody.shade.to === 1 && !integralBody.hideStroke && integralBody.path.length > 2), 'a definite integral shades the integrand')
-  let shaded = emptyDocument()
-  shaded = appendMath(shaded, 'y = x')
-  shaded = appendMath(shaded, 'Integrate(x, x){Domain: 0..1}')
-  const shadedBodies = evaluateDocument(shaded).bodies.filter((body) => body.role === 'plot')
-  const shadedIntegral = shadedBodies.find((body) => body.shade)
-  expect(Boolean(shadedIntegral?.hideStroke) && shadedBodies.filter((body) => !body.hideStroke).length === 1, 'the integrand is not drawn twice')
+  let area = emptyDocument()
+  area = appendMath(area, 'Integrate(x, x){Domain: 0..1}')
+  area = appendMath(area, 'y = x{Shade: 0..1}')
+  const areaBodies = evaluateDocument(area).bodies.filter((body) => body.role === 'plot')
+  expect(areaBodies.length === 1 && areaBodies[0]?.shade?.from === 0 && areaBodies[0].shade.to === 1 && areaBodies[0].path.length > 2, 'an area shows only when the curve asks for Shade')
 
   let linear = emptyDocument()
   for (const input of [

@@ -24,10 +24,6 @@ export interface CasCurve {
   along: 'x' | 'y'
   dashed?: boolean
   label: string
-  /** Fill between this curve and the axis on the parameter interval. */
-  shade?: { from: number; to: number }
-  /** Plain integrand, so a second copy is not stroked when the curve is already drawn. */
-  exprKey?: string
 }
 
 export interface CasPoint {
@@ -1381,24 +1377,20 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   if (call.name === 'integrate' && args[0].type === 'vec') return vectorIntegral(args, angles, call)
   if (call.name === 'integrate' && args.length === 4) {
     const variable = symbolOf(args[1], 'x')
-    const integrand = normalize(args[0], angles)
     const start = numericConstant(normalize(args[2], angles), angles)
     const end = numericConstant(normalize(args[3], angles), angles)
-    const curves = shadedIntegrand(integrand, variable, start, end)
     try {
-      return presentValue(reduceNamed('integrate', args, angles), angles, call, curves)
+      return presentValue(reduceNamed('integrate', args, angles), angles, call)
     } catch (error) {
       if (start === null || end === null) throw error
       const value = simpson(args[0], variable, start, end, angles)
       const text = decimalText(value)
-      return { text: `${plain(call)} ≈ ${text}`, tex: texDecimal(text), curves, points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
+      return { text: `${plain(call)} ≈ ${text}`, tex: texDecimal(text), curves: [], points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
     }
   }
   if (call.name === 'integrate') {
     const variable = symbolOf(args[1], 'x')
-    const value = add([antiderivative(args[0], variable, angles), S('C')])
-    const plotted = curveFor(normalize(antiderivative(args[0], variable, angles), angles), variable, 'integral')
-    return { ...presentValue(value, angles, call, plotted ? [plotted] : []), warn: plotted ? 'Graph uses C = 0.' : null }
+    return presentValue(add([antiderivative(args[0], variable, angles), S('C')]), angles, call)
   }
   if (call.name === 'tangent' || call.name === 'normal') {
     const variable = symbolOf(args[1], 'x')
@@ -1432,29 +1424,14 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   return presentValue(simplified, angles, call)
 }
 
-function shadedIntegrand(integrand: Expr, variable: string, start: number | null, end: number | null): CasCurve[] {
-  const label = plain(integrand).length > 24 ? 'integrand' : plain(integrand)
-  const curve = curveFor(integrand, variable, label)
-  if (!curve) return []
-  curve.exprKey = plain(integrand)
-  if (start !== null && end !== null) curve.shade = { from: start, to: end }
-  return [curve]
-}
-
 function vectorIntegral(args: Expr[], angles: AngleMode, source: Expr): CasVisual {
   const variable = symbolOf(args[1], 't')
   const body = args[0]
   if (body.type !== 'vec') throw new MathError('Integrate a vector one component at a time.')
   if (args.length === 4) {
     const parts = body.args.map((component) => reduceNamed('integrate', [component, args[1], args[2], args[3]], angles))
-    const value = normalize({ type: 'vec', args: parts }, angles)
-    const field = vectorGraphics(normalize(body, angles), variable, 'integrand')
-    const result = vectorGraphics(value, variable, 'integral')
-    return { ...presentValue(value, angles, source), parametrics: field.parametrics, arrows: result.arrows }
+    return presentValue(normalize({ type: 'vec', args: parts }, angles), angles, source)
   }
-  const antiderivatives = body.args.map((component) => antiderivative(component, variable, angles))
-  const value = normalize({ type: 'vec', args: antiderivatives.map((component, index) => add([component, S(`C${index + 1}`)])) }, angles)
-  const graphics = vectorGraphics(normalize({ type: 'vec', args: antiderivatives }, angles), variable, 'integral')
-  const drawn = graphics.parametrics.length > 0 || graphics.arrows.length > 0
-  return { ...presentValue(value, angles, source), ...graphics, warn: drawn ? 'Graph uses C = 0.' : null }
+  const antiderivatives = body.args.map((component, index) => add([antiderivative(component, variable, angles), S(`C${index + 1}`)]))
+  return presentValue(normalize({ type: 'vec', args: antiderivatives }, angles), angles, source)
 }

@@ -28,6 +28,8 @@ export interface OptionSpec {
   min?: number
   max?: number
   choices?: string[]
+  /** Other names typed for the same setting, as Fill for Shade. */
+  aliases?: string[]
 }
 
 export interface FunctionSpec {
@@ -43,6 +45,8 @@ export interface FunctionSpec {
   draws: boolean
   /** A setting can name one of the variables directly, as in Solve(…){x: 0..5}. */
   variableRanges?: boolean
+  /** Shown when a graph setting is given to a function that only computes. */
+  graphHint?: string
   examples: string[]
 }
 
@@ -90,6 +94,7 @@ export const GRAPH_OPTIONS: OptionSpec[] = [
   { name: 'Exclusions', kind: 'boolean', description: 'Break the line at jumps and poles', default: true, example: 'false' },
   { name: 'Dashed', kind: 'boolean', description: 'Draw a dashed line', default: false, example: 'true' },
   { name: 'Domain', kind: 'range', description: 'Only draw this interval of the input', default: null, example: '0..2*pi' },
+  { name: 'Shade', kind: 'range', description: 'Shade between the curve and the x-axis over this interval. Shade: true shades the whole curve', default: null, example: '0..2', aliases: ['Fill', 'Filling'] },
 ]
 
 const expression = (description = 'The expression to work on', example = 'x^2'): ParamSpec => ({ name: 'expression', kind: 'expression', phrase: 'an expression', description, example })
@@ -167,10 +172,11 @@ export const FUNCTIONS: FunctionSpec[] = [
     kernel: 'integrate',
     aliases: ['integral', 'int'],
     section: 'calculus',
-    summary: 'Antiderivative, or a definite integral when you give a Domain',
+    summary: 'Antiderivative, or a definite integral when you give a Domain. It computes and does not draw',
     params: [expression('The expression to integrate', 'x^2'), variable('The variable to integrate by', 'x')],
     options: [domainSearch('Integrate from the left end to the right end', null)],
-    draws: true,
+    draws: false,
+    graphHint: 'Integrate only computes. To picture an area, shade the curve instead: Plot(x^2, x){Shade: 0..2}.',
     examples: ['Integrate(x^2, x)', 'Integrate(x, x){Domain: 0..1}'],
   },
   {
@@ -314,7 +320,7 @@ export const FUNCTIONS: FunctionSpec[] = [
     options: [domainSearch('The interval of the input to draw. A parametric curve uses -10..10 without one', null)],
     draws: true,
     variableRanges: true,
-    examples: ['Plot(sin(x), x){Color: orange}', 'Plot(tan(x), x){Domain: -pi..pi, Exclusions: true}', 'Plot([cos(t), sin(t)], t){Domain: 0..2*pi, Dashed}'],
+    examples: ['Plot(sin(x), x){Color: orange}', 'Plot(x^2, x){Shade: 0..2}', 'Plot(tan(x), x){Domain: -pi..pi, Exclusions: true}', 'Plot([cos(t), sin(t)], t){Domain: 0..2*pi, Dashed}'],
   },
   {
     name: 'Plot3D',
@@ -557,6 +563,7 @@ export const FUNCTIONS: FunctionSpec[] = [
 export const MATH_FORMS: FormSpec[] = [
   { section: 'graphs', title: 'Curve', summary: 'A one-input function draws its graph', example: 'f(x) = x^2{Color: blue}' },
   { section: 'graphs', title: 'Equation curve', summary: 'y = , x = , or y^2 = draws a curve', example: 'y = sin(x){PlotPoints: 300}' },
+  { section: 'graphs', title: 'Shaded area', summary: 'Shade between a curve and the x-axis, for example to show an integral as an area', example: 'f(x) = x^2{Shade: 0..2}' },
   { section: 'graphs', title: 'Parametric curve', summary: 'A vector function of one input', example: 'r(t) = [cos(t), sin(t)]{t: 0..2*pi}' },
   { section: 'graphs', title: 'Space curve', summary: 'Three components draw in 3D', example: 'r(t) = [cos(t), sin(t), t/4]{t: 0..4*pi}' },
   { section: 'graphs', title: 'Surface', summary: 'A two-input function, or z = , draws a surface', example: 'g(x, y) = x^2 - y^2' },
@@ -570,6 +577,7 @@ export const SYNTAX_RULES: string[] = [
   'Write a setting as Name: value. = and -> work too, and names ignore case, spaces, and underscores.',
   'A yes-or-no setting can stand alone: {Dashed}.',
   'Settings at the end of a definition or an equation style its graph: f(x) = sin(x){Color: red}.',
+  'Integrate only computes. To show an area, shade the curve that draws it: Plot(x^2, x){Shade: 0..2}.',
 ]
 
 function nameKey(name: string): string {
@@ -607,9 +615,13 @@ export function optionsFor(spec: FunctionSpec | null): OptionSpec[] {
   return [...spec.options, ...GRAPH_OPTIONS.filter((option) => !own.has(optionKey(option.name)))]
 }
 
+function optionNamed(option: OptionSpec, wanted: string): boolean {
+  return optionKey(option.name) === wanted || (option.aliases ?? []).some((alias) => optionKey(alias) === wanted)
+}
+
 export function findOption(options: OptionSpec[], key: string): OptionSpec | null {
   const wanted = optionKey(key)
-  return options.find((option) => optionKey(option.name) === wanted) ?? null
+  return options.find((option) => optionNamed(option, wanted)) ?? null
 }
 
 export function isGraphOption(key: string): boolean {
@@ -621,7 +633,9 @@ export const ALL_OPTION_NAMES: string[] = [...new Set([...FUNCTIONS.flatMap((spe
 
 export function canonicalOptionName(key: string): string | null {
   const wanted = optionKey(key)
-  return ALL_OPTION_NAMES.find((name) => optionKey(name) === wanted) ?? null
+  const named = ALL_OPTION_NAMES.find((name) => optionKey(name) === wanted)
+  if (named) return named
+  return [...FUNCTIONS.flatMap((spec) => spec.options), ...GRAPH_OPTIONS].find((option) => optionNamed(option, wanted))?.name ?? null
 }
 
 export function parseColor(value: string): string | null {

@@ -53,6 +53,28 @@ export function runSyntaxChecks(): string[] {
   const typingTex = previewTex('Plot(sin(x), x){Color: re', 25) ?? ''
   expect(typingTex.includes('\\mathrm{Color}') && typingTex.includes('\\rule'), `a half-typed setting still previews with the caret: ${typingTex}`)
 
+  expect(plotsOf('Integrate(x, x){Domain: 0..1}').length === 0 && plotsOf('Integrate(x^2, x)').length === 0 && plotsOf('Integrate([t, 1], t){Domain: 0..1}').length === 0, 'Integrate computes without drawing or shading')
+  expect(textOf('Integrate(x, x){Domain: 0..1}').endsWith('= 1/2') && !textOf('Integrate(x^2, x)').includes('Graph'), `Integrate keeps its value: ${textOf('Integrate(x, x){Domain: 0..1}')} | ${textOf('Integrate(x^2, x)')}`)
+  fails('Integrate(x^2, x){Shade: 0..2}', 'Integrate has no setting Shade. Integrate only computes. To picture an area, shade the curve instead: Plot(x^2, x){Shade: 0..2}.')
+  fails('Integrate(x^2, x){Color: red}', 'Integrate has no setting Color. Integrate only computes. To picture an area, shade the curve instead: Plot(x^2, x){Shade: 0..2}.')
+  const plotShade = plotsOf('Plot(x^2, x){Shade: 0..2}')[0]
+  const plotShadeXs = finite(plotShade?.path ?? []).map((point) => point.x)
+  expect(plotShade?.shade?.from === 0 && plotShade.shade.to === 2 && Math.min(...plotShadeXs) < -5 && Math.max(...plotShadeXs) > 5, `Shade fills an interval of a curve that is still drawn across the window: ${span(plotShadeXs)}`)
+  const filled = plotsOf('f(x) = x^2{Fill: 0..1}')[0]
+  expect(filled?.shade?.from === 0 && filled.shade.to === 1, 'Fill is another name for Shade')
+  const whole = plotsOf('y = sin(x){Shade}')[0]
+  expect(whole?.shade?.from === -Infinity && whole.shade.to === Infinity, 'a bare Shade fills the whole curve')
+  const trimmed = plotsOf('f(x) = x{Domain: 0..3, Shade: true}')[0]
+  expect(trimmed?.shade?.from === 0 && trimmed.shade.to === 3, 'Shade: true fills the Domain that is drawn')
+  expect(plotsOf('y = x{Shade: false}').length === 1 && !plotsOf('y = x{Shade: false}')[0]?.shade, 'Shade: false leaves the curve unfilled')
+  expect(Math.abs((plotsOf('y = sin(x){Shade: 0..pi}')[0]?.shade?.to ?? 0) - Math.PI) < 1e-9, 'a Shade end can be an expression')
+  const derivativeShade = plotsOf('Derivative(x^2, x){Shade: 0..1}')[0]
+  expect(derivativeShade?.shade?.from === 0 && derivativeShade.shade.to === 1, 'Shade works on a drawn result such as a derivative')
+  const seriesShade = plotsOf('Series(exp(x), x){Shade: 0..1}')
+  expect(seriesShade.filter((body) => body.shade).length === 1 && !seriesShade.find((body) => body.shade)?.dashed, 'Shade fills the result curve, not the dashed original')
+  expect(textOf('r(t) = [cos(t), sin(t)]{t: 0..2*pi, Shade: 0..1}').startsWith('Shade only fills under a curve'), `Shade on a parametric curve explains itself: ${textOf('r(t) = [cos(t), sin(t)]{t: 0..2*pi, Shade: 0..1}')}`)
+  fails('Plot(x^2, x){Shade: 2}', 'Shade needs a range such as 0..2.')
+
   fails('Plot(sin(x), x){Colr: red}', 'Plot has no setting Colr. Did you mean Color?')
   fails('Solve(x^2 = 4, x){Domian: 0..5}', 'Solve has no setting Domian. Did you mean Domain?')
   fails('Plot(sin(x), x){PlotPoints: 5}', 'PlotPoints needs a whole number from 12 to 800.')
@@ -70,7 +92,7 @@ export function runSyntaxChecks(): string[] {
   const aliases: [string, string][] = [
     ['deriv(x^2, x)', 'Derivative(x^2, x) = 2x'],
     ['DERIVATIVE(x^2, x)', 'Derivative(x^2, x) = 2x'],
-    ['int(2x, x)', 'Integrate(2x, x) = x^2 + C (Graph uses C = 0.)'],
+    ['int(2x, x)', 'Integrate(2x, x) = x^2 + C'],
     ['lim(sin(x)/x, x, 0)', 'Limit(sin(x)/x, x, 0) = 1'],
     ['roots(x^2 - 1, x)', 'x = 1 or x = -1'],
     ['taylor(exp(x), x)', 'Series(exp(x), x) = x^3/6 + x^2/2 + x + 1'],
@@ -177,9 +199,15 @@ export function runSyntaxChecks(): string[] {
     ['Solve(x^2 = 4, x){|}', 'options Solve [Domain]'],
     ['Solve([a = 1, b = 2], [sigma, theta]){|}', 'options Solve [Domain, sigma, theta]'],
     ['Plot3D(x*y, x, y){|}', `options Plot3D [x, y, ${graphSettings}]`],
-    ['f(x) = sin(x){|}', `options Graph [x, ${graphSettings}]`],
+    ['f(x) = sin(x){|}', `options Graph [x, ${graphSettings}, Shade]`],
+    ['y = x^2{|}', `options Graph [${graphSettings}, Shade]`],
+    ['z = x*y{|}', `options Graph [${graphSettings}]`],
+    ['g(x, y) = x*y{|}', `options Graph [x, y, ${graphSettings}]`],
     ['r(t) = [cos(t), sin(t)]{|}', `options Graph [t, ${graphSettings}]`],
-    ['Derivative(x^3, x){|}', `options Derivative [Order, At, ${graphSettings}]`],
+    ['Plot([cos(t), sin(t)], t){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed]`],
+    ['Plot(x^2, x){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade]`],
+    ['Derivative(x^3, x){|}', `options Derivative [Order, At, ${graphSettings}, Shade]`],
+    ['Integrate(x^2, x){|}', 'options Integrate [Domain]'],
     ['Expand(Derivative(x^3, x){|})', 'options Derivative [Order, At]'],
     ['2*Derivative(x^3, x){|}', 'options Derivative [Order, At]'],
     ['Expand(Derivative(x^3, x)){|}', 'options Expand []'],
@@ -205,7 +233,7 @@ export function runSyntaxChecks(): string[] {
     const value = source.slice(0, start) + inserted + source.slice(end)
     return `${value.slice(0, start + caret)}|${value.slice(start + caret)}`
   }
-  expect(labels('Plot(sin(x), x){Color: red, |}') === 'Domain, PlotPoints, MaxRecursion, Exclusions, Dashed', `used settings drop out of the list: ${labels('Plot(sin(x), x){Color: red, |}')}`)
+  expect(labels('Plot(sin(x), x){Color: red, |}') === 'Domain, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade', `used settings drop out of the list: ${labels('Plot(sin(x), x){Color: red, |}')}`)
   expect(labels('Plot(sin(x), x){Dashed, Pl|}') === 'PlotPoints', `typed letters filter the settings: ${labels('Plot(sin(x), x){Dashed, Pl|}')}`)
   expect(labels('Plot(sin(x), x){Color: re|}') === 'red', `typed letters filter the colors: ${labels('Plot(sin(x), x){Color: re|}')}`)
   expect(labels('2si|').startsWith('sin(') && labels('Solve(sig|') === '' && labels('so|lve') === '', 'names complete after two letters, and not in the middle of a word')

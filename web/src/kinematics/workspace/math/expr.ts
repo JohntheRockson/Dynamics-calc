@@ -149,6 +149,8 @@ export interface PlotOptions {
   ranges: PlotDomain[]
   color: string | null
   dashed: boolean
+  /** Fill between the curve and the axis: an interval, or 'all' for the whole curve. */
+  shade: { min: Expr; max: Expr } | 'all' | null
 }
 
 export interface SearchDomain {
@@ -157,7 +159,7 @@ export interface SearchDomain {
   max: Expr
 }
 
-export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null, ranges: [], color: null, dashed: false }
+export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null, ranges: [], color: null, dashed: false, shade: null }
 
 export function plotDefaults(): PlotOptions {
   return { ...DEFAULT_PLOT, ranges: [] }

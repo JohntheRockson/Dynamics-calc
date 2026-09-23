@@ -143,9 +143,20 @@ function blockOwner(line: string, open: number, closed: ClosedCall | null, neste
     const params = head ? topLevelParts(head[1] ?? '').filter((name) => /^[A-Za-zα-ω][A-Za-z0-9α-ω]*$/.test(name)) : []
     options = mergeOptions(options, [...params.map((name) => rangeOption(name, `Only draw ${name} in this range`)), ...GRAPH_OPTIONS])
   }
+  if (!shadeApplies(line, call, closed)) options = options.filter((option) => optionKey(option.name) !== 'shade')
   if (call && (call.options.length > 0 || call.draws)) return { label: call.name, options }
   if (!nested && drawsLine) return { label: 'Graph', options }
   return { label: call?.name ?? null, options }
+}
+
+/** Shade fills under a y = f(x) curve, so surfaces, parametric curves, and vectors leave it out. */
+function shadeApplies(line: string, call: FunctionSpec | null, closed: ClosedCall | null): boolean {
+  if (call?.kernel === 'plot3d') return false
+  if (call?.kernel === 'plot' && closed && line.slice(closed.open + 1).trimStart().startsWith('[')) return false
+  const definition = /^\s*[A-Za-zα-ω][A-Za-z0-9α-ω]*\s*\(([^()=]*)\)\s*=\s*(.*)$/.exec(line)
+  if (definition && (topLevelParts(definition[1] ?? '').length > 1 || (definition[2] ?? '').trimStart().startsWith('['))) return false
+  const assignment = /^\s*([A-Za-zα-ω][A-Za-z0-9α-ω]*)(?:\^\d+)?\s*=\s*(.*)$/.exec(line)
+  return !(assignment && (assignment[1] === 'z' || (assignment[2] ?? '').trimStart().startsWith('[')))
 }
 
 /** Setting names already written in the block that holds the caret, apart from the one being typed. */
