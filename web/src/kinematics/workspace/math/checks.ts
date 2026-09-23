@@ -4,7 +4,7 @@ import { evaluateDocument } from '../evaluate'
 import { previewTex, validateMath } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
 import { formatTick, tickMarks } from '../../ticks'
-import { closeOpenGroups, moveMathCursor } from './inputView'
+import { closeOpenGroups, exitSlotsForComma, moveMathCursor } from './inputView'
 import { expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './shortcuts'
 
@@ -463,6 +463,15 @@ export function runMathChecks(): string[] {
   const smallDecimalRow = evaluateDocument(appendMath(emptyDocument(), 'sqrt(23)/10000000')).blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(smallDecimalRow?.tex?.includes('\\times 10^{-')), `a computed tiny decimal is prettied: ${smallDecimalRow?.tex}`)
 
+  // The auto-pair always closes an exponent the instant `^` is typed, so live typing of
+  // `...theta))^2` leaves the caret right after "2" with the closing paren still unconsumed.
+  const exponentComma = 'solve(10=sigma*(cos(theta))^(2)'
+  const exponentCaret = exponentComma.length - 1
+  expect(exitSlotsForComma(exponentComma, exponentCaret) === exponentComma.length, `a comma steps out of an open exponent: ${exitSlotsForComma(exponentComma, exponentCaret)}`)
+  const openCall = 'f(1)'
+  expect(exitSlotsForComma(openCall, openCall.length - 1) === openCall.length - 1, 'a comma stays inside an explicit call')
+  const nestedExponent = 'a^(2^(3))'
+  expect(exitSlotsForComma(nestedExponent, nestedExponent.length - 2) === nestedExponent.length, `a comma steps out of every nested exponent: ${exitSlotsForComma(nestedExponent, nestedExponent.length - 2)}`)
   const optionsWithCaret = previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6', 20)
   expect(Boolean(optionsWithCaret?.includes('\\sin')), `a caret inside the plot options tail still previews: ${optionsWithCaret}`)
   expect(Boolean(previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6')?.includes('\\sin')), 'the plot options tail still previews without a caret')

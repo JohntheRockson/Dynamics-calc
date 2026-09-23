@@ -221,6 +221,7 @@ const IDENT_PART = /[A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]/
 interface Slot {
   start: number
   end: number
+  kind: 'fraction' | 'exponent' | 'subscript'
   move: (at: number, dir: 'left' | 'right' | 'up' | 'down') => number | null
 }
 
@@ -239,6 +240,24 @@ export function moveMathCursor(source: string, cursor: number, dir: 'left' | 'ri
   }
   if (dir === 'left' || dir === 'right') return jumpToken(source, at, dir)
   return at
+}
+
+/**
+ * A comma always separates arguments (a function call, a vector, a domain), so it is never
+ * meant for the inside of an exponent or a subscript. If the caret is sitting inside one of
+ * those slots when `,` is typed, step past its closer first. A fraction or a plain `(...)`
+ * group keeps the comma, since it may belong to a call nested inside that group.
+ */
+export function exitSlotsForComma(source: string, cursor: number): number {
+  let at = cursor
+  for (;;) {
+    const enclosing = [...findExponents(source), ...findSubscripts(source)]
+      .filter((slot) => at > slot.start && at < slot.end)
+      .sort((a, b) => b.start - a.start)
+    const innermost = enclosing[0]
+    if (!innermost) return at
+    at = innermost.end
+  }
 }
 
 /** Append the closers for groups that are still open, so Right can leave cos(30. */
@@ -272,6 +291,7 @@ function findFractions(source: string): Slot[] {
     spans.push({
       start: frac.numStart,
       end: frac.end,
+      kind: 'fraction',
       move: (at, dir) => moveFraction(frac, at, dir),
     })
   }
@@ -306,6 +326,7 @@ function findExponents(source: string): Slot[] {
       spans.push({
         start: i,
         end,
+        kind: 'exponent',
         move: (at, dir) => moveWrapped(i, contentStart, closeAt, end, at, dir),
       })
       continue
@@ -314,6 +335,7 @@ function findExponents(source: string): Slot[] {
     spans.push({
       start: i,
       end,
+      kind: 'exponent',
       move: (at, dir) => moveWrapped(i, j, end, end, at, dir),
     })
   }
@@ -334,6 +356,7 @@ function findSubscripts(source: string): Slot[] {
       spans.push({
         start: i,
         end,
+        kind: 'subscript',
         move: (at, dir) => moveWrapped(i, j + 1, closeAt, end, at, dir),
       })
       continue
@@ -345,6 +368,7 @@ function findSubscripts(source: string): Slot[] {
     spans.push({
       start: i,
       end,
+      kind: 'subscript',
       move: (at, dir) => moveWrapped(i, j, end, end, at, dir),
     })
   }

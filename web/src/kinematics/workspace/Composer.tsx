@@ -4,7 +4,7 @@ import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
 import { MATH_SECTIONS } from './math/catalog'
 import { previewTex } from './math/expr'
-import { closeOpenGroups, latexToSource, moveMathCursor } from './math/inputView'
+import { closeOpenGroups, exitSlotsForComma, latexToSource, moveMathCursor } from './math/inputView'
 import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './math/shortcuts'
 
 function MathLine({ tex }: { tex: string }) {
@@ -13,6 +13,26 @@ function MathLine({ tex }: { tex: string }) {
       <Eq tex={tex} />
     </div>
   )
+}
+
+/**
+ * Write the new value and caret straight into the real input, then tell React about it.
+ * A React-controlled input only gets its DOM value back on the *next* render, so placing the
+ * caret with requestAnimationFrame races a fast second keystroke, which can land before that
+ * frame runs and land in the wrong spot. Setting `input.value` here first means the caret index
+ * we ask for always exists, and a same-string re-render afterward does not move it.
+ */
+function placeMathInput(
+  input: HTMLInputElement,
+  value: string,
+  cursor: number,
+  setQuery: (value: string) => void,
+  setCursor: (cursor: number) => void,
+): void {
+  input.value = value
+  input.setSelectionRange(cursor, cursor)
+  setQuery(value)
+  setCursor(cursor)
 }
 
 function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string, string> {
@@ -79,19 +99,19 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
   }
 
   const insertTemplate = (template: string) => {
-    setQuery(template)
     setMenu(false)
     setOpen(false)
     setError(null)
     const caret = template.indexOf('(')
     const next = caret >= 0 ? caret + 1 : template.length
-    setCursor(next)
-    requestAnimationFrame(() => {
-      const input = inputRef.current
-      if (!input) return
+    const input = inputRef.current
+    if (input) {
       input.focus()
-      input.setSelectionRange(next, next)
-    })
+      placeMathInput(input, template, next, setQuery, setCursor)
+    } else {
+      setQuery(template)
+      setCursor(next)
+    }
   }
 
   const submit = () => {
@@ -179,16 +199,12 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
             onChange={(event) => {
               const raw = event.target.value
               const ascii = latexToSource(raw)
-              const nextCursor = ascii === raw ? (event.target.selectionStart ?? ascii.length) : ascii.length
-              setQuery(ascii)
-              setCursor(nextCursor)
               setHighlight(0)
               setOpen(true)
-              if (ascii !== raw) {
-                const placed = ascii
-                requestAnimationFrame(() => {
-                  if (event.target.value === placed) event.target.setSelectionRange(placed.length, placed.length)
-                })
+              if (ascii !== raw) placeMathInput(event.target, ascii, ascii.length, setQuery, setCursor)
+              else {
+                setQuery(ascii)
+                setCursor(event.target.selectionStart ?? ascii.length)
               }
             }}
             onSelect={(event) => setCursor(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
@@ -203,15 +219,9 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
               const expanded = emptyFunctionShortcut(typed, caret, event.key) ?? expandMathShortcut(typed, caret, event.key)
               if (expanded) {
                 event.preventDefault()
-                setQuery(expanded.value)
-                setCursor(expanded.cursor)
                 setHighlight(0)
                 setError(null)
-                const placed = expanded.value
-                const placedCursor = expanded.cursor
-                requestAnimationFrame(() => {
-                  if (input.value === placed) input.setSelectionRange(placedCursor, placedCursor)
-                })
+                placeMathInput(input, expanded.value, expanded.cursor, setQuery, setCursor)
                 return
               }
               if (event.key === '/' && typed.slice(0, caret).trim() !== '' && looksLikeMath(typed.slice(0, caret))) {
@@ -220,41 +230,36 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
                 const right = typed.slice(end)
                 const value = `${left}/()${right}`
                 const next = left.length + 2
-                setQuery(value)
-                setCursor(next)
                 setHighlight(0)
                 setError(null)
-                const placed = value
-                requestAnimationFrame(() => {
-                  if (input.value === placed) input.setSelectionRange(next, next)
-                })
+                placeMathInput(input, value, next, setQuery, setCursor)
                 return
               }
               const slotted = insertMathSlot(typed, caret, end, event.key)
               if (slotted) {
                 event.preventDefault()
-                setQuery(slotted.value)
-                setCursor(slotted.cursor)
                 setHighlight(0)
                 setError(null)
-                const placed = slotted.value
-                const placedCursor = slotted.cursor
-                requestAnimationFrame(() => {
-                  if (input.value === placed) input.setSelectionRange(placedCursor, placedCursor)
-                })
+                placeMathInput(input, slotted.value, slotted.cursor, setQuery, setCursor)
                 return
+              }
+              if (event.key === ',' && liveMath) {
+                const exit = exitSlotsForComma(typed, caret)
+                if (exit !== caret) {
+                  event.preventDefault()
+                  const left = typed.slice(0, exit)
+                  const right = typed.slice(Math.max(exit, end))
+                  const value = `${left},${right}`
+                  placeMathInput(input, value, left.length + 1, setQuery, setCursor)
+                  return
+                }
               }
               if (liveMath && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
                 if (event.key === 'ArrowRight' && caret === end && caret === typed.length) {
                   const closed = closeOpenGroups(typed)
                   if (closed !== typed) {
                     event.preventDefault()
-                    setQuery(closed)
-                    setCursor(closed.length)
-                    const placed = closed
-                    requestAnimationFrame(() => {
-                      if (input.value === placed) input.setSelectionRange(placed.length, placed.length)
-                    })
+                    placeMathInput(input, closed, closed.length, setQuery, setCursor)
                     return
                   }
                 }
