@@ -22,6 +22,15 @@ export function emptyBox(): PlotBox {
   return { xMin: -10, xMax: 10, yMin: -10, yMax: 10, zMin: -10, zMax: 10 }
 }
 
+/** The point the 3D axes cross: the middle of the cube. */
+export function axisThrough(box: PlotBox): { x: number; y: number; z: number } {
+  return {
+    x: (box.xMin + box.xMax) / 2,
+    y: (box.yMin + box.yMax) / 2,
+    z: (box.zMin + box.zMax) / 2,
+  }
+}
+
 /** A box centered on the origin. `span` is the x and y half-width, `zAbs` the z half-height. */
 export function originBox(span: number, zAbs: number): PlotBox {
   const s = Math.max(Math.abs(span), 1e-6)

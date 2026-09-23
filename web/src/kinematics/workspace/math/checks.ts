@@ -5,7 +5,7 @@ import { convertAngleInput, previewTex, validateMath } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
 import { formatTick, tickMarks } from '../../ticks'
 import { closeOpenGroups, exitSlotsForComma, moveMathCursor } from './inputView'
-import { expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
+import { axisThrough, expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './shortcuts'
 
 export function runMathChecks(): string[] {
@@ -502,6 +502,31 @@ export function runMathChecks(): string[] {
   const restored = convertDocumentAngles(angleDoc, 'deg', 'rad')
   const restoredStatement = restored.statements.find((statement) => statement.type === 'math')
   expect(restoredStatement?.type === 'math' && restoredStatement.input === 'sin(pi)', `switching back restores sin(pi): ${restoredStatement?.type === 'math' ? restoredStatement.input : ''}`)
+
+  const axisMiddle = axisThrough(originBox(10, 10))
+  expect(axisMiddle.x === 0 && axisMiddle.y === 0 && axisMiddle.z === 0, `axes cross the middle of an origin cube: ${axisMiddle.x},${axisMiddle.y},${axisMiddle.z}`)
+  const axisShifted = axisThrough({ xMin: 2, xMax: 8, yMin: 2, yMax: 8, zMin: 4, zMax: 10 })
+  expect(axisShifted.x === 5 && axisShifted.y === 5 && axisShifted.z === 7, `axes cross the middle of a shifted cube: ${axisShifted.x},${axisShifted.y},${axisShifted.z}`)
+
+  const ranged = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, 0, 0], t = 0..2'))
+  const rangedXs = ranged.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
+  expect(rangedXs.length > 5 && Math.min(...rangedXs) >= -1e-6 && Math.max(...rangedXs) <= 2 + 1e-6 && Math.max(...rangedXs) > 1, `t = 0..2 stays inside that domain: ${Math.min(...rangedXs)}..${Math.max(...rangedXs)}`)
+  const open = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, 0, 0]'))
+  const openXs = open.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
+  expect(openXs.length > 5 && Math.min(...openXs) < -5 && Math.max(...openXs) > 5, `a parametric curve still defaults to t from -10 to 10: ${Math.min(...openXs)}..${Math.max(...openXs)}`)
+  const parenDomain = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, t^2, 0], t = (0, 1)'))
+  const parenXs = parenDomain.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
+  expect(parenXs.length > 5 && Math.min(...parenXs) >= -1e-6 && Math.max(...parenXs) <= 1 + 1e-6, `t = (0, 1) is a domain: ${Math.min(...parenXs)}..${Math.max(...parenXs)}`)
+  const broken = 'r(t) = [t, 0, 0]\nt = 0..2*pi'
+  const brokenView = evaluateDocument(appendMath(emptyDocument(), broken))
+  const brokenXs = brokenView.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
+  expect(brokenXs.length > 5 && Math.min(...brokenXs) >= -1e-6 && Math.max(...brokenXs) <= 2 * Math.PI + 1e-6, `a domain on the next line is kept: ${Math.min(...brokenXs)}..${Math.max(...brokenXs)}`)
+  const domainPreview = previewTex('r(t) = [cos(t), sin(t)], t = 0..2*pi') ?? ''
+  expect(domainPreview.includes('\\cos') && domainPreview.includes('\\ldots') && domainPreview.includes('\\pi'), `the domain shows with the curve: ${domainPreview}`)
+  const domainLine = previewTex('t = 0..2') ?? ''
+  expect(domainLine.includes('0') && domainLine.includes('\\ldots') && domainLine.includes('2'), `a domain line previews: ${domainLine}`)
+  const convertedDomain = convertAngleInput('r(t) = [cos(pi), sin(t)], t = 0..2', 'rad', 'deg')
+  expect(convertedDomain.includes('180') && convertedDomain.includes('t = 0..2'), `a domain survives an angle switch: ${convertedDomain}`)
 
   return errors
 }

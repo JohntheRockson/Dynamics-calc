@@ -1,39 +1,10 @@
 import { useId, useRef, useState } from 'react'
-import { Eq } from '../Eq'
 import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
+import { MathField, type MathFieldHandle } from './MathField'
 import { MATH_SECTIONS } from './math/catalog'
-import { previewTex } from './math/expr'
-import { closeOpenGroups, exitSlotsForComma, latexToSource, moveMathCursor } from './math/inputView'
-import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './math/shortcuts'
-
-function MathLine({ tex }: { tex: string }) {
-  return (
-    <div className="composer-math" aria-hidden="true">
-      <Eq tex={tex} />
-    </div>
-  )
-}
-
-/**
- * Write the new value and caret straight into the real input, then tell React about it.
- * A React-controlled input only gets its DOM value back on the *next* render, so placing the
- * caret with requestAnimationFrame races a fast second keystroke, which can land before that
- * frame runs and land in the wrong spot. Setting `input.value` here first means the caret index
- * we ask for always exists, and a same-string re-render afterward does not move it.
- */
-function placeMathInput(
-  input: HTMLInputElement,
-  value: string,
-  cursor: number,
-  setQuery: (value: string) => void,
-  setCursor: (cursor: number) => void,
-): void {
-  input.value = value
-  input.setSelectionRange(cursor, cursor)
-  setQuery(value)
-  setCursor(cursor)
-}
+import { latexToSource } from './math/inputView'
+import { looksLikeMath } from './math/shortcuts'
 
 function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string, string> {
   const names = pointNames(doc)
@@ -51,7 +22,7 @@ function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string
 
 export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; onCommit: (commandId: string, args: Record<string, string>) => string | null; onMath: (input: string) => string | null }) {
   const listId = useId()
-  const inputRef = useRef<HTMLInputElement>(null)
+  const fieldRef = useRef<MathFieldHandle>(null)
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
@@ -60,12 +31,10 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
   const [error, setError] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
   const [section, setSection] = useState(MATH_SECTIONS[0].id)
-  const [cursor, setCursor] = useState(0)
   const mathMode = !command && looksLikeMath(query)
   const matches = mathMode ? [] : filterCommands(query)
   const names = pointNames(doc)
   const activeIndex = Math.min(highlight, Math.max(matches.length - 1, 0))
-  const preview = mathMode ? previewTex(query, cursor) : null
 
   const choose = (next: CommandDef) => {
     setCommand(next)
@@ -81,21 +50,20 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
     setCommand(null)
     setArgs({})
     setError(null)
-    inputRef.current?.focus()
+    fieldRef.current?.focus()
   }
 
   const commitMath = () => {
-    const live = latexToSource(inputRef.current?.value ?? query)
+    const live = latexToSource(fieldRef.current?.read() ?? query)
     const message = onMath(live)
     if (message) {
       setError(message)
       return
     }
     setQuery('')
-    setCursor(0)
     setError(null)
     setOpen(false)
-    inputRef.current?.focus()
+    fieldRef.current?.focus()
   }
 
   const insertTemplate = (template: string) => {
@@ -104,14 +72,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
     setError(null)
     const caret = template.indexOf('(')
     const next = caret >= 0 ? caret + 1 : template.length
-    const input = inputRef.current
-    if (input) {
-      input.focus()
-      placeMathInput(input, template, next, setQuery, setCursor)
-    } else {
-      setQuery(template)
-      setCursor(next)
-    }
+    fieldRef.current?.place(template, next)
   }
 
   const submit = () => {
@@ -124,7 +85,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
     setCommand(null)
     setArgs({})
     setError(null)
-    inputRef.current?.focus()
+    fieldRef.current?.focus()
   }
 
   return (
@@ -132,7 +93,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
       className="composer"
       onSubmit={(event) => {
         event.preventDefault()
-        const live = latexToSource(inputRef.current?.value ?? query)
+        const live = latexToSource(fieldRef.current?.read() ?? query)
         if (command) submit()
         else if (looksLikeMath(live) || (live.trim() && filterCommands(live).length === 0)) commitMath()
         else if (matches[activeIndex]) choose(matches[activeIndex])
@@ -180,116 +141,36 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         </div>
       ) : (
         <div className="composer-search">
-          <div className={preview ? 'composer-field is-math' : 'composer-field'}>
-            {preview && <MathLine tex={preview} />}
-          <input
-            ref={inputRef}
-            className="num-input"
-            role="combobox"
-            aria-expanded={open}
-            aria-controls={listId}
-            aria-autocomplete="list"
-            aria-label="Type a statement"
-            placeholder="Type a statement"
+          <MathField
+            ref={fieldRef}
             value={query}
-            spellCheck={false}
-            autoCapitalize="off"
+            label="Type a statement"
+            placeholder="Type a statement"
             onFocus={() => setOpen(true)}
             onBlur={() => setOpen(false)}
-            onChange={(event) => {
-              const raw = event.target.value
-              const ascii = latexToSource(raw)
+            onValue={(next) => {
               setHighlight(0)
               setOpen(true)
-              if (ascii !== raw) placeMathInput(event.target, ascii, ascii.length, setQuery, setCursor)
-              else {
-                setQuery(ascii)
-                setCursor(event.target.selectionStart ?? ascii.length)
-              }
+              setError(null)
+              setQuery(next)
             }}
-            onSelect={(event) => setCursor(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-            onKeyUp={(event) => setCursor(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-            onClick={(event) => setCursor(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-            onKeyDown={(event) => {
-              const input = event.currentTarget
-              const typed = input.value
-              const caret = input.selectionStart ?? typed.length
-              const end = input.selectionEnd ?? caret
-              const liveMath = looksLikeMath(typed)
-              const expanded = emptyFunctionShortcut(typed, caret, event.key) ?? expandMathShortcut(typed, caret, event.key)
-              if (expanded) {
-                event.preventDefault()
-                setHighlight(0)
-                setError(null)
-                placeMathInput(input, expanded.value, expanded.cursor, setQuery, setCursor)
-                return
-              }
-              if (event.key === '/' && typed.slice(0, caret).trim() !== '' && looksLikeMath(typed.slice(0, caret))) {
-                event.preventDefault()
-                const left = typed.slice(0, caret)
-                const right = typed.slice(end)
-                const value = `${left}/()${right}`
-                const next = left.length + 2
-                setHighlight(0)
-                setError(null)
-                placeMathInput(input, value, next, setQuery, setCursor)
-                return
-              }
-              const slotted = insertMathSlot(typed, caret, end, event.key)
-              if (slotted) {
-                event.preventDefault()
-                setHighlight(0)
-                setError(null)
-                placeMathInput(input, slotted.value, slotted.cursor, setQuery, setCursor)
-                return
-              }
-              if (event.key === ',' && liveMath) {
-                const exit = exitSlotsForComma(typed, caret)
-                if (exit !== caret) {
-                  event.preventDefault()
-                  const left = typed.slice(0, exit)
-                  const right = typed.slice(Math.max(exit, end))
-                  const value = `${left},${right}`
-                  placeMathInput(input, value, left.length + 1, setQuery, setCursor)
-                  return
-                }
-              }
-              if (liveMath && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
-                if (event.key === 'ArrowRight' && caret === end && caret === typed.length) {
-                  const closed = closeOpenGroups(typed)
-                  if (closed !== typed) {
-                    event.preventDefault()
-                    placeMathInput(input, closed, closed.length, setQuery, setCursor)
-                    return
-                  }
-                }
-                event.preventDefault()
-                const dir = event.key === 'ArrowLeft' ? 'left' : event.key === 'ArrowRight' ? 'right' : event.key === 'ArrowUp' ? 'up' : 'down'
-                const next = moveMathCursor(typed, caret, dir)
-                setCursor(next)
-                input.setSelectionRange(next, next)
-                return
-              }
-              if (liveMath) {
-                if (event.key === 'Escape') {
-                  setOpen(false)
-                  setMenu(false)
-                }
-                return
-              }
-              if (event.key === 'ArrowDown') {
-                event.preventDefault()
+            onSubmit={(live) => {
+              const text = latexToSource(live)
+              if (looksLikeMath(text) || (text.trim() && filterCommands(text).length === 0)) commitMath()
+              else if (matches[activeIndex]) choose(matches[activeIndex])
+            }}
+            onEscape={() => {
+              setOpen(false)
+              setMenu(false)
+            }}
+            onCommandKey={(key) => {
+              if (key === 'ArrowDown') {
                 setOpen(true)
                 setHighlight((index) => Math.min(matches.length - 1, index + 1))
-              } else if (event.key === 'ArrowUp') {
-                event.preventDefault()
-                setHighlight((index) => Math.max(0, index - 1))
-              } else if (event.key === 'Escape') {
-                setOpen(false)
-              }
+              } else if (key === 'ArrowUp') setHighlight((index) => Math.max(0, index - 1))
+              else setOpen(false)
             }}
           />
-          </div>
           {menu && (
             <div className="math-menu" role="dialog" aria-label="Functions">
               <div className="math-menu-tabs">
@@ -338,7 +219,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         <button type="button" className="btn btn-ghost workspace-clear" aria-expanded={menu} onClick={() => setMenu((current) => !current)}>
           Functions
         </button>
-        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y). Up and down move between the top and bottom of a fraction, and left and right move across a name. ^ and ( open a slot, and Right leaves it. A prime dots the previous symbol, and _ writes a subscript. plotpoints, maxrecursion, and exclusions tune a graph. A domain such as (0, 2*pi) searches a nonlinear system.' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
+        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter runs this line. Shift+Enter starts a new line. Click a previous line to edit it, then Enter runs it again. / starts f(x), and // starts f(x, y). A parametric curve takes a domain such as t = 0..2*pi.' : 'Type math, or a statement such as point or circle. Enter runs it. Shift+Enter starts a new line.')}</p>
       </div>
     </form>
   )

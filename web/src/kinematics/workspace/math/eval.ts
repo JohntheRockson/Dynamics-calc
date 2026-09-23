@@ -158,7 +158,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
           const color = nextColor()
           const plot = parametricPlot(statement.id, label, color, statement.visible, body.args, parsed.params[0], env, angles, undefined, parsed.plot)
-          const warn = hasGeometry(plot) ? null : 'No real values to plot for t from -10 to 10.'
+          const warn = domainWarning(parsed.plot, angles, parsed.params[0]) ?? (hasGeometry(plot) ? null : missingDomain(parsed.plot, angles, parsed.params[0]))
           plots.push(plot)
           rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
           continue
@@ -189,7 +189,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           const picture = vectorPicture(value)
           if (picture) {
             const color = nextColor()
-            plots.push(picture.kind === 'arrow' ? arrowPlot(statement.id, parsed.name, color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, parsed.name, color, statement.visible, picture.components, picture.param, env, angles))
+            plots.push(picture.kind === 'arrow' ? arrowPlot(statement.id, parsed.name, color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, parsed.name, color, statement.visible, picture.components, picture.param, env, angles, undefined, parsed.plot))
           }
           const nameTex = tex({ type: 'sym', name: parsed.name })
           const exactText = `${parsed.name} = ${shown.exactText ?? ''}`
@@ -270,10 +270,11 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
       const picture = vectorPicture(value)
       if (picture) {
         const color = nextColor()
-        const drawn = picture.kind === 'arrow' ? arrowPlot(statement.id, 'vector', color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, picture.param, color, statement.visible, picture.components, picture.param, env, angles)
+        const drawn = picture.kind === 'arrow' ? arrowPlot(statement.id, 'vector', color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, picture.param, color, statement.visible, picture.components, picture.param, env, angles, undefined, parsed.plot)
         plots.push(drawn)
         const shown = described(expr, value, statement.input, angles)
-        rows.push({ ...shown, statementId: statement.id, label: picture.kind === 'arrow' ? 'Vector' : picture.param, plotKind: 'curve', visible: statement.visible, warn: null })
+        const warn = picture.kind === 'arrow' ? null : (domainWarning(parsed.plot, angles, picture.param) ?? (hasGeometry(drawn) ? null : missingDomain(parsed.plot, angles, picture.param)))
+        rows.push({ ...shown, text: warn ? `${shown.text} (${warn})` : shown.text, statementId: statement.id, label: picture.kind === 'arrow' ? 'Vector' : picture.param, plotKind: 'curve', visible: statement.visible, warn })
         continue
       }
       if (containsCas(expr)) {
@@ -500,7 +501,7 @@ function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: Ma
       return value === null || !Number.isFinite(value) ? null : value
     }
     const native = sampleCurveNative(body, param, env, min, max, ySpan, angles === 'deg', style)
-    const nodes = native ?? refineSamples(min, max, { points: Math.min(style.points, 160), recursion: Math.min(style.recursion, 4), exclusions: style.exclusions }, ySpan, at)
+    const nodes = native ?? refineSamples(min, max, { points: Math.min(style.points, 160), recursion: Math.min(style.recursion, 4), exclusions: style.exclusions, domain: null }, ySpan, at)
     let previous = false
     for (const node of nodes) {
       const value = node.y
@@ -595,15 +596,36 @@ function isDiscontinuity(left: number | null, mid: number | null, right: number 
   return Math.abs(mid) > peak * 1.5 + ySpan * 0.25
 }
 
+function parametricRange(plot: PlotOptions, angles: AngleMode): { min: number; max: number } | null {
+  if (!plot.domain) return { min: -10, max: 10 }
+  const min = numericConstant(plot.domain.min, angles)
+  const max = numericConstant(plot.domain.max, angles)
+  if (min === null || max === null || !Number.isFinite(min) || !Number.isFinite(max) || min === max) return null
+  return min < max ? { min, max } : { min: max, max: min }
+}
+
+function domainWarning(plot: PlotOptions, angles: AngleMode, param: string): string | null {
+  if (!plot.domain) return null
+  if (parametricRange(plot, angles)) return null
+  return `The domain of ${param} needs two different numbers, for example ${param} = 0..2*pi.`
+}
+
+function missingDomain(plot: PlotOptions, angles: AngleMode, param: string): string {
+  const range = parametricRange(plot, angles) ?? { min: -10, max: 10 }
+  const bound = (n: number) => String(Math.round(n * 1000) / 1000)
+  return `No real values to plot for ${param} from ${bound(range.min)} to ${bound(range.max)}.`
+}
+
 function sampleParametric(components: Expr[], param: string, env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions): { x: number; y: number; z: number }[] {
   const ySpan = Math.max(1e-6, window.yMax - window.yMin, window.xMax - window.xMin)
+  const range = parametricRange(style, angles) ?? { min: -10, max: 10 }
   const at = (t: number) => {
     const local = bind(env, param, t)
     const values = components.map((component) => numericValue(component, local, angles))
     if (values.some((value) => value === null || !Number.isFinite(value))) return null
     return values[0] ?? null
   }
-  const nodes = refineSamples(-10, 10, style, ySpan, at)
+  const nodes = refineSamples(range.min, range.max, style, ySpan, at)
   const path: { x: number; y: number; z: number }[] = []
   for (const node of nodes) {
     if (node.y === null || node.cut) {

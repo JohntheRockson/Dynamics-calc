@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Eq } from '../Eq'
 import { usePlayback } from '../../hooks/usePlayback'
 import { Composer } from './Composer'
-import { appendMath, commitCommand, convertDocumentAngles, emptyDocument, exampleDocument, removeStatement, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
+import { appendMath, commitCommand, convertDocumentAngles, emptyDocument, exampleDocument, removeStatement, replaceMath, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
+import { MathField } from './MathField'
 import { previewTex, validateMath, type AngleMode } from './math/expr'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
 import { FigurePane } from './FigurePane'
@@ -76,7 +77,26 @@ function CopyIcon({ copied }: { copied: boolean }) {
   )
 }
 
-function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisible, onToggleDecimal, onTogglePlane, showRemove }: { row: RowModel; open: boolean; decimal: boolean; plane: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; onTogglePlane: () => void; showRemove: boolean }) {
+function MathRowEditor({ input, onCommit }: { input: string; onCommit: (value: string) => string | null }) {
+  const [draft, setDraft] = useState(input)
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <>
+      <MathField
+        value={draft}
+        label="Edit statement"
+        onValue={setDraft}
+        onSubmit={(value) => {
+          if (value.trim() === input.trim()) return
+          setError(onCommit(value))
+        }}
+      />
+      {error && <p className="statement-note">{error}</p>}
+    </>
+  )
+}
+
+function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisible, onToggleDecimal, onTogglePlane, onCommitMath, showRemove }: { row: RowModel; open: boolean; decimal: boolean; plane: boolean; onToggle: () => void; onRemove: () => void; onToggleVisible: () => void; onToggleDecimal: () => void; onTogglePlane: () => void; onCommitMath: (value: string) => string | null; showRemove: boolean }) {
   const [copied, setCopied] = useState<'input' | 'output' | null>(null)
   const typed = row.input
   const inputTex = typed ? previewTex(typed) : null
@@ -114,15 +134,15 @@ function RowView({ row, open, decimal, plane, onToggle, onRemove, onToggleVisibl
       )}
     </div>
   )
-  if (inputTex) {
-    const same = Boolean(shownTex && shownTex === inputTex)
+  if (row.input !== undefined) {
+    const same = Boolean(shownTex && inputTex && shownTex === inputTex)
     return (
       <li className={`statement-row is-${row.source} is-math`}>
         <div className="statement-stack">
           <div className="statement-math-line">
-            <Eq tex={inputTex} />
+            <MathRowEditor key={row.input} input={row.input} onCommit={onCommitMath} />
             <span className="statement-copies">
-              <button type="button" className="btn btn-ghost statement-copy" aria-label={copied === 'input' ? 'Copied' : 'Copy input'} onClick={() => copy(inputTex, 'input')}>
+              <button type="button" className="btn btn-ghost statement-copy" aria-label={copied === 'input' ? 'Copied' : 'Copy input'} onClick={() => copy(inputTex ?? row.input ?? '', 'input')}>
                 <CopyIcon copied={copied === 'input'} />
               </button>
             </span>
@@ -279,6 +299,18 @@ export function Workspace() {
                       if (!row.statementId) return
                       const id = row.statementId
                       setPlanes((current) => ({ ...current, [id]: !current[id] }))
+                    }}
+                    onCommitMath={(value) => {
+                      if (!row.statementId) return 'That line cannot be edited.'
+                      const text = value.trim()
+                      if (!text) {
+                        setDoc((current) => removeStatement(current, row.statementId!))
+                        return null
+                      }
+                      const message = validateMath(text)
+                      if (message) return message
+                      setDoc((current) => replaceMath(current, row.statementId!, text))
+                      return null
                     }}
                     showRemove={row.statementId !== null && row.statementId !== block.removeId}
                   />

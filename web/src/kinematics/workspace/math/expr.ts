@@ -105,10 +105,17 @@ function divRat(a: Rat, b: Rat): Rat {
 
 const IDENT = '[A-Za-zαβγδεζηθικλμνξπρστυφχψω][A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]*'
 
+export interface PlotDomain {
+  name: string
+  min: Expr
+  max: Expr
+}
+
 export interface PlotOptions {
   points: number
   recursion: number
   exclusions: boolean
+  domain: PlotDomain | null
 }
 
 export interface SearchDomain {
@@ -117,7 +124,7 @@ export interface SearchDomain {
   max: Expr
 }
 
-export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true }
+export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null }
 
 export function parseMathInput(input: string): MathInput {
   const turned = latexToSource(input).trim()
@@ -175,9 +182,24 @@ function takePlotOptions(source: string): { source: string; plot: PlotOptions } 
   const caretAt = source.indexOf(MATH_CARET)
   const plain = caretAt < 0 ? source : source.slice(0, caretAt) + source.slice(caretAt + 1)
   let rest = plain.trim()
-  const plot: PlotOptions = { ...DEFAULT_PLOT }
+  const plot: PlotOptions = { ...DEFAULT_PLOT, domain: null }
   const pattern = /,\s*(plotpoints|maxrecursion|exclusions)\s*=\s*([^\s,]+)\s*$/i
-  for (let n = 0; n < 6; n += 1) {
+  const domainPattern = new RegExp(`(?:,|\\n)\\s*(domain|${IDENT})\\s*=\\s*([^\\s,]+)\\s*\\.\\.\\s*([^\\s,]+)\\s*$`, 'i')
+  const parenDomain = new RegExp(`(?:,|\\n)\\s*(domain|${IDENT})\\s*=\\s*\\(([^,]+),\\s*([^)]+)\\)\\s*$`, 'i')
+  for (let n = 0; n < 8; n += 1) {
+    const domain = domainPattern.exec(rest) ?? parenDomain.exec(rest)
+    const domainName = (domain?.[1] ?? '').toLowerCase()
+    if (domain && domainName !== 'plotpoints' && domainName !== 'maxrecursion' && domainName !== 'exclusions') {
+      if (!plot.domain) {
+        try {
+          plot.domain = { name: domain[1] ?? 't', min: parseExpr((domain[2] ?? '').trim()), max: parseExpr((domain[3] ?? '').trim()) }
+        } catch {
+          throw new MathError('Use a domain such as t = 0..2*pi.')
+        }
+      }
+      rest = rest.slice(0, domain.index).trim()
+      continue
+    }
     const match = pattern.exec(rest)
     if (!match) break
     const key = (match[1] ?? '').toLowerCase()
@@ -631,29 +653,59 @@ function snapIdentCaret(input: string, cursor: number): number {
   return end
 }
 
+function domainClauseTex(input: string, cursor?: number): string | null {
+  const match = new RegExp(`^\\s*(domain|${IDENT})\\s*=\\s*([^\\s,]+)\\s*\\.\\.\\s*([^\\s,]+)\\s*$`, 'i').exec(input)
+  if (!match) return null
+  try {
+    const min = parseExpr((match[2] ?? '').trim())
+    const max = parseExpr((match[3] ?? '').trim())
+    const name = (match[1] ?? '').toLowerCase() === 'domain' ? '' : `${texSymbol(match[1] ?? 't')} = `
+    const body = `${name}${tex(min)} \\ldots ${tex(max)}`
+    return cursor === undefined ? body : `${body}${CARET_TEX}`
+  } catch {
+    return null
+  }
+}
+
 export function previewTex(input: string, cursor?: number): string | null {
+  const clause = domainClauseTex(input, cursor)
+  if (clause) return clause
   try {
     const at = cursor === undefined ? null : snapIdentCaret(input, Math.max(0, Math.min(cursor, input.length)))
     const marked = at === null ? input : `${input.slice(0, at)}${MATH_CARET}${input.slice(at)}`
     const parsed = parseMathInput(cookPreview(marked))
-    if (parsed.kind === 'fn') {
-      const params = parsed.params.map((name) => texSymbol(name)).join(', ')
-      return `${texSymbol(parsed.name)}\\left(${params}\\right) = ${tex(parsed.body)}`
-    }
-    if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(parsed.expr)}`
-    if (parsed.kind === 'solve') {
-      const eq = parsed.equation.type === 'eq' ? parsed.equation : { type: 'eq' as const, left: parsed.equation, right: ZERO_EXPR }
-      return `${tex(eq.left)} = ${tex(eq.right)}`
-    }
-    if (parsed.kind === 'system') {
-      return parsed.equations
-        .map((eq) => (eq.type === 'eq' ? `${tex(eq.left)} = ${tex(eq.right)}` : tex(eq)))
-        .join(', ')
-    }
-    return tex(parsed.expr)
+    const body = previewBody(parsed)
+    const showCaret = cursor !== undefined && !body.includes('\\rule')
+    return attachDomain(body, parsed.plot, showCaret)
   } catch {
     return null
   }
+}
+
+function previewBody(parsed: MathInput): string {
+  if (parsed.kind === 'fn') {
+    const params = parsed.params.map((name) => texSymbol(name)).join(', ')
+    return `${texSymbol(parsed.name)}\\left(${params}\\right) = ${tex(parsed.body)}`
+  }
+  if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(parsed.expr)}`
+  if (parsed.kind === 'solve') {
+    const eq = parsed.equation.type === 'eq' ? parsed.equation : { type: 'eq' as const, left: parsed.equation, right: ZERO_EXPR }
+    return `${tex(eq.left)} = ${tex(eq.right)}`
+  }
+  if (parsed.kind === 'system') {
+    return parsed.equations.map((eq) => (eq.type === 'eq' ? `${tex(eq.left)} = ${tex(eq.right)}` : tex(eq))).join(', ')
+  }
+  return tex(parsed.expr)
+}
+
+function attachDomain(body: string, plot: PlotOptions, showCaret: boolean): string {
+  let out = body
+  if (plot.domain) {
+    const label = plot.domain.name.toLowerCase() === 'domain' ? '' : `${texSymbol(plot.domain.name)} = `
+    out = `${out},\\ ${label}${tex(plot.domain.min)} \\ldots ${tex(plot.domain.max)}`
+  }
+  if (showCaret && !out.includes('\\rule')) out = `${out}${CARET_TEX}`
+  return out
 }
 
 export function validateMath(input: string): string | null {
@@ -1972,6 +2024,7 @@ function plotSuffix(plot: PlotOptions): string {
   if (plot.points !== DEFAULT_PLOT.points) parts.push(`plotpoints = ${plot.points}`)
   if (plot.recursion !== DEFAULT_PLOT.recursion) parts.push(`maxrecursion = ${plot.recursion}`)
   if (!plot.exclusions) parts.push('exclusions = false')
+  if (plot.domain) parts.push(`${plot.domain.name} = ${plain(plot.domain.min)}..${plain(plot.domain.max)}`)
   return parts.length ? `, ${parts.join(', ')}` : ''
 }
 

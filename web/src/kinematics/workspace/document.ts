@@ -266,6 +266,15 @@ export function convertDocumentAngles(doc: WorkspaceDocument, from: AngleMode, t
   return changed ? { ...doc, statements } : doc
 }
 
+export function replaceMath(doc: WorkspaceDocument, id: string, input: string): WorkspaceDocument {
+  const text = input.trim()
+  if (!text) return removeStatement(doc, id)
+  return {
+    ...doc,
+    statements: doc.statements.map((statement) => (statement.id === id && statement.type === 'math' ? { ...statement, input: text } : statement)),
+  }
+}
+
 export function appendMath(doc: WorkspaceDocument, input: string): WorkspaceDocument {
   const text = input.trim()
   const slot = allocate(doc)

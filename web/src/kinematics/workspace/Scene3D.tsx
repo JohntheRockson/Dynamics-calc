@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { FigureBody, FigureSurface } from './evaluate'
-import { CUBE, emptyBox, expandPlotBox, fromWorld, originBox, toWorld, type PlotBox, type PlotFrame } from './math/plotFrame'
+import { CUBE, axisThrough, emptyBox, expandPlotBox, fromWorld, originBox, toWorld, type PlotBox, type PlotFrame } from './math/plotFrame'
 
 function colorHex(color: string): number {
   const hex = Number.parseInt(color.replace('#', ''), 16)
@@ -164,10 +164,6 @@ function tickValues(min: number, max: number): number[] {
   return values
 }
 
-function nearer(cameraValue: number, low: number, high: number): number {
-  return Math.abs(cameraValue - low) <= Math.abs(cameraValue - high) ? low : high
-}
-
 function addBox(content: THREE.Group, frame: PlotFrame): void {
   const { xMin, xMax, yMin, yMax, zMin, zMax } = frame.box
   const corner = (x: number, y: number, z: number) => place(frame, x, y, z)
@@ -186,6 +182,27 @@ function addBox(content: THREE.Group, frame: PlotFrame): void {
     [corner(xMin, yMax, zMin), corner(xMin, yMax, zMax)],
   ]
   content.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pairs.flat()), new THREE.LineBasicMaterial({ color: 0xb7c6d4, transparent: true, opacity: 0.9 })))
+}
+
+function addCenterAxes(content: THREE.Group, frame: PlotFrame): void {
+  const { box } = frame
+  const origin = axisThrough(box)
+  const axes: { from: [number, number, number]; to: [number, number, number]; color: number }[] = [
+    { from: [box.xMin, origin.y, origin.z], to: [box.xMax, origin.y, origin.z], color: 0xff8d8d },
+    { from: [origin.x, box.yMin, origin.z], to: [origin.x, box.yMax, origin.z], color: 0x7ddea0 },
+    { from: [origin.x, origin.y, box.zMin], to: [origin.x, origin.y, box.zMax], color: 0x8eb6ff },
+  ]
+  for (const axis of axes) {
+    const from = place(frame, axis.from[0], axis.from[1], axis.from[2])
+    const to = place(frame, axis.to[0], axis.to[1], axis.to[2])
+    const direction = to.clone().sub(from)
+    const length = direction.length()
+    if (length < 1e-4) continue
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, length, 8), new THREE.MeshBasicMaterial({ color: axis.color }))
+    shaft.position.copy(from).add(to).multiplyScalar(0.5)
+    shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize())
+    content.add(shaft)
+  }
 }
 
 function addFloor(content: THREE.Group, frame: PlotFrame): void {
@@ -223,20 +240,25 @@ interface ScreenLabel {
   z: number
 }
 
-function labelsForBox(box: PlotBox, camera: { x: number; y: number; z: number }): ScreenLabel[] {
-  const yOnX = nearer(camera.y, box.yMin, box.yMax)
-  const zOnX = nearer(camera.z, box.zMin, box.zMax)
-  const xOnY = nearer(camera.x, box.xMin, box.xMax)
-  const zOnY = nearer(camera.z, box.zMin, box.zMax)
-  const xOnZ = nearer(camera.x, box.xMin, box.xMax)
-  const yOnZ = nearer(camera.y, box.yMin, box.yMax)
+function labelsForBox(box: PlotBox): ScreenLabel[] {
+  const origin = axisThrough(box)
   const labels: ScreenLabel[] = []
-  for (const value of tickValues(box.xMin, box.xMax)) labels.push({ text: formatTick(value), axis: 'x', kind: 'tick', x: value, y: yOnX, z: zOnX })
-  for (const value of tickValues(box.yMin, box.yMax)) labels.push({ text: formatTick(value), axis: 'y', kind: 'tick', x: xOnY, y: value, z: zOnY })
-  for (const value of tickValues(box.zMin, box.zMax)) labels.push({ text: formatTick(value), axis: 'z', kind: 'tick', x: xOnZ, y: yOnZ, z: value })
-  labels.push({ text: 'x', axis: 'x', kind: 'name', x: box.xMax, y: yOnX, z: zOnX })
-  labels.push({ text: 'y', axis: 'y', kind: 'name', x: xOnY, y: box.yMax, z: zOnY })
-  labels.push({ text: 'z', axis: 'z', kind: 'name', x: xOnZ, y: yOnZ, z: box.zMax })
+  let markedCenter = false
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1e-6
+  const pushTick = (axis: 'x' | 'y' | 'z', value: number, x: number, y: number, z: number) => {
+    const atCenter = near(x, origin.x) && near(y, origin.y) && near(z, origin.z)
+    if (atCenter) {
+      if (markedCenter) return
+      markedCenter = true
+    }
+    labels.push({ text: formatTick(value), axis, kind: 'tick', x, y, z })
+  }
+  for (const value of tickValues(box.xMin, box.xMax)) pushTick('x', value, value, origin.y, origin.z)
+  for (const value of tickValues(box.yMin, box.yMax)) pushTick('y', value, origin.x, value, origin.z)
+  for (const value of tickValues(box.zMin, box.zMax)) pushTick('z', value, origin.x, origin.y, value)
+  labels.push({ text: 'x', axis: 'x', kind: 'name', x: box.xMax, y: origin.y, z: origin.z })
+  labels.push({ text: 'y', axis: 'y', kind: 'name', x: origin.x, y: box.yMax, z: origin.z })
+  labels.push({ text: 'z', axis: 'z', kind: 'name', x: origin.x, y: origin.y, z: box.zMax })
   return labels
 }
 
@@ -245,7 +267,6 @@ function syncLabels(container: HTMLDivElement, camera: THREE.PerspectiveCamera, 
   const height = container.clientHeight
   if (width === 0 || height === 0) return
   const { box } = frame
-  const cam = fromWorld(frame, camera.position.x, camera.position.y, camera.position.z)
   const center = place(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2).project(camera)
   const cx = (center.x * 0.5 + 0.5) * width
   const cy = (-center.y * 0.5 + 0.5) * height
@@ -253,7 +274,7 @@ function syncLabels(container: HTMLDivElement, camera: THREE.PerspectiveCamera, 
   const names: { x: number; y: number; text: string; axis: string; kind: string }[] = []
   const ticks: { x: number; y: number; text: string; axis: string; kind: string }[] = []
   const projected = new THREE.Vector3()
-  for (const label of labelsForBox(box, cam)) {
+  for (const label of labelsForBox(box)) {
     const world = toWorld(frame, label.x, label.y, label.z)
     projected.set(world.x, world.y, world.z).project(camera)
     if (projected.z < -1 || projected.z > 1) continue
@@ -502,6 +523,7 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
     spanRef.current = span
     addFloor(content, frame)
     addBox(content, frame)
+    addCenterAxes(content, frame)
 
     bodies.forEach((body) => {
       const color = colorHex(body.color)
