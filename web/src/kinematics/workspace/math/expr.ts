@@ -165,8 +165,16 @@ function naming(raw: string): string {
   return canonicalGreek(raw)
 }
 
+/**
+ * A live caret marker can land inside or right after this tail while it is being typed
+ * (e.g. `,plotpoints=16[caret]0`). Strip it before matching options, then put it back only if
+ * it belonged to the main expression; a caret inside the options tail itself is not shown in
+ * the KaTeX preview, so it is simply dropped.
+ */
 function takePlotOptions(source: string): { source: string; plot: PlotOptions } {
-  let rest = source.trim()
+  const caretAt = source.indexOf(MATH_CARET)
+  const plain = caretAt < 0 ? source : source.slice(0, caretAt) + source.slice(caretAt + 1)
+  let rest = plain.trim()
   const plot: PlotOptions = { ...DEFAULT_PLOT }
   const pattern = /,\s*(plotpoints|maxrecursion|exclusions)\s*=\s*([^\s,]+)\s*$/i
   for (let n = 0; n < 6; n += 1) {
@@ -185,6 +193,7 @@ function takePlotOptions(source: string): { source: string; plot: PlotOptions } 
     }
     rest = rest.slice(0, match.index).trim()
   }
+  if (caretAt >= 0 && caretAt <= rest.length) rest = `${rest.slice(0, caretAt)}${MATH_CARET}${rest.slice(caretAt)}`
   return { source: rest, plot }
 }
 
@@ -667,7 +676,7 @@ export function normalize(e: Expr, angles: AngleMode = 'rad'): Expr {
 export function present(e: Expr, angles: AngleMode = 'rad'): { tex: string; text: string } {
   const unknown = firstUnknown(e)
   if (unknown) throw new MathError(`${unknown} is not defined.`)
-  if (e.type === 'dec') return { tex: e.text, text: e.text }
+  if (e.type === 'dec') return { tex: texDecimal(e.text), text: e.text }
   if (e.type === 'sym' && (e.name === 'e' || e.name === 'pi')) {
     const n = evalConst(e, angles)
     if (n === null) return { tex: tex(e), text: plain(e) }
@@ -698,7 +707,7 @@ export function approximate(e: Expr, angles: AngleMode = 'rad'): { tex: string; 
   const n = evalConst(e, angles)
   if (n === null || !Number.isFinite(n)) return null
   const text = trimNum(n)
-  return { tex: text, text }
+  return { tex: texDecimal(text), text }
 }
 
 export function numericConstant(e: Expr, angles: AngleMode = 'rad'): number | null {
@@ -1584,7 +1593,7 @@ function texPrec(e: Expr): [string, number] {
       if (e.d === 1n) return [e.n.toString(), P_ATOM]
       return [`${e.n < 0n ? '-' : ''}\\frac{${e.n < 0n ? -e.n : e.n}}{${e.d}}`, P_ATOM]
     case 'dec':
-      return [e.text, P_ATOM]
+      return [texDecimal(e.text), P_ATOM]
     case 'sym':
       return [texNamed(e), P_ATOM]
     case 'add':
@@ -1618,7 +1627,22 @@ function peelGroup(e: Expr): Expr {
   return e.type === 'group' ? e.body : e
 }
 
-const CARET_TEX = '\\textcolor{#d6dee8}{\\smash{\\rule{1.4px}{0.9em}}}'
+const SCI_NOTATION = /^(-?\d+(?:\.\d+)?)e([+-]?\d+)$/i
+
+/** `4.7947e+23` (a raw JS exponential string) becomes `4.7947 \times 10^{23}`, spaced like other math platforms. */
+export function texDecimal(text: string): string {
+  const match = SCI_NOTATION.exec(text)
+  if (!match) return text
+  const mantissa = match[1]
+  const exponent = Number(match[2])
+  return `${mantissa} \\times 10^{${exponent}}`
+}
+
+// The rule's height uses mu, a unit that scales with the current script style, so the caret
+// shrinks inside a nested fraction instead of staying the size of the outer formula (em would
+// hold it to the *text*-style size no matter how deep the nesting goes; mu tracks the style KaTeX
+// is actually drawing right now). The width stays a fixed physical size, like a real text caret.
+const CARET_TEX = '\\textcolor{#d6dee8}{\\smash{\\rule{1.4px}{16.2mu}}}'
 
 function isBareCaret(e: Expr): boolean {
   return e.type === 'caret' && e.body === null

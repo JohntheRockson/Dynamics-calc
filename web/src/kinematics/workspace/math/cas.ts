@@ -11,6 +11,7 @@ import {
   present,
   substitute,
   tex,
+  texDecimal,
   type AngleMode,
   type Expr,
   type SearchDomain,
@@ -1234,7 +1235,8 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   if (call.name === 'decimal') {
     const value = valueNamed('decimal', args, angles)
     const text = value.type === 'dec' ? value.text : plain(value)
-    return { text: `${plain(call)} = ${text}`, tex: text, curves: [], points: [], parametrics: [], arrows: [], warn: null }
+    const shownAsTex = value.type === 'dec' ? texDecimal(value.text) : text
+    return { text: `${plain(call)} = ${text}`, tex: shownAsTex, curves: [], points: [], parametrics: [], arrows: [], warn: null }
   }
   if (call.name === 'integrate' && args[0].type === 'vec') return vectorIntegral(args, angles, call)
   if (call.name === 'integrate' && args.length === 4) {
@@ -1249,7 +1251,7 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
       if (start === null || end === null) throw error
       const value = simpson(args[0], variable, start, end, angles)
       const text = decimalText(value)
-      return { text: `${plain(call)} ≈ ${text}`, tex: text, curves, points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
+      return { text: `${plain(call)} ≈ ${text}`, tex: texDecimal(text), curves, points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
     }
   }
   if (call.name === 'integrate') {

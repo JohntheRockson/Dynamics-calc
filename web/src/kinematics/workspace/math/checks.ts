@@ -458,5 +458,14 @@ export function runMathChecks(): string[] {
   const subCaret = previewTex('e_{}', 3) ?? ''
   expect(subCaret.includes('_{') && subCaret.includes('\\rule') && subCaret.includes('\\mathbf{e}'), `the subscript caret sits in the subscript: ${subCaret}`)
 
+  const bigScientific = previewTex('4.7947e23') ?? ''
+  expect(bigScientific.includes('\\times 10^{23}') && !/\de[+-]?\d/i.test(bigScientific), `a typed exponential number is prettied: ${bigScientific}`)
+  const smallDecimalRow = evaluateDocument(appendMath(emptyDocument(), 'sqrt(23)/10000000')).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(smallDecimalRow?.tex?.includes('\\times 10^{-')), `a computed tiny decimal is prettied: ${smallDecimalRow?.tex}`)
+
+  const optionsWithCaret = previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6', 20)
+  expect(Boolean(optionsWithCaret?.includes('\\sin')), `a caret inside the plot options tail still previews: ${optionsWithCaret}`)
+  expect(Boolean(previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6')?.includes('\\sin')), 'the plot options tail still previews without a caret')
+
   return errors
 }
