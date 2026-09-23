@@ -30,6 +30,12 @@ from attitude_sim.estimation import (
     vectors_from_sensors,
 )
 from attitude_sim.plant import RigidBody, step_rigid_body
+from attitude_sim.polhode import (
+    energy_casimir,
+    polhode_regime,
+    polhode_residuals,
+    sample_herpolhode,
+)
 from attitude_sim.quaternions import (
     geodesic_angle,
     quat_normalize,
@@ -113,6 +119,7 @@ class SimConfig:
     srp_cr: float = DEFAULT_SRP_CR
     srp_eclipse: str = "off"
     mrp_plot: bool = False
+    polhode_plot: bool = False
     gyro_sigma_v: float = 5e-4
     gyro_sigma_u: float = 1e-6
     gyro_bias: np.ndarray = field(default_factory=lambda: np.array([0.002, -0.001, 0.0015]))
@@ -165,6 +172,13 @@ class SimLog:
     mean_nis: float | None = None
     mrp_plot_path: Path | None = None
     env_plot_path: Path | None = None
+    polhode_plot_path: Path | None = None
+    casimir_plot_path: Path | None = None
+    inertia: np.ndarray | None = None
+    omega_inertial: np.ndarray | None = None
+    h_inertial: np.ndarray | None = None
+    T: np.ndarray | None = None
+    h2: np.ndarray | None = None
     omega_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     rw_tau_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
     rw_h_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
@@ -253,6 +267,7 @@ def make_scenario_config(
     env_flag: bool = False,
     no_env: bool = False,
     mrp_plot: bool | None = None,
+    polhode_plot: bool | None = None,
 ) -> SimConfig:
     """Named SimLab presets. Plant / controller / estimator cores are unchanged.
 
@@ -263,8 +278,10 @@ def make_scenario_config(
     ``gravity_gradient`` / ``residual_dipole`` / ``aerodynamic`` / ``srp``
     default off so the stock demos stay on the constant-``τ_d`` plant.
     ``hold`` (or ``--env``) turns GG + residual dipole on with a demo-scale
-    residual dipole.  ``--no-env`` turns GG/dipole off.  Orbit / dipole /
-    panel knobs are stored even when the models are off.
+    residual dipole.  ``--no-env`` turns GG/dipole off.  ``polhode`` is
+    torque-free: env models stay off and the run calls plant
+    ``sample_herpolhode``.  Orbit / dipole / panel knobs are stored even
+    when the models are off.
     ``coarse_init`` stays false (true ``q_0`` demo).  ``coarse_init_method``
     is ``triad`` unless QUEST / Davenport is requested.
     """
@@ -274,15 +291,27 @@ def make_scenario_config(
     want_env = resolve_use_env(name, use_env=use_env, env_flag=env_flag, no_env=no_env)
     gg = bool(gravity_gradient) or want_env
     rd = bool(residual_dipole) or want_env
+    aero = bool(aerodynamic)
+    srp_on = bool(srp)
     if no_env:
         gg = False
         rd = False
+    if name == "polhode":
+        # Open-loop torque-free demo: env / constant τ_d would leave the polhode.
+        gg = False
+        rd = False
+        aero = False
+        srp_on = False
+        dist = np.zeros(3)
     write_mrp = bool(mrp_plot) if mrp_plot is not None else name in {"hold", "eigenaxis"}
+    write_polhode = bool(polhode_plot) if polhode_plot is not None else name == "polhode"
+    # Torque-free demo is open-loop: plant sample_herpolhode, no filter.
+    est = "truth" if name == "polhode" else estimator
     cfg = SimConfig(
         dt=dt,
         t_final=default_t_final(name) if t_final is None else t_final,
         controller=resolve_controller(name, controller),
-        estimator=estimator,
+        estimator=est,
         scenario=name,
         q0=q0,
         omega0=omega0,
@@ -299,9 +328,10 @@ def make_scenario_config(
         actuator_dump_gain=actuator_dump_gain,
         gravity_gradient=gg,
         residual_dipole=rd,
-        aerodynamic=aerodynamic,
-        srp=srp,
+        aerodynamic=aero,
+        srp=srp_on,
         mrp_plot=write_mrp,
+        polhode_plot=write_polhode,
         use_mag=use_mag,
         use_sun=use_sun,
         use_star=use_star,
@@ -458,15 +488,97 @@ def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
     )
 
 
+def _simlog_from_polhode(cfg: SimConfig, traj) -> SimLog:
+    """Build a ``SimLog`` from a plant ``PolhodeTrajectory`` (τ = 0)."""
+    t = np.asarray(traj.t, dtype=float)
+    q_hist = np.asarray(traj.q, dtype=float)
+    w_hist = np.asarray(traj.omega, dtype=float)
+    n = len(t)
+    q_des = quat_normalize(cfg.q_des)
+    tau = np.zeros((n, 3))
+    euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
+    att_error = np.array([geodesic_angle(qi, q_des) for qi in q_hist])
+    return SimLog(
+        t=t,
+        q=q_hist,
+        omega=w_hist,
+        tau=tau,
+        q_hat=q_hist.copy(),
+        omega_hat=w_hist.copy(),
+        q_des=q_des,
+        euler=euler,
+        euler_des=quat_to_euler321(q_des),
+        att_error=att_error,
+        att_error_hat=None,
+        est_att_error=None,
+        controller="none",
+        estimator="truth",
+        scenario="polhode",
+        tau_env=np.zeros((n, 3)),
+        inertia=np.asarray(cfg.inertia, dtype=float),
+        omega_inertial=None if traj.omega_inertial is None else np.asarray(traj.omega_inertial),
+        h_inertial=None if traj.h_inertial is None else np.asarray(traj.h_inertial),
+        T=np.asarray(traj.T, dtype=float),
+        h2=np.asarray(traj.h2, dtype=float),
+    )
+
+
+def run_polhode(cfg: SimConfig | None = None) -> SimLog:
+    """Torque-free polhode demo via plant :func:`sample_herpolhode`.
+
+    Does **not** run a controller or estimator.  ``step_rigid_body`` is
+    still the plant integrator (inside the existing helper).
+    """
+    cfg = cfg if cfg is not None else make_scenario_config("polhode", plot=False, gif=False)
+    if cfg.dt <= 0.0:
+        raise ValueError("dt must be positive")
+    if cfg.t_final < 0.0:
+        raise ValueError("t_final must be non-negative")
+    traj = sample_herpolhode(
+        cfg.inertia,
+        cfg.omega0,
+        cfg.t_final,
+        cfg.dt,
+        q0=cfg.q0,
+    )
+    log = _simlog_from_polhode(cfg, traj)
+    if cfg.plot or cfg.gif:
+        from attitude_sim.plots import (
+            plot_energy_casimir,
+            plot_polhode,
+            plot_slew,
+            write_attitude_gif,
+        )
+
+        out = Path(cfg.out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        stem = cfg.artifact_stem
+        if cfg.plot:
+            log.plot_path = plot_slew(log, out / f"{stem}_summary.png")
+            if cfg.polhode_plot:
+                log.polhode_plot_path = plot_polhode(
+                    log, out / f"{stem}_polhode.png", inertia=cfg.inertia
+                )
+                log.casimir_plot_path = plot_energy_casimir(
+                    log, out / f"{stem}_casimir.png", inertia=cfg.inertia
+                )
+        if cfg.gif:
+            log.gif_path = write_attitude_gif(log, out / f"{stem}_attitude.gif")
+    return log
+
+
 def run_slew(cfg: SimConfig | None = None) -> SimLog:
     """Closed-loop SimLab run (named scenario); optionally writes plot/GIF.
 
     ``run_sim`` is a public alias — this is not slew-only.  Environmental
     torques from ``make_sim_disturbances`` are added to the plant input after
     the actuator, together with an optional dump pairing ``τ_ext``.
-    ``step_rigid_body`` is unchanged.
+    ``step_rigid_body`` is unchanged.  ``--scenario polhode`` dispatches to
+    :func:`run_polhode` (plant helper, no feedback).
     """
     cfg = cfg if cfg is not None else SimConfig()
+    if str(cfg.scenario).lower() == "polhode":
+        return run_polhode(cfg)
     if cfg.dt <= 0.0:
         raise ValueError("dt must be positive")
     if cfg.t_final < 0.0:
@@ -663,6 +775,7 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
         estimator=cfg.estimator,
         scenario=cfg.scenario,
         tau_env=tau_env_hist,
+        inertia=np.asarray(cfg.inertia, dtype=float),
         h_wheel=h_wheel_hist,
         tau_ext=tau_ext_hist,
         omega_wheel=ww_hist,
@@ -681,8 +794,10 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
 
     if cfg.plot or cfg.gif:
         from attitude_sim.plots import (
+            plot_energy_casimir,
             plot_env_torque,
             plot_mrp_error,
+            plot_polhode,
             plot_slew,
             write_attitude_gif,
         )
@@ -696,6 +811,13 @@ def run_slew(cfg: SimConfig | None = None) -> SimLog:
                 log.env_plot_path = plot_env_torque(log, out / f"{stem}_env_torque.png")
             if cfg.mrp_plot:
                 log.mrp_plot_path = plot_mrp_error(log, out / f"{stem}_mrp.png")
+            if cfg.polhode_plot:
+                log.polhode_plot_path = plot_polhode(
+                    log, out / f"{stem}_polhode.png", inertia=cfg.inertia
+                )
+                log.casimir_plot_path = plot_energy_casimir(
+                    log, out / f"{stem}_casimir.png", inertia=cfg.inertia
+                )
         if cfg.gif:
             log.gif_path = write_attitude_gif(log, out / f"{stem}_attitude.gif")
     return log
@@ -742,7 +864,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--t-final",
         type=float,
         default=None,
-        help="run duration (s); default 40 slew / 30 detumble / 30 hold / 20 eigenaxis",
+        help="run duration (s); default 40 slew / 30 detumble / 30 hold / 20 eigenaxis / 15 polhode",
     )
     p.add_argument("--dt", type=float, default=0.01, help="sample / RK4 step (s)")
     p.add_argument("--out-dir", type=Path, default=Path("outputs"), help="plot/GIF directory")
@@ -752,6 +874,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--mrp-plot",
         action="store_true",
         help="write {stem}_mrp.png (σ from logged q; on by default for hold/eigenaxis)",
+    )
+    p.add_argument(
+        "--polhode-plot",
+        action="store_true",
+        help=(
+            "write {stem}_polhode.png and {stem}_casimir.png from logged ω "
+            "(on by default for --scenario polhode; post-process plant helpers)"
+        ),
     )
     p.add_argument("--no-mag", action="store_true", help="disable magnetometer")
     p.add_argument("--no-sun", action="store_true", help="disable sun sensor")
@@ -790,7 +920,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "commanded principal rotation (deg) for slew (default 75) and "
-            "eigenaxis (default 30); ignored for detumble and hold"
+            "eigenaxis (default 30); ignored for detumble, hold, and polhode"
         ),
     )
     p.add_argument(
@@ -1107,14 +1237,27 @@ def main(argv: list[str] | None = None) -> int:
         env_flag=args.env,
         no_env=args.no_env,
         mrp_plot=True if args.mrp_plot else None,
+        polhode_plot=True if args.polhode_plot else None,
     )
     log = run_slew(cfg)
     env_norm = float(np.linalg.norm(log.tau_env[-1])) if log.tau_env.size else 0.0
+    extra = ""
+    if log.scenario == "polhode" and log.T is not None and log.h2 is not None:
+        t0, h20 = float(log.T[0]), float(log.h2[0])
+        r_t, r_h = polhode_residuals(cfg.inertia, log.omega[-1], t0, h20)
+        rel_t = abs(r_t) / max(abs(2.0 * t0), 1e-16)
+        rel_h = abs(r_h) / max(abs(h20), 1e-16)
+        regime = polhode_regime(cfg.inertia, cfg.omega0).value
+        extra = f"  regime={regime}  rel_dT={rel_t:.2e}  rel_d|h|^2={rel_h:.2e}"
+    elif log.omega.size and cfg.polhode_plot:
+        t0, h20 = energy_casimir(cfg.inertia, log.omega[0])
+        r_t, r_h = polhode_residuals(cfg.inertia, log.omega[-1], t0, h20)
+        extra = f"  dT={r_t:.3e}  d|h|^2={r_h:.3e}"
     print(
         f"{log.scenario} complete: controller={log.controller} estimator={log.estimator} "
         f"final_att_error={log.final_att_error_deg:.3f} deg  "
         f"final_||omega||={np.linalg.norm(log.omega[-1]):.4f} rad/s  "
-        f"final_||tau_env||={env_norm:.3e} N·m"
+        f"final_||tau_env||={env_norm:.3e} N·m{extra}"
     )
     if log.h_wheel.size:
         print(
@@ -1128,6 +1271,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"env:  {log.env_plot_path}")
     if log.mrp_plot_path is not None:
         print(f"mrp:  {log.mrp_plot_path}")
+    if log.polhode_plot_path is not None:
+        print(f"polhode: {log.polhode_plot_path}")
+    if log.casimir_plot_path is not None:
+        print(f"casimir: {log.casimir_plot_path}")
     if log.gif_path is not None:
         print(f"gif:  {log.gif_path}")
     if log.innovation_csv is not None:

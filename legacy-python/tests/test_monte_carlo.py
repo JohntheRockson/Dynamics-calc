@@ -64,8 +64,17 @@ def _log(**kwargs) -> SimLog:
 def test_parser_defaults():
     args = build_parser().parse_args([])
     assert args.n == 50
-    assert args.controller == "pid"
+    assert args.scenario == "slew"
+    assert args.controller is None  # resolved to pid (or lqr for eigenaxis)
     assert args.estimator == "mekf"
+    assert args.t_final is None
+    assert args.angle_deg is None
+    assert args.env is False
+    assert args.no_env is False
+    assert args.gravity_gradient is False
+    assert args.residual_dipole is False
+    assert args.aerodynamic is False
+    assert args.srp is False
     assert args.inertia_frac == 0.05
     assert args.rw_sat_stress is False
     assert args.rw_h_max is None
@@ -401,6 +410,164 @@ def test_monte_carlo_lqr_gain_and_disturbance_hook():
     assert max(dists) <= 0.001 + 1e-12
     assert min(dists) >= 0.0
     assert any(d > 0.0 for d in dists) or summary.n == 3
+
+
+def test_monte_carlo_eigenaxis_and_hold_env_smokes():
+    """Tiny N so CI stays fast; closed-loop hold/eigenaxis + env-on slew."""
+    eigen = run_monte_carlo(
+        MonteCarloConfig(
+            n=3,
+            seed=5,
+            scenario="eigenaxis",
+            controller="lqr",
+            estimator="truth",
+            dt=0.05,
+            t_final=0.8,
+            q0_max_deg=6.0,
+            omega0_max=0.02,
+            noise_scale_min=1.0,
+            noise_scale_max=1.0,
+            inertia_frac=0.0,
+            settle_deg=2.0,
+            diverge_deg=180.0,
+        )
+    )
+    assert eigen.n == 3
+    assert eigen.scenario == "eigenaxis"
+    assert eigen.controller == "lqr"
+    assert eigen.n_nan == 0
+    assert eigen.n_non_unit == 0
+    assert eigen.env_on is False
+
+    hold = run_monte_carlo(
+        MonteCarloConfig(
+            n=3,
+            seed=6,
+            scenario="hold",
+            controller="pid",
+            estimator="truth",
+            dt=0.05,
+            t_final=0.8,
+            q0_max_deg=4.0,
+            omega0_max=0.01,
+            noise_scale_min=1.0,
+            noise_scale_max=1.0,
+            inertia_frac=0.0,
+            settle_deg=2.0,
+            diverge_deg=180.0,
+        )
+    )
+    assert hold.n == 3
+    assert hold.scenario == "hold"
+    assert hold.env_on is True
+    assert hold.n_nan == 0
+    assert hold.n_non_unit == 0
+    assert all(t.env_on for t in hold.trials)
+
+    slew_env = run_monte_carlo(
+        MonteCarloConfig(
+            n=3,
+            seed=7,
+            scenario="slew",
+            controller="pid",
+            estimator="truth",
+            dt=0.05,
+            t_final=0.6,
+            q0_max_deg=8.0,
+            omega0_max=0.02,
+            noise_scale_min=1.0,
+            noise_scale_max=1.0,
+            inertia_frac=0.0,
+            use_env=True,
+            settle_deg=2.0,
+            diverge_deg=180.0,
+        )
+    )
+    assert slew_env.n == 3
+    assert slew_env.scenario == "slew"
+    assert slew_env.env_on is True
+    assert slew_env.n_nan == 0
+    assert slew_env.n_non_unit == 0
+
+
+def test_cli_eigenaxis_and_env_flags(tmp_path):
+    rc = main(
+        [
+            "--n",
+            "2",
+            "--scenario",
+            "eigenaxis",
+            "--estimator",
+            "truth",
+            "--t-final",
+            "0.4",
+            "--dt",
+            "0.05",
+            "--inertia-frac",
+            "0.0",
+            "--diverge-deg",
+            "180",
+            "--json",
+            str(tmp_path / "mc_eigen.json"),
+        ]
+    )
+    assert rc == 0
+    payload = (tmp_path / "mc_eigen.json").read_text()
+    assert "eigenaxis" in payload
+    rc = main(
+        [
+            "--n",
+            "2",
+            "--scenario",
+            "slew",
+            "--env",
+            "--estimator",
+            "truth",
+            "--t-final",
+            "0.4",
+            "--dt",
+            "0.05",
+            "--inertia-frac",
+            "0.0",
+            "--diverge-deg",
+            "180",
+        ]
+    )
+    assert rc == 0
+
+
+def test_sample_trial_config_hold_and_env_flags():
+    mc = MonteCarloConfig(
+        n=1,
+        seed=0,
+        scenario="hold",
+        inertia_frac=0.0,
+        noise_scale_min=1.0,
+        noise_scale_max=1.0,
+    )
+    cfg, extras = sample_trial_config(mc, 0, np.random.default_rng(0))
+    assert cfg.scenario == "hold"
+    assert cfg.gravity_gradient is True
+    assert extras["env_on"] == 1.0
+    slew = MonteCarloConfig(
+        n=1,
+        seed=1,
+        scenario="slew",
+        use_env=True,
+        aerodynamic=True,
+        inertia_frac=0.0,
+        noise_scale_min=1.0,
+        noise_scale_max=1.0,
+    )
+    cfg_s, extras_s = sample_trial_config(slew, 0, np.random.default_rng(1))
+    assert cfg_s.scenario == "slew"
+    assert cfg_s.gravity_gradient is True
+    assert cfg_s.aerodynamic is True
+    assert extras_s["env_on"] == 1.0
+    with pytest.raises(ValueError, match="not closed-loop"):
+        sample_trial_config(
+            MonteCarloConfig(scenario="polhode"), 0, np.random.default_rng(0)
+        )
 
 
 def test_cli_rw_sat_stress_smoke(tmp_path):

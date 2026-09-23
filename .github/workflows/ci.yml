@@ -114,4 +114,12 @@ jobs:
           python -m attitude_sim --scenario detumble --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario hold --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --scenario eigenaxis --t-final 0.2 --no-plot --no-gif
+          python -m attitude_sim --scenario polhode --t-final 0.2 --no-plot --no-gif
           python -m attitude_sim --list-scenarios
+      - name: Monte Carlo smoke
+        run: |
+          # MC default is slew; hold / eigenaxis / --env are opt-in (tiny N).
+          python -m attitude_sim.monte_carlo --n 5 --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
+          python -m attitude_sim.monte_carlo --n 3 --scenario eigenaxis --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
+          python -m attitude_sim.monte_carlo --n 3 --scenario hold --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180
+          python -m attitude_sim.monte_carlo --n 3 --scenario slew --env --estimator truth --t-final 0.2 --dt 0.05 --inertia-frac 0.0 --diverge-deg 180

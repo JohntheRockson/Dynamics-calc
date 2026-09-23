@@ -1,10 +1,12 @@
-"""Named SimLab closed-loop scenario pack.
+"""Named SimLab scenario pack.
 
 Plant / controller / estimator cores are unchanged.  This module only
 names initial conditions, attitude commands, default durations, default
 controllers, and optional :class:`~attitude_sim.disturbances.EnvironmentalTorques`
-bindings.  ``attitude_sim.sim`` consumes the presets and still integrates
-on ``x = [q, omega]`` with ``step_rigid_body``.
+bindings.  ``attitude_sim.sim`` consumes the presets.  Closed-loop names
+still integrate on ``x = [q, omega]`` with ``step_rigid_body``; ``polhode``
+dispatches to the plant :func:`~attitude_sim.polhode.sample_herpolhode`
+helper (open-loop, tau = 0).
 
 Scenarios
 ---------
@@ -19,6 +21,11 @@ Scenarios
 ``eigenaxis``
     Rest-to-rest principal-axis (body z) slew, default **LQR**.
     ``--angle-deg`` selects the commanded principal rotation (default 30°).
+``polhode``
+    Torque-free Euler demo.  Calls the plant
+    :func:`~attitude_sim.polhode.sample_herpolhode` helper (no controller,
+    no estimator, no ``τ_env``).  Default body rate traces a closed
+    around-min polhode on the stock smallsat ``J``.
 
 The residual dipole on ``hold`` is **demo-scale** (tens of A·m²) so
 ``|tau_env|`` sits in the millinewton-metre band used by the existing
@@ -43,7 +50,9 @@ from attitude_sim.disturbances import (
 )
 from attitude_sim.quaternions import axis_angle_to_quat
 
-SCENARIOS = ("slew", "detumble", "hold", "eigenaxis")
+SCENARIOS = ("slew", "detumble", "hold", "eigenaxis", "polhode")
+# Closed-loop names the Monte Carlo harness may sample (not detumble / polhode).
+MC_SCENARIOS = ("slew", "hold", "eigenaxis")
 
 SLEW_AXIS = np.array([0.2, 0.5, 0.84])
 SLEW_ANGLE_DEG = 75.0
@@ -51,6 +60,8 @@ DETUMBLE_Q0_AXIS = np.array([0.4, 0.2, 0.9])
 DETUMBLE_OMEGA0 = np.array([0.55, -0.40, 0.30])
 EIGENAXIS_AXIS = np.array([0.0, 0.0, 1.0])
 EIGENAXIS_ANGLE_DEG = 30.0
+# Around-min polhode on the stock smallsat J = diag(0.05, 0.06, 0.07).
+POLHODE_OMEGA0 = np.array([0.80, 0.25, 0.10])
 IDENTITY_Q = np.array([1.0, 0.0, 0.0, 0.0])
 
 # LEO-class circular orbit (same radius family as tests/test_disturbances.py).
@@ -65,6 +76,7 @@ SCENARIO_T_FINAL: Mapping[str, float] = {
     "detumble": 30.0,
     "hold": 30.0,
     "eigenaxis": 20.0,
+    "polhode": 15.0,
 }
 
 SCENARIO_CONTROLLER: Mapping[str, str] = {
@@ -72,6 +84,7 @@ SCENARIO_CONTROLLER: Mapping[str, str] = {
     "detumble": "pid",
     "hold": "pid",
     "eigenaxis": "lqr",
+    "polhode": "none",
 }
 
 SCENARIO_TITLES: Mapping[str, str] = {
@@ -79,6 +92,7 @@ SCENARIO_TITLES: Mapping[str, str] = {
     "detumble": "Detumble to rest",
     "hold": "Hold under environmental torques",
     "eigenaxis": "Eigenaxis slew (LQR)",
+    "polhode": "Torque-free polhode (energy–Casimir)",
 }
 
 SCENARIO_BLURBS: Mapping[str, str] = {
@@ -86,6 +100,7 @@ SCENARIO_BLURBS: Mapping[str, str] = {
     "detumble": "tumbling initial rate, dump ω and recover identity (default PID)",
     "hold": "identity hold under EnvironmentalTorques (GG + demo-scale residual dipole, default PID)",
     "eigenaxis": "principal-axis (body z) rest-to-rest slew (default LQR, --angle-deg default 30)",
+    "polhode": "torque-free Euler / polhode demo via plant sample_herpolhode (open-loop, no τ_env)",
 }
 
 
@@ -109,7 +124,7 @@ def default_t_final(scenario: str) -> float:
 
 
 def default_controller(scenario: str) -> str:
-    """Return the pack controller name (``pid`` or ``lqr``)."""
+    """Return the pack controller name (``pid``, ``lqr``, or ``none``)."""
     name = _require_scenario(scenario)
     return str(SCENARIO_CONTROLLER[name])
 
@@ -124,7 +139,7 @@ def resolve_controller(scenario: str, controller: str | None) -> str:
 def default_angle_deg(scenario: str, angle_deg: float | None) -> float:
     """Commanded principal rotation (deg) for slew / eigenaxis.
 
-    ``hold`` and ``detumble`` ignore the angle (identity command).
+    ``hold``, ``detumble``, and ``polhode`` ignore the angle.
     """
     name = _require_scenario(scenario)
     if angle_deg is not None:
@@ -209,6 +224,8 @@ def scenario_state(
         )
     if name == "hold":
         return (IDENTITY_Q.copy(), np.zeros(3), IDENTITY_Q.copy())
+    if name == "polhode":
+        return (IDENTITY_Q.copy(), POLHODE_OMEGA0.copy(), IDENTITY_Q.copy())
     if name == "eigenaxis":
         return (
             IDENTITY_Q.copy(),
@@ -230,11 +247,14 @@ def scenario_catalog_text() -> str:
         t_f = SCENARIO_T_FINAL[name]
         env = "env-torques" if scenario_uses_env_by_default(name) else "no-env"
         lines.append(
-            f"  {name:10s}  t_final={t_f:g}s  default-controller={ctrl:3s}  {env}"
+            f"  {name:10s}  t_final={t_f:g}s  default-controller={ctrl:4s}  {env}"
         )
         lines.append(f"             {SCENARIO_BLURBS[name]}")
     lines.append("")
-    lines.append("Monte Carlo (`python -m attitude_sim.monte_carlo`) remains slew-only.")
+    lines.append(
+        "Monte Carlo (`python -m attitude_sim.monte_carlo`) defaults to slew; "
+        "`--scenario hold|eigenaxis` and `--env` are opt-in (keep N small in CI)."
+    )
     return "\n".join(lines)
 
 
@@ -242,4 +262,15 @@ def _require_scenario(scenario: str) -> str:
     name = str(scenario).lower()
     if name not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}; expected one of {SCENARIOS}")
+    return name
+
+
+def require_mc_scenario(scenario: str) -> str:
+    """Closed-loop Monte Carlo names only (``slew`` / ``hold`` / ``eigenaxis``)."""
+    name = _require_scenario(scenario)
+    if name not in MC_SCENARIOS:
+        raise ValueError(
+            f"monte carlo scenario {scenario!r} is not closed-loop; "
+            f"expected one of {MC_SCENARIOS}"
+        )
     return name
