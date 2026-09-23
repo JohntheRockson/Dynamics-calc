@@ -1,20 +1,16 @@
 import { useState } from 'react'
-import { CurvilinearPanel } from './CurvilinearPanel'
-import { RectilinearPanel } from './RectilinearPanel'
-import { RelativeMotionPanel } from './RelativeMotionPanel'
 import { SolverPanel } from './SolverPanel'
+import { Workspace } from './workspace/Workspace'
 
-type Tab = 'solver' | 'rectilinear' | 'curvilinear' | 'relative'
+type Tab = 'workspace' | 'solver'
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'workspace', label: 'Workspace', icon: '📝' },
   { id: 'solver', label: 'Solver', icon: '🧮' },
-  { id: 'rectilinear', label: 'Rectilinear motion', icon: '📏' },
-  { id: 'curvilinear', label: 'Curvilinear motion', icon: '🎯' },
-  { id: 'relative', label: 'Relative motion', icon: '🔀' },
 ]
 
 export function KinematicsLab() {
-  const [tab, setTab] = useState<Tab>('solver')
+  const [tab, setTab] = useState<Tab>('workspace')
 
   return (
     <div className="kin-lab">
@@ -25,11 +21,13 @@ export function KinematicsLab() {
           </button>
         ))}
       </div>
-      {tab === 'solver' && <SolverPanel />}
-      {tab === 'rectilinear' && <RectilinearPanel />}
-      {tab === 'curvilinear' && <CurvilinearPanel />}
-      {tab === 'relative' && <RelativeMotionPanel />}
+      {tab === 'workspace' ? (
+        <Workspace />
+      ) : (
+        <div className="kin-scroll">
+          <SolverPanel />
+        </div>
+      )}
     </div>
   )
 }
-

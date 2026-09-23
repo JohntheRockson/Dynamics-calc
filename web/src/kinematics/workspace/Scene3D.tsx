@@ -1,0 +1,609 @@
+import { useEffect, useRef, useState } from 'react'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import type { FigureBody, FigureSurface } from './evaluate'
+import { CUBE, axisThrough, emptyBox, expandPlotBox, fromWorld, originBox, toWorld, type PlotBox, type PlotFrame } from './math/plotFrame'
+
+function colorHex(color: string): number {
+  const hex = Number.parseInt(color.replace('#', ''), 16)
+  return Number.isFinite(hex) ? hex : 0x29d3f5
+}
+
+function surfaceGrids(surface: FigureSurface): { x: number; y: number; z: number }[][][] {
+  return surface.sheets && surface.sheets.length > 0 ? surface.sheets : [surface.grid]
+}
+
+function place(frame: PlotFrame, x: number, y: number, z: number): THREE.Vector3 {
+  const point = toWorld(frame, x, y, z)
+  return new THREE.Vector3(point.x, point.y, point.z)
+}
+
+const HALF = CUBE / 2
+const GRAPH_CLIP = [
+  new THREE.Plane(new THREE.Vector3(1, 0, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(-1, 0, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(0, 1, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(0, -1, 0), HALF),
+  new THREE.Plane(new THREE.Vector3(0, 0, 1), HALF),
+  new THREE.Plane(new THREE.Vector3(0, 0, -1), HALF),
+]
+
+export type GraphView = 'iso' | 'xy' | 'xz' | 'yz'
+
+function snapCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls, view: GraphView, target: THREE.Vector3, distance: number): void {
+  controls.target.copy(target)
+  if (view === 'xy') {
+    camera.up.set(0, 0, 1)
+    camera.position.set(target.x, target.y + distance, target.z)
+  } else if (view === 'xz') {
+    camera.up.set(0, 1, 0)
+    camera.position.set(target.x, target.y, target.z + distance)
+  } else if (view === 'yz') {
+    camera.up.set(0, 1, 0)
+    camera.position.set(target.x + distance, target.y, target.z)
+  } else {
+    camera.up.set(0, 1, 0)
+    camera.position.set(target.x + distance * 0.72, target.y + distance * 0.48, target.z + distance * 0.5)
+  }
+  camera.lookAt(target)
+  controls.update()
+}
+
+function addSurfaceGrid(content: THREE.Group, frame: PlotFrame, grid: { x: number; y: number; z: number }[][], colorName: string, flat: boolean, clip: boolean): void {
+  const rows = grid.length
+  const cols = grid[0]?.length ?? 0
+  if (rows < 2 || cols < 2) return
+  const positions: number[] = []
+  const heights: number[] = []
+  const indexOf: number[][] = []
+  let zMin = Infinity
+  let zMax = -Infinity
+  for (let row = 0; row < rows; row += 1) {
+    indexOf[row] = []
+    for (let col = 0; col < cols; col += 1) {
+      const point = grid[row][col]
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) {
+        indexOf[row][col] = -1
+        continue
+      }
+      const placed = place(frame, point.x, point.y, point.z)
+      indexOf[row][col] = positions.length / 3
+      positions.push(placed.x, placed.y, placed.z)
+      heights.push(point.z)
+      zMin = Math.min(zMin, point.z)
+      zMax = Math.max(zMax, point.z)
+    }
+  }
+  const indices: number[] = []
+  const wires: number[] = []
+  const pushWire = (a: number, b: number) => {
+    if (a < 0 || b < 0) return
+    wires.push(positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2], positions[b * 3], positions[b * 3 + 1], positions[b * 3 + 2])
+  }
+  const stride = Math.max(1, Math.floor((Math.max(rows, cols) - 1) / 12))
+  for (let row = 0; row < rows - 1; row += 1) {
+    for (let col = 0; col < cols - 1; col += 1) {
+      const a = indexOf[row][col]
+      const b = indexOf[row][col + 1]
+      const d = indexOf[row + 1][col]
+      const e = indexOf[row + 1][col + 1]
+      if (a < 0 || b < 0 || d < 0 || e < 0) continue
+      indices.push(a, d, b, b, d, e)
+      if (row % stride === 0) pushWire(a, b)
+      if (col % stride === 0) pushWire(a, d)
+    }
+  }
+  for (let col = 0; col < cols - 1; col += 1) pushWire(indexOf[rows - 1][col], indexOf[rows - 1][col + 1])
+  for (let row = 0; row < rows - 1; row += 1) pushWire(indexOf[row][cols - 1], indexOf[row + 1][cols - 1])
+  if (indices.length === 0) return
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  const base = new THREE.Color(colorHex(colorName))
+  const shaded = !flat && zMax > zMin
+  if (shaded) {
+    const low = new THREE.Color('#3b82f6')
+    const high = new THREE.Color('#fbbf24')
+    const colors = new Float32Array(heights.length * 3)
+    heights.forEach((height, index) => {
+      const t = (height - zMin) / (zMax - zMin)
+      const tone = t < 0.55 ? low.clone().lerp(base, t / 0.55) : base.clone().lerp(high, (t - 0.55) / 0.45)
+      colors[index * 3] = tone.r
+      colors[index * 3 + 1] = tone.g
+      colors[index * 3 + 2] = tone.b
+    })
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  }
+  content.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+    color: shaded ? '#ffffff' : base,
+    vertexColors: shaded,
+    roughness: 0.55,
+    metalness: 0.04,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+    clippingPlanes: clip ? GRAPH_CLIP : undefined,
+  })))
+  if (wires.length > 0) {
+    const lines = new THREE.BufferGeometry()
+    lines.setAttribute('position', new THREE.Float32BufferAttribute(wires, 3))
+    content.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: flat ? base : 0xe7eef6, transparent: true, opacity: flat ? 0.35 : 0.22, clippingPlanes: clip ? GRAPH_CLIP : undefined })))
+  }
+}
+
+function niceStep(span: number): number {
+  if (!Number.isFinite(span) || span <= 0) return 1
+  const raw = span / 5
+  const pow = 10 ** Math.floor(Math.log10(Math.max(raw, 1e-9)))
+  const n = raw / pow
+  const nice = n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10
+  return nice * pow
+}
+
+function formatTick(value: number): string {
+  if (!Number.isFinite(value) || Math.abs(value) < 1e-9) return '0'
+  const abs = Math.abs(value)
+  if (abs >= 1000 || abs < 0.01) return value.toExponential(1)
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2
+  return String(Number(value.toFixed(digits)))
+}
+
+function tickValues(min: number, max: number): number[] {
+  const step = niceStep(max - min)
+  if (!Number.isFinite(step) || step <= 0) return []
+  const start = Math.ceil(min / step - 1e-6) * step
+  const values: number[] = []
+  for (let i = 0; i < 8; i += 1) {
+    const value = start + i * step
+    if (value < min - step * 1e-4) continue
+    if (value > max + step * 1e-4) break
+    values.push(Math.abs(value) <= step * 1e-6 ? 0 : value)
+  }
+  return values
+}
+
+function addBox(content: THREE.Group, frame: PlotFrame): void {
+  const { xMin, xMax, yMin, yMax, zMin, zMax } = frame.box
+  const corner = (x: number, y: number, z: number) => place(frame, x, y, z)
+  const pairs: [THREE.Vector3, THREE.Vector3][] = [
+    [corner(xMin, yMin, zMin), corner(xMax, yMin, zMin)],
+    [corner(xMax, yMin, zMin), corner(xMax, yMax, zMin)],
+    [corner(xMax, yMax, zMin), corner(xMin, yMax, zMin)],
+    [corner(xMin, yMax, zMin), corner(xMin, yMin, zMin)],
+    [corner(xMin, yMin, zMax), corner(xMax, yMin, zMax)],
+    [corner(xMax, yMin, zMax), corner(xMax, yMax, zMax)],
+    [corner(xMax, yMax, zMax), corner(xMin, yMax, zMax)],
+    [corner(xMin, yMax, zMax), corner(xMin, yMin, zMax)],
+    [corner(xMin, yMin, zMin), corner(xMin, yMin, zMax)],
+    [corner(xMax, yMin, zMin), corner(xMax, yMin, zMax)],
+    [corner(xMax, yMax, zMin), corner(xMax, yMax, zMax)],
+    [corner(xMin, yMax, zMin), corner(xMin, yMax, zMax)],
+  ]
+  content.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pairs.flat()), new THREE.LineBasicMaterial({ color: 0xb7c6d4, transparent: true, opacity: 0.9 })))
+}
+
+function addCenterAxes(content: THREE.Group, frame: PlotFrame): void {
+  const { box } = frame
+  const origin = axisThrough(box)
+  const axes: { from: [number, number, number]; to: [number, number, number]; color: number }[] = [
+    { from: [box.xMin, origin.y, origin.z], to: [box.xMax, origin.y, origin.z], color: 0xff8d8d },
+    { from: [origin.x, box.yMin, origin.z], to: [origin.x, box.yMax, origin.z], color: 0x7ddea0 },
+    { from: [origin.x, origin.y, box.zMin], to: [origin.x, origin.y, box.zMax], color: 0x8eb6ff },
+  ]
+  for (const axis of axes) {
+    const from = place(frame, axis.from[0], axis.from[1], axis.from[2])
+    const to = place(frame, axis.to[0], axis.to[1], axis.to[2])
+    const direction = to.clone().sub(from)
+    const length = direction.length()
+    if (length < 1e-4) continue
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, length, 8), new THREE.MeshBasicMaterial({ color: axis.color }))
+    shaft.position.copy(from).add(to).multiplyScalar(0.5)
+    shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize())
+    content.add(shaft)
+  }
+}
+
+function addFloor(content: THREE.Group, frame: PlotFrame): void {
+  const { box } = frame
+  const origin = place(frame, box.xMin, box.yMin, box.zMin)
+  const across = place(frame, box.xMax, box.yMin, box.zMin)
+  const depth = place(frame, box.xMin, box.yMax, box.zMin)
+  const divisions = 10
+  const points: THREE.Vector3[] = []
+  for (let i = 0; i <= divisions; i += 1) {
+    const t = i / divisions
+    const x = origin.x + (across.x - origin.x) * t
+    const z = origin.z + (depth.z - origin.z) * t
+    points.push(new THREE.Vector3(x, origin.y, origin.z), new THREE.Vector3(x, origin.y, depth.z))
+    points.push(new THREE.Vector3(origin.x, origin.y, z), new THREE.Vector3(across.x, origin.y, z))
+  }
+  content.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: 0x4c6278, transparent: true, opacity: 0.9 })))
+  const width = Math.max(Math.abs(across.x - origin.x), 1e-4)
+  const depthSpan = Math.max(Math.abs(depth.z - origin.z), 1e-4)
+  const pad = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, depthSpan),
+    new THREE.MeshStandardMaterial({ color: 0x101820, roughness: 1, metalness: 0, side: THREE.DoubleSide }),
+  )
+  pad.rotation.x = -Math.PI / 2
+  pad.position.set((origin.x + across.x) / 2, origin.y - Math.max(width, depthSpan) * 0.002, (origin.z + depth.z) / 2)
+  content.add(pad)
+}
+
+interface ScreenLabel {
+  text: string
+  axis: 'x' | 'y' | 'z'
+  kind: 'name' | 'tick'
+  x: number
+  y: number
+  z: number
+}
+
+function labelsForBox(box: PlotBox): ScreenLabel[] {
+  const origin = axisThrough(box)
+  const labels: ScreenLabel[] = []
+  let markedCenter = false
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1e-6
+  const pushTick = (axis: 'x' | 'y' | 'z', value: number, x: number, y: number, z: number) => {
+    const atCenter = near(x, origin.x) && near(y, origin.y) && near(z, origin.z)
+    if (atCenter) {
+      if (markedCenter) return
+      markedCenter = true
+    }
+    labels.push({ text: formatTick(value), axis, kind: 'tick', x, y, z })
+  }
+  for (const value of tickValues(box.xMin, box.xMax)) pushTick('x', value, value, origin.y, origin.z)
+  for (const value of tickValues(box.yMin, box.yMax)) pushTick('y', value, origin.x, value, origin.z)
+  for (const value of tickValues(box.zMin, box.zMax)) pushTick('z', value, origin.x, origin.y, value)
+  labels.push({ text: 'x', axis: 'x', kind: 'name', x: box.xMax, y: origin.y, z: origin.z })
+  labels.push({ text: 'y', axis: 'y', kind: 'name', x: origin.x, y: box.yMax, z: origin.z })
+  labels.push({ text: 'z', axis: 'z', kind: 'name', x: origin.x, y: origin.y, z: box.zMax })
+  return labels
+}
+
+function syncLabels(container: HTMLDivElement, camera: THREE.PerspectiveCamera, frame: PlotFrame): void {
+  const width = container.clientWidth
+  const height = container.clientHeight
+  if (width === 0 || height === 0) return
+  const { box } = frame
+  const center = place(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2).project(camera)
+  const cx = (center.x * 0.5 + 0.5) * width
+  const cy = (-center.y * 0.5 + 0.5) * height
+  const placed: { x: number; y: number; text: string; axis: string; kind: string }[] = []
+  const names: { x: number; y: number; text: string; axis: string; kind: string }[] = []
+  const ticks: { x: number; y: number; text: string; axis: string; kind: string }[] = []
+  const projected = new THREE.Vector3()
+  for (const label of labelsForBox(box)) {
+    const world = toWorld(frame, label.x, label.y, label.z)
+    projected.set(world.x, world.y, world.z).project(camera)
+    if (projected.z < -1 || projected.z > 1) continue
+    const onScreen = projected.x >= -1 && projected.x <= 1 && projected.y >= -1 && projected.y <= 1
+    const nearScreen = Math.abs(projected.x) < 1.2 && Math.abs(projected.y) < 1.2
+    if (label.kind === 'tick' && !onScreen) continue
+    if (label.kind === 'name' && !nearScreen) continue
+    let x = (projected.x * 0.5 + 0.5) * width
+    let y = (-projected.y * 0.5 + 0.5) * height
+    const dx = x - cx
+    const dy = y - cy
+    const len = Math.hypot(dx, dy) || 1
+    x += (dx / len) * (label.kind === 'name' ? 22 : 12)
+    y += (dy / len) * (label.kind === 'name' ? 18 : 10)
+    if (label.kind === 'name') {
+      x = Math.min(width - 18, Math.max(18, x))
+      y = Math.min(height - 16, Math.max(16, y))
+      names.push({ x, y, text: label.text, axis: label.axis, kind: label.kind })
+    } else if (x > 10 && y > 10 && x < width - 10 && y < height - 10) {
+      ticks.push({ x, y, text: label.text, axis: label.axis, kind: label.kind })
+    }
+  }
+  for (const name of names) {
+    let guard = 0
+    while (placed.some((item) => Math.hypot(item.x - name.x, item.y - name.y) < 22) && guard < 6) {
+      name.x = Math.min(width - 18, name.x + 18)
+      name.y = Math.min(height - 16, name.y + 8)
+      guard += 1
+    }
+    placed.push(name)
+  }
+  for (const tick of ticks) {
+    if (placed.some((item) => Math.hypot(item.x - tick.x, item.y - tick.y) < 22)) continue
+    placed.push(tick)
+  }
+  while (container.childElementCount < placed.length) {
+    const node = document.createElement('div')
+    node.className = 'scene3d-label'
+    container.appendChild(node)
+  }
+  while (container.childElementCount > placed.length) container.lastElementChild?.remove()
+  placed.forEach((item, index) => {
+    const node = container.children[index] as HTMLDivElement
+    node.textContent = item.text
+    node.dataset.axis = item.axis
+    node.dataset.kind = item.kind
+    node.style.transform = `translate(${item.x}px, ${item.y}px) translate(-50%, -50%)`
+  })
+}
+
+function formatReadout(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  const abs = Math.abs(value)
+  if (abs >= 1000 || (abs > 0 && abs < 0.01)) return value.toExponential(2)
+  return value.toFixed(abs < 10 ? 3 : 2)
+}
+
+function disposeObject(obj: THREE.Object3D): void {
+  const mesh = obj as THREE.Mesh
+  mesh.geometry?.dispose()
+  const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+  for (const material of materials) {
+    const mapped = material as THREE.Material & { map?: THREE.Texture | null }
+    mapped.map?.dispose()
+    material.dispose()
+  }
+}
+
+function boundsOf(bodies: FigureBody[], surfaces: FigureSurface[]): PlotBox | null {
+  const box = { xMin: Infinity, xMax: -Infinity, yMin: Infinity, yMax: -Infinity, zMin: Infinity, zMax: -Infinity }
+  const include = (x: number, y: number, z: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return
+    box.xMin = Math.min(box.xMin, x)
+    box.xMax = Math.max(box.xMax, x)
+    box.yMin = Math.min(box.yMin, y)
+    box.yMax = Math.max(box.yMax, y)
+    box.zMin = Math.min(box.zMin, z)
+    box.zMax = Math.max(box.zMax, z)
+  }
+  for (const body of bodies) {
+    for (const point of body.path) include(point.x, point.y, point.z)
+  }
+  for (const surface of surfaces) {
+    for (const grid of surfaceGrids(surface)) {
+      for (const row of grid) {
+        for (const point of row) include(point.x, point.y, point.z)
+      }
+    }
+  }
+  return Number.isFinite(box.xMin) ? box : null
+}
+
+export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, onDomainSpan, graphView = 'iso' }: { bodies: FigureBody[]; surfaces?: FigureSurface[]; fitKey: string; domainSpan?: number; domainZ?: number; onDomainSpan?: (span: number) => void; graphView?: GraphView }) {
+  const mountRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<THREE.Group | null>(null)
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
+  const controlsRef = useRef<OrbitControls | null>(null)
+  const fittedRef = useRef('')
+  const labelsRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<PlotFrame>({ equal: true, box: emptyBox() })
+  const spanRef = useRef(10)
+  const readoutRef = useRef('')
+  const zoomRef = useRef<((delta: number) => void) | null>(null)
+  const [readout, setReadout] = useState('x —    y —    z —')
+  useEffect(() => {
+    zoomRef.current = onDomainSpan && domainSpan
+      ? (delta) => {
+          const factor = delta > 0 ? 1.12 : 1 / 1.12
+          const next = domainSpan * factor
+          if (next < 1e-3 || next > 1e5) return
+          onDomainSpan(next)
+        }
+      : null
+  }, [onDomainSpan, domainSpan])
+
+  useEffect(() => {
+    const mount = mountRef.current
+    if (!mount) return
+
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 5000)
+    camera.position.set(8, 6, 8)
+    cameraRef.current = camera
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    renderer.setClearColor(0x111926, 1)
+    renderer.localClippingEnabled = true
+    mount.appendChild(renderer.domElement)
+    const onWheel = (event: WheelEvent) => {
+      if (!zoomRef.current) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      zoomRef.current(event.deltaY)
+    }
+    renderer.domElement.addEventListener('wheel', onWheel, { capture: true, passive: false })
+
+    const controls = new OrbitControls(camera, renderer.domElement)
+    controls.enableDamping = true
+    controls.dampingFactor = 0.08
+    controlsRef.current = controls
+
+    scene.add(new THREE.HemisphereLight(0xf4f7fb, 0x243040, 0.72))
+    scene.add(new THREE.AmbientLight(0xd5e0ec, 0.38))
+    const key = new THREE.DirectionalLight(0xffffff, 1.15)
+    key.position.set(8, 14, 6)
+    scene.add(key)
+    const fill = new THREE.DirectionalLight(0xd5e4f8, 0.55)
+    fill.position.set(-10, 6, -8)
+    scene.add(fill)
+
+    const content = new THREE.Group()
+    scene.add(content)
+    contentRef.current = content
+
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+    const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+    const onMove = (event: MouseEvent) => {
+      const rect = mount.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) return
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+      const frame = frameRef.current
+      const groundY = toWorld(frame, 0, 0, 0).y
+      ground.constant = -groundY
+      const root = contentRef.current
+      let point: THREE.Vector3 | null = null
+      if (root) {
+        const hit = raycaster.intersectObjects(root.children, true).find((item) => item.object instanceof THREE.Mesh)
+        if (hit) point = hit.point
+      }
+      if (!point) {
+        const target = new THREE.Vector3()
+        if (raycaster.ray.intersectPlane(ground, target) && target.clone().sub(raycaster.ray.origin).dot(raycaster.ray.direction) > 0) {
+          if (target.distanceTo(camera.position) < spanRef.current * 40) point = target
+        }
+      }
+      if (!point) return
+      const math = fromWorld(frame, point.x, point.y, point.z)
+      const text = `x ${formatReadout(math.x)}    y ${formatReadout(math.y)}    z ${formatReadout(math.z)}`
+      if (text === readoutRef.current) return
+      readoutRef.current = text
+      setReadout(text)
+    }
+    mount.addEventListener('pointermove', onMove)
+
+    const resize = () => {
+      const width = mount.clientWidth
+      const height = mount.clientHeight
+      if (width === 0 || height === 0) return
+      camera.aspect = width / height
+      camera.updateProjectionMatrix()
+      renderer.setSize(width, height)
+    }
+    resize()
+    const observer = new ResizeObserver(resize)
+    observer.observe(mount)
+
+    let frameId = 0
+    const tick = () => {
+      controls.update()
+      renderer.render(scene, camera)
+      const labels = labelsRef.current
+      if (labels) syncLabels(labels, camera, frameRef.current)
+      frameId = requestAnimationFrame(tick)
+    }
+    tick()
+
+    return () => {
+      cancelAnimationFrame(frameId)
+      observer.disconnect()
+      mount.removeEventListener('pointermove', onMove)
+      renderer.domElement.removeEventListener('wheel', onWheel, { capture: true })
+      controls.dispose()
+      renderer.dispose()
+      mount.removeChild(renderer.domElement)
+      contentRef.current = null
+      cameraRef.current = null
+      controlsRef.current = null
+      fittedRef.current = ''
+    }
+  }, [])
+
+  useEffect(() => {
+    const content = contentRef.current
+    const camera = cameraRef.current
+    const controls = controlsRef.current
+    if (!content || !camera || !controls) return
+
+    for (const child of [...content.children]) {
+      content.remove(child)
+      child.traverse(disposeObject)
+    }
+
+    const measured = boundsOf(bodies, surfaces)
+    const equal = bodies.some((body) => body.role !== 'plot')
+    const locked = domainSpan !== undefined && !equal
+    const frame: PlotFrame = locked
+      ? { equal: false, box: originBox(domainSpan, domainZ ?? domainSpan) }
+      : { equal, box: measured ? expandPlotBox(measured) : emptyBox() }
+    frameRef.current = frame
+    const { box } = frame
+    const span = frame.equal ? Math.max(box.xMax - box.xMin, box.yMax - box.yMin, box.zMax - box.zMin, 1) : CUBE
+    spanRef.current = span
+    addFloor(content, frame)
+    addBox(content, frame)
+    addCenterAxes(content, frame)
+
+    bodies.forEach((body) => {
+      const color = colorHex(body.color)
+      if (body.arrow) {
+        const finite = body.path.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z))
+        if (finite.length >= 2) {
+          const from = place(frame, finite[0].x, finite[0].y, finite[0].z)
+          const to = place(frame, finite[finite.length - 1].x, finite[finite.length - 1].y, finite[finite.length - 1].z)
+          const direction = to.clone().sub(from)
+          const length = direction.length()
+          if (length > 1e-6) {
+            direction.normalize()
+            content.add(new THREE.ArrowHelper(direction, from, length, color, Math.min(length * 0.22, span * 0.08), Math.min(length * 0.12, span * 0.045)))
+          }
+        }
+        return
+      }
+      let segment: THREE.Vector3[] = []
+      const flush = () => {
+        if (segment.length > 1) {
+          const geometry = new THREE.BufferGeometry().setFromPoints(segment)
+          const material = body.dashed
+            ? new THREE.LineDashedMaterial({ color, dashSize: span * 0.03, gapSize: span * 0.02, clippingPlanes: locked ? GRAPH_CLIP : undefined })
+            : new THREE.LineBasicMaterial({ color, clippingPlanes: locked ? GRAPH_CLIP : undefined })
+          const line = new THREE.Line(geometry, material)
+          if (body.dashed) line.computeLineDistances()
+          content.add(line)
+        }
+        segment = []
+      }
+      for (const point of body.path) {
+        if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) flush()
+        else segment.push(place(frame, point.x, point.y, point.z))
+      }
+      flush()
+      if (!body.hideMarker) {
+        const sample = body.path[Math.min(body.index, body.path.length - 1)]
+        if (!sample || !Number.isFinite(sample.x) || !Number.isFinite(sample.y) || !Number.isFinite(sample.z)) return
+        const at = place(frame, sample.x, sample.y, sample.z)
+        const marker = new THREE.Mesh(new THREE.SphereGeometry(span * 0.018, 16, 12), new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.15 }))
+        marker.position.copy(at)
+        content.add(marker)
+        if (body.velocity) {
+          const direction = place(frame, sample.x + body.velocity.x, sample.y + body.velocity.y, sample.z + body.velocity.z).sub(at)
+          if (direction.length() > 1e-6) {
+            direction.normalize()
+            content.add(new THREE.ArrowHelper(direction, at, span * 0.16, color, span * 0.05, span * 0.03))
+          }
+        }
+      }
+    })
+
+    for (const surface of surfaces) {
+      for (const grid of surfaceGrids(surface)) addSurfaceGrid(content, frame, grid, surface.color, Boolean(surface.flat), locked)
+    }
+
+    controls.enableZoom = !locked
+    if (!locked) {
+      controls.minDistance = span * 0.2
+      controls.maxDistance = span * 12
+    }
+    const stamp = `${fitKey}:${graphView}`
+    if (fittedRef.current !== stamp) {
+      fittedRef.current = stamp
+      const mid = toWorld(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2)
+      const center = locked ? new THREE.Vector3(0, 0, 0) : new THREE.Vector3(mid.x, mid.y, mid.z)
+      // Keep the whole origin-centered cube on screen. Zoom changes the math inside it.
+      const distance = locked ? 48 : span * 1.9
+      snapCamera(camera, controls, graphView, center, distance)
+      camera.near = Math.max(span / 800, 0.01)
+      camera.far = span * 80
+      camera.updateProjectionMatrix()
+    }
+  }, [bodies, surfaces, fitKey, domainSpan, domainZ, graphView])
+
+  return (
+    <div className="workspace-scene3d">
+      <div ref={mountRef} className="workspace-scene3d-canvas" />
+      <div ref={labelsRef} className="scene3d-labels" />
+      <div className="scene3d-readout">{readout}</div>
+    </div>
+  )
+}
