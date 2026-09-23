@@ -813,7 +813,7 @@ function solveDe(args: Expr[], angles: AngleMode): Expr {
   if (freeSymbols(growth).includes(dependent) || freeSymbols(growth).includes(independent)) {
     throw new MathError("Cannot solve that differential equation yet. It can be y' = f(x) or y' = ky.")
   }
-  return mul([S('C'), call('exp', [mul([growth, S(independent)])])])
+  return mul([S('C'), call('exp', [normalize(mul([growth, S(independent)]), angles)])])
 }
 
 function solveSecondOrder(zero: Expr, dependent: string, independent: string, angles: AngleMode): Expr {
@@ -833,16 +833,17 @@ function solveSecondOrder(zero: Expr, dependent: string, independent: string, an
   const x = S(independent)
   if (discValue < -1e-8) {
     const alpha = normalize(div(neg(A), R(2n)), angles)
-    const beta = normalize(call('sqrt', [neg(disc)]), angles)
-    const osc = add([mul([S('C1'), call('cos', [mul([beta, x])])]), mul([S('C2'), call('sin', [mul([beta, x])])])])
-    return isZero(alpha, angles) ? osc : mul([call('exp', [mul([alpha, x])]), osc])
+    const beta = normalize(div(call('sqrt', [neg(disc)]), R(2n)), angles)
+    const wave = normalize(mul([beta, x]), angles)
+    const osc = add([mul([S('C1'), call('cos', [wave])]), mul([S('C2'), call('sin', [wave])])])
+    return isZero(alpha, angles) ? osc : mul([call('exp', [normalize(mul([alpha, x]), angles)]), osc])
   }
   const radical = normalize(call('sqrt', [disc]), angles)
   const half = div(ONE, R(2n))
   const r1 = normalize(mul([half, add([neg(A), radical])]), angles)
   const r2 = normalize(mul([half, sub(neg(A), radical)]), angles)
-  if (plain(r1) === plain(r2)) return mul([add([S('C1'), mul([S('C2'), x])]), call('exp', [mul([r1, x])])])
-  return add([mul([S('C1'), call('exp', [mul([r1, x])])]), mul([S('C2'), call('exp', [mul([r2, x])])])])
+  if (plain(r1) === plain(r2)) return mul([add([S('C1'), mul([S('C2'), x])]), call('exp', [normalize(mul([r1, x]), angles)])])
+  return add([mul([S('C1'), call('exp', [normalize(mul([r1, x]), angles)])]), mul([S('C2'), call('exp', [normalize(mul([r2, x]), angles)])])])
 }
 
 function implicitDerivative(args: Expr[], angles: AngleMode): Expr {
