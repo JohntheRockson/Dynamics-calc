@@ -29,7 +29,7 @@ const FUNC_WORDS: Record<string, string> = {
 const SKIP_WORDS = new Set([
   'displaystyle', 'textstyle', 'scriptstyle', 'scriptscriptstyle', 'limits', 'nolimits',
   'bigl', 'bigr', 'Bigl', 'Bigr', 'biggl', 'biggr', 'Biggl', 'Biggr', 'big', 'Big', 'bigg', 'Bigg',
-  'quad', 'qquad', 'blacksquare', 'square',
+  'quad', 'qquad', 'blacksquare', 'square', 'allowbreak', 'nobreak',
 ])
 
 const KNOWN = new Set<string>([
@@ -38,7 +38,7 @@ const KNOWN = new Set<string>([
   ...FUNCTION_WORDS,
   ...SKIP_WORDS,
   'frac', 'dfrac', 'tfrac', 'sqrt', 'cdot', 'times', 'ast', 'div', 'left', 'right',
-  'dot', 'ddot', 'dddot', 'mathrm', 'mathbf', 'text', 'operatorname', 'infty',
+  'dot', 'ddot', 'dddot', 'mathrm', 'mathbf', 'text', 'operatorname', 'mathord', 'infty',
   'colon', 'ldots', 'dots', 'cdots', 'textcolor', 'color', 'lbrace', 'rbrace',
 ])
 
@@ -192,7 +192,7 @@ function applyCommand(name: string, src: string, i: number): { text: string; nex
     const text = /^[A-Za-z][A-Za-z0-9]*$/.test(inner) ? `${inner}${primes}` : `(${inner})${primes}`
     return { text, next: arg.next }
   }
-  if (name === 'mathrm' || name === 'mathbf' || name === 'text' || name === 'operatorname') {
+  if (name === 'mathrm' || name === 'mathbf' || name === 'text' || name === 'operatorname' || name === 'mathord') {
     const arg = readArg(src, i)
     if (!arg) throw new IncompleteLatex()
     return { text: convertLatex(arg.body), next: arg.next }

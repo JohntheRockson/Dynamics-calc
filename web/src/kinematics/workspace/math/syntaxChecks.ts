@@ -44,7 +44,12 @@ export function runSyntaxChecks(): string[] {
   gives('e_{theta} + 1', 'e_theta + 1')
   expect(validateMath('x^{2}') === null && !(previewTex('e_{theta}') ?? '').includes('\\{'), 'braces after _ and ^ stay a subscript and an exponent')
   const settingsTex = previewTex('Solve(x^2 = 4, x){Domain: 0..5}') ?? ''
-  expect(settingsTex.includes('\\textcolor{') && settingsTex.includes('\\{\\mathrm{Domain}\\colon 0 \\ldots 5\\}'), `the settings block previews muted: ${settingsTex}`)
+  expect(settingsTex.includes('\\textcolor{') && settingsTex.includes('\\{\\mathrm{Domain}\\colon \\mathord{0 \\ldots 5}\\}'), `the settings block previews muted: ${settingsTex}`)
+  const wrapTex = previewTex('Plot(sin(x), x){Color: red, Dashed}') ?? ''
+  expect(/\\right\)\\;\\allowbreak\\textcolor/.test(wrapTex) && wrapTex.includes('\\text{red}},\\allowbreak\\ \\mathrm{Dashed}'), `a narrow row can wrap the block under the call and between settings: ${wrapTex}`)
+  const negativeRange = 'Plot(sin(x), x){Domain: -2*pi..2*pi}'
+  const negativeTex = previewTex(negativeRange) ?? ''
+  expect(negativeTex.includes('\\colon \\mathord{-') && previewTex(latexToSource(negativeTex)) === negativeTex, `a setting's value stays in one piece with a unary minus: ${negativeTex} -> ${latexToSource(negativeTex)}`)
   const typingTex = previewTex('Plot(sin(x), x){Color: re', 25) ?? ''
   expect(typingTex.includes('\\mathrm{Color}') && typingTex.includes('\\rule'), `a half-typed setting still previews with the caret: ${typingTex}`)
 

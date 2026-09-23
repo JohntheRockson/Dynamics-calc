@@ -1765,11 +1765,11 @@ function texCallBody(name: string, args: Expr[]): string {
 const SETTINGS_COLOR = '#8d9db3'
 const ALL_OPTIONS: OptionSpec[] = [...GRAPH_OPTIONS, ...FUNCTIONS.flatMap((spec) => spec.options)]
 
-/** A settings block as KaTeX, muted so the calculation stays in front: `{Domain: 0 … 5}`. */
+/** A settings block as KaTeX, muted so the calculation stays in front: `{Domain: 0 … 5}`. A narrow row wraps it under the call. */
 export function blockTex(block: OptionBlock, caretAfter = false): string {
   const parts = block.entries.map(entryTex).filter((part) => part !== '')
-  const body = parts.length > 0 ? parts.join(',\\ ') : '\\,'
-  return `\\;${block.caretBefore ? CARET_TEX : ''}\\textcolor{${SETTINGS_COLOR}}{\\{${body}\\}}${caretAfter ? CARET_TEX : ''}`
+  const body = parts.length > 0 ? parts.join(',\\allowbreak\\ ') : '\\,'
+  return `\\;\\allowbreak${block.caretBefore ? CARET_TEX : ''}\\textcolor{${SETTINGS_COLOR}}{\\{${body}\\}}${caretAfter ? CARET_TEX : ''}`
 }
 
 function entryTex(entry: OptionEntry): string {
@@ -1784,7 +1784,7 @@ function entryTex(entry: OptionEntry): string {
     const valueStart = keyStart + key.length + (pair[3] ?? '').length
     const keyCaret = caret !== null && caret <= keyStart + key.length ? Math.max(0, caret - keyStart) : null
     const valueCaret = caret !== null && keyCaret === null ? Math.max(0, caret - valueStart) : null
-    return `${keyTex(key, keyCaret)}\\colon ${valueTex(key, pair[4] ?? '', valueCaret)}`
+    return `${keyTex(key, keyCaret)}\\colon \\mathord{${valueTex(key, pair[4] ?? '', valueCaret)}}`
   }
   const lead = clean.length - clean.trimStart().length
   if (OPTION_FLAG.test(clean)) return keyTex(clean.trim(), caret === null ? null : Math.max(0, caret - lead))

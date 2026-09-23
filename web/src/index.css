@@ -1381,7 +1381,13 @@ button.statement-main:hover {
 }
 .statement-math-line .eq-inline {
   min-width: 0;
+  max-width: 100%;
+  padding-right: 2px;
   overflow-x: auto;
+  overflow-y: hidden;
+}
+.math-lines .eq-inline {
+  max-width: 100%;
 }
 .statement-copies {
   display: flex;
