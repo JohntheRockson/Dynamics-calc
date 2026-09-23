@@ -2,8 +2,10 @@
 // y = and x = are curves too. z = and z^2 = are surfaces. Other results stay in the console.
 
 import type { Statement } from '../document'
-import { containsCas, evaluateCas, rewriteAll, solveSystem, type CasArrow, type CasCurve, type CasParametric, type CasPoint } from './cas'
+import { containsCas, evaluateCas, rewriteAll, solveSingle, solveSystem, type CasCurve, type CasVisual } from './cas'
+import { functionByKernel } from './functions'
 import { sampleCurveNative } from './plotter'
+import { parseMathInput, previewTex } from './syntax'
 import {
   DEFAULT_PLOT,
   MathError,
@@ -13,16 +15,16 @@ import {
   normalize,
   numericConstant,
   numericValue,
-  parseMathInput,
   plain,
   present,
-  solveEquation,
   tex,
   texName,
   type AngleMode,
   type Expr,
   type MathEnv,
+  type PlotDomain,
   type PlotOptions,
+  type SearchDomain,
 } from './expr'
 
 const PLOT_COLORS = ['#59d67f', '#f5a524', '#a78bfa', '#fb6a6a', '#5aa8ff', '#e879f9']
@@ -95,6 +97,15 @@ export interface MathCompilation {
   plots: Array<CurvePlot | SurfacePlot>
 }
 
+type MathStatement = Extract<Statement, { type: 'math' }>
+
+interface Interval {
+  min: number
+  max: number
+}
+
+const DEFAULT_RANGE: Interval = { min: -10, max: 10 }
+
 export function compileMath(statements: Statement[], angles: AngleMode = 'rad'): MathCompilation {
   const env: MathEnv = new Map()
   const rows: MathConsoleRow[] = []
@@ -106,41 +117,46 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
     colorIndex += 1
     return color
   }
+  const colorFor = (plot: PlotOptions) => plot.color ?? nextColor()
 
-  const pushVisual = (id: string, input: string, label: string, text: string, formula: string, curves: CasCurve[], points: CasPoint[], parametrics: CasParametric[], arrows: CasArrow[], visible: boolean, warn: string | null) => {
-    const color = nextColor()
+  const pushVisual = (statement: MathStatement, label: string, visual: CasVisual, plot: PlotOptions) => {
+    const color = colorFor(plot)
     let plotKind: 'curve' | null = null
-    for (const curve of curves) {
-      const hideStroke = Boolean(curve.shade && curve.exprKey && plots.some((plot) => plot.kind === 'curve' && plot.visible && !plot.hideStroke && plot.exprKey === curve.exprKey))
-      const plot = curvePlot(id, curve.label, color, visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed, shade: curve.shade, exprKey: curve.exprKey, hideStroke, along: curve.along })
-      plots.push(plot.plot)
+    let warn = visual.warn
+    for (const curve of visual.curves) {
+      const hideStroke = Boolean(curve.shade && curve.exprKey && plots.some((other) => other.kind === 'curve' && other.visible && !other.hideStroke && other.exprKey === curve.exprKey))
+      const clip = rangeOf(plot, curve.along, env, angles)
+      warn = warn ?? clip.warn
+      plots.push(curvePlot(statement.id, curve.label, color, statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { dashed: curve.dashed || plot.dashed, shade: curve.shade, exprKey: curve.exprKey, hideStroke, along: curve.along, plot, clip: clip.interval }))
       plotKind = 'curve'
     }
-    for (const parametric of parametrics) {
-      plots.push(parametricPlot(id, parametric.label, color, visible, parametric.components, parametric.param, env, angles, parametric.dashed))
+    for (const parametric of visual.parametrics) {
+      const range = rangeOf(plot, parametric.param, env, angles)
+      warn = warn ?? range.warn
+      plots.push(parametricPlot(statement.id, parametric.label, color, statement.visible, parametric.components, parametric.param, env, angles, plot, range.interval ?? DEFAULT_RANGE, parametric.dashed || plot.dashed))
       plotKind = 'curve'
     }
-    for (const arrow of arrows) {
-      plots.push(arrowPlot(id, arrow.label, color, visible, arrow.x, arrow.y, arrow.z))
+    for (const arrow of visual.arrows) {
+      plots.push(arrowPlot(statement.id, arrow.label, color, statement.visible, arrow.x, arrow.y, arrow.z))
       plotKind = 'curve'
     }
-    for (const point of points) {
-      plots.push(pointPlot(id, point.label, color, visible, point.x, point.y))
+    for (const point of visual.points) {
+      plots.push(pointPlot(statement.id, point.label, color, statement.visible, point.x, point.y))
       plotKind = 'curve'
     }
     rows.push({
-      statementId: id,
+      statementId: statement.id,
       label,
-      input,
-      text: warn ? `${text} (${warn})` : text,
-      tex: formula,
-      exactTex: formula,
-      exactText: text,
+      input: statement.input,
+      text: warn ? `${visual.text} (${warn})` : visual.text,
+      tex: visual.tex,
+      exactTex: visual.tex,
+      exactText: visual.text,
       approxTex: null,
       approxText: null,
       preferDecimal: false,
       plotKind,
-      visible,
+      visible: statement.visible,
       warn,
     })
   }
@@ -149,29 +165,40 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
     if (statement.type !== 'math') continue
     try {
       const parsed = parseMathInput(statement.input)
+      const echo = previewTex(statement.input)
       if (parsed.kind === 'fn') {
         const label = `${parsed.name}(${parsed.params.join(', ')})`
-        const formulaTex = `${labelTex(parsed.name, parsed.params)} = ${tex(parsed.body)}`
-        const formulaText = `${label} = ${plain(parsed.body)}`
         const body = rewriteAll(parsed.body, angles)
+        const computed = containsCas(parsed.body)
+        const shownBody = computed ? tidy(body, angles) : parsed.body
+        const formulaTex = computed || !echo ? `${labelTex(parsed.name, parsed.params)} = ${tex(shownBody)}` : echo
+        const formulaText = `${label} = ${plain(shownBody)}`
         env.set(parsed.name, { kind: 'fn', params: parsed.params, body })
+        const param = parsed.params[0] ?? 'x'
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
-          const color = nextColor()
-          const plot = parametricPlot(statement.id, label, color, statement.visible, body.args, parsed.params[0], env, angles, undefined, parsed.plot)
-          const warn = domainWarning(parsed.plot, angles, parsed.params[0]) ?? (hasGeometry(plot) ? null : missingDomain(parsed.plot, angles, parsed.params[0]))
-          plots.push(plot)
+          const range = rangeOf(parsed.plot, param, env, angles)
+          const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, body.args, param, env, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
+          const warn = range.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, range.interval ?? DEFAULT_RANGE))
+          plots.push(drawn)
           rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
           continue
         }
         const missing = freeSymbols(body).filter((name) => !parsed.params.includes(name) && !env.has(name))
-        const color = nextColor()
-        const plot = parsed.params.length === 2
-          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [body], parsed.params[0], parsed.params[1], env, angles, parsed.plot)
-          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param: parsed.params[0], along: 'x' }, env, angles, { plot: parsed.plot })
-        if (missing.length > 0) plot.warn = `Give ${missing.join(', ')} a value above this line to draw the graph.`
-        else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
-        plots.push(plot.plot)
-        rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, plot.plot.kind, statement.visible, plot.warn))
+        const color = colorFor(parsed.plot)
+        if (parsed.params.length === 2) {
+          const names: [string, string] = [param, parsed.params[1] ?? 'y']
+          const clips = surfaceRanges(parsed.plot, names, env, angles)
+          const drawn = surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [body], names, env, angles, parsed.plot, clips)
+          const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, null)))
+          plots.push(drawn)
+          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, warn))
+          continue
+        }
+        const clip = rangeOf(parsed.plot, param, env, angles)
+        const drawn = curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param, along: 'x' }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed })
+        const warn = missing.length > 0 ? giveValue(missing) : (clip.warn ?? (hasGeometry(drawn) ? null : emptyWarning(param, clip.interval)))
+        plots.push(drawn)
+        rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
         continue
       }
       const equation: { left: Expr; right: Expr } | null = parsed.kind === 'assign'
@@ -183,13 +210,19 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const dep = dependentAxis(equation.left)
         const plotted = dep ? explicitPlot(dep, equation.right, env, angles) : null
         if (parsed.kind === 'assign' && !plotted) {
-          const value = normalize(applyEnv(parsed.expr, env, 0), angles)
+          const value = normalize(rewriteAll(applyEnv(parsed.expr, env, 0), angles), angles)
           env.set(parsed.name, { kind: 'expr', expr: value })
           const shown = described(parsed.expr, value, statement.input, angles)
           const picture = vectorPicture(value)
+          let warn: string | null = null
           if (picture) {
-            const color = nextColor()
-            plots.push(picture.kind === 'arrow' ? arrowPlot(statement.id, parsed.name, color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, parsed.name, color, statement.visible, picture.components, picture.param, env, angles, undefined, parsed.plot))
+            const color = colorFor(parsed.plot)
+            if (picture.kind === 'arrow') plots.push(arrowPlot(statement.id, parsed.name, color, statement.visible, picture.x, picture.y, picture.z))
+            else {
+              const range = rangeOf(parsed.plot, picture.param, env, angles)
+              warn = range.warn
+              plots.push(parametricPlot(statement.id, parsed.name, color, statement.visible, picture.components, picture.param, env, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed))
+            }
           }
           const nameTex = tex({ type: 'sym', name: parsed.name })
           const exactText = `${parsed.name} = ${shown.exactText ?? ''}`
@@ -197,11 +230,12 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           const approxText = shown.approxText ? `${parsed.name} = ${shown.approxText}` : null
           const approxTex = shown.approxTex ? `${nameTex} = ${shown.approxTex}` : null
           const useDecimal = Boolean(shown.preferDecimal && approxText && approxTex)
+          const text = useDecimal && approxText ? approxText : exactText
           rows.push({
             statementId: statement.id,
             label: parsed.name,
             input: statement.input,
-            text: useDecimal && approxText ? approxText : exactText,
+            text: warn ? `${text} (${warn})` : text,
             tex: useDecimal && approxTex ? approxTex : exactTex,
             exactTex,
             exactText,
@@ -210,81 +244,108 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
             preferDecimal: useDecimal,
             plotKind: picture ? 'curve' : null,
             visible: statement.visible,
-            warn: null,
+            warn,
           })
           continue
         }
         if (plotted) {
-          if (parsed.kind === 'assign') {
-            const value = normalize(applyEnv(parsed.expr, env, 0), angles)
-            env.set(parsed.name, { kind: 'expr', expr: value })
-          }
-          const color = nextColor()
+          if (parsed.kind === 'assign') env.set(parsed.name, { kind: 'expr', expr: plotted.value })
+          const color = colorFor(parsed.plot)
           const label = dep && dep.power === 1 ? dep.name : plain(equation.left)
-          const formulaTex = `${tex(equation.left)} = ${tex(equation.right)}`
-          const formulaText = `${plain(equation.left)} = ${plain(equation.right)}`
-          const plot = plotted.kind === 'surface'
-            ? surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, 'x', 'y', env, angles, parsed.plot)
-            : curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles, { plot: parsed.plot })
-          if (plotted.warn) plot.warn = plotted.warn
-          else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
-          plots.push(plot.plot)
-          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, plot.plot.kind, statement.visible, plot.warn))
+          const computed = containsCas(equation.right)
+          const formulaTex = computed || !echo ? `${tex(equation.left)} = ${tex(computed ? plotted.value : equation.right)}` : echo
+          const formulaText = `${plain(equation.left)} = ${plain(computed ? plotted.value : equation.right)}`
+          if (plotted.kind === 'surface') {
+            const clips = surfaceRanges(parsed.plot, ['x', 'y'], env, angles)
+            const drawn = surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, ['x', 'y'], env, angles, parsed.plot, clips)
+            const warn = plotted.warn ?? clips.warn ?? (hasGeometry(drawn) ? null : emptyWarning('x', null))
+            plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, warn))
+            continue
+          }
+          const clip = rangeOf(parsed.plot, plotted.param, env, angles)
+          const drawn = curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed })
+          const warn = plotted.warn ?? clip.warn ?? (hasGeometry(drawn) ? null : emptyWarning(plotted.param, clip.interval))
+          plots.push(drawn)
+          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
           continue
         }
       }
       if (parsed.kind === 'system') {
-        const solved = solveSystem(parsed.equations.map((equation) => applyEnv(equation, env, 0)), parsed.domains, angles)
-        pushVisual(statement.id, statement.input, 'Solve', solved.text, solved.tex, solved.curves, solved.points, solved.parametrics, solved.arrows, statement.visible, solved.warn)
+        const local = withoutNames(env, parsed.variables ?? [])
+        const solved = solveSystem(parsed.equations.map((item) => applyEnv(item, local, 0)), searchIn(parsed.domains, env), angles, parsed.variables)
+        pushVisual(statement, 'Solve', solved, parsed.plot)
         continue
       }
       if (parsed.kind === 'solve') {
-        const equation = applyEnv(parsed.equation, env, 0)
-        const solved = solveEquation(equation, parsed.variable)
-        rows.push({
-          statementId: statement.id,
-          label: 'Solve',
-          input: statement.input,
-          text: solved.text,
-          tex: solved.tex,
-          exactTex: solved.tex,
-          exactText: solved.text,
-          approxTex: null,
-          approxText: null,
-          preferDecimal: false,
-          plotKind: null,
-          visible: true,
-          warn: null,
-        })
+        const local = withoutNames(env, parsed.variable ? [parsed.variable] : [])
+        const solved = solveSingle(applyEnv(parsed.equation, local, 0), parsed.variable, searchIn(parsed.domains, env), angles)
+        pushVisual(statement, 'Solve', solved, parsed.plot)
         continue
       }
-      const expr = parsed.kind === 'expr' ? parsed.expr : null
-      if (!expr) continue
+      if (parsed.kind === 'plot') {
+        const local = withoutNames(env, [parsed.variable])
+        const value = normalize(rewriteAll(applyEnv(parsed.expr, local, 0), angles), angles)
+        const missing = freeSymbols(value).filter((name) => name !== parsed.variable)
+        const text = `Plot(${plain(parsed.expr)}, ${parsed.variable})`
+        const formula = echo ?? `\\operatorname{Plot}\\left(${tex(parsed.expr)}, ${texName(parsed.variable)}\\right)`
+        const label = shortLabel(parsed.expr, 'Plot')
+        const range = rangeOf(parsed.plot, parsed.variable, env, angles)
+        if (value.type === 'vec') {
+          if (value.args.length < 2 || value.args.length > 3) throw new MathError('Plot draws a list of two or three expressions as a curve, for example Plot([cos(t), sin(t)], t).')
+          const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? [] : value.args, parsed.variable, local, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
+          const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval ?? DEFAULT_RANGE)))
+          plots.push(drawn)
+          rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
+          continue
+        }
+        const drawn = curvePlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? null : { bodies: [value], param: parsed.variable, along: 'x' }, local, angles, { plot: parsed.plot, clip: range.interval, dashed: parsed.plot.dashed })
+        const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval)))
+        plots.push(drawn)
+        rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
+        continue
+      }
+      if (parsed.kind === 'plot3d') {
+        const names = parsed.variables
+        const local = withoutNames(env, names)
+        const value = normalize(rewriteAll(applyEnv(parsed.expr, local, 0), angles), angles)
+        const missing = freeSymbols(value).filter((name) => !names.includes(name))
+        const clips = surfaceRanges(parsed.plot, names, env, angles)
+        const drawn = surfacePlot(statement.id, shortLabel(parsed.expr, 'Plot3D'), colorFor(parsed.plot), statement.visible, missing.length ? [] : [value], names, local, angles, parsed.plot, clips)
+        const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? (hasGeometry(drawn) ? null : emptyWarning(names[0], null)))
+        const formula = echo ?? `\\operatorname{Plot3D}\\left(${tex(parsed.expr)}, ${texName(names[0])}, ${texName(names[1])}\\right)`
+        plots.push(drawn)
+        rows.push(rowBase(statement.id, statement.input, 'Plot3D', `Plot3D(${plain(parsed.expr)}, ${names[0]}, ${names[1]})`, formula, 'surface', statement.visible, warn))
+        continue
+      }
+      if (parsed.kind !== 'expr') continue
+      const expr = parsed.expr
       const applied = applyEnv(expr, env, 0)
       const cas = evaluateCas(applied, angles)
       if (cas) {
-        pushVisual(statement.id, statement.input, casLabel(applied), cas.text, cas.tex, cas.curves, cas.points, cas.parametrics, cas.arrows, statement.visible, cas.warn)
+        pushVisual(statement, casLabel(applied), cas, parsed.plot)
         continue
       }
       const value = normalize(rewriteAll(applied, angles), angles)
       const picture = vectorPicture(value)
       if (picture) {
-        const color = nextColor()
-        const drawn = picture.kind === 'arrow' ? arrowPlot(statement.id, 'vector', color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, picture.param, color, statement.visible, picture.components, picture.param, env, angles, undefined, parsed.plot)
+        const color = colorFor(parsed.plot)
+        const range = picture.kind === 'arrow' ? null : rangeOf(parsed.plot, picture.param, env, angles)
+        const drawn = picture.kind === 'arrow' ? arrowPlot(statement.id, 'vector', color, statement.visible, picture.x, picture.y, picture.z) : parametricPlot(statement.id, picture.param, color, statement.visible, picture.components, picture.param, env, angles, parsed.plot, range?.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
         plots.push(drawn)
         const shown = described(expr, value, statement.input, angles)
-        const warn = picture.kind === 'arrow' ? null : (domainWarning(parsed.plot, angles, picture.param) ?? (hasGeometry(drawn) ? null : missingDomain(parsed.plot, angles, picture.param)))
+        const warn = picture.kind === 'arrow' ? null : (range?.warn ?? (hasGeometry(drawn) ? null : emptyWarning(picture.param, range?.interval ?? DEFAULT_RANGE)))
         rows.push({ ...shown, text: warn ? `${shown.text} (${warn})` : shown.text, statementId: statement.id, label: picture.kind === 'arrow' ? 'Vector' : picture.param, plotKind: 'curve', visible: statement.visible, warn })
         continue
       }
       if (containsCas(expr)) {
         const curve = singleCurve(value)
         if (curve) {
-          const color = nextColor()
-          const plot = curvePlot(statement.id, curve.label, color, statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles)
-          plots.push(plot.plot)
+          const clip = rangeOf(parsed.plot, curve.along, env, angles)
+          const drawn = curvePlot(statement.id, curve.label, colorFor(parsed.plot), statement.visible, { bodies: [curve.expr], param: curve.along, along: curve.along }, env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed })
+          plots.push(drawn)
           const shown = described(expr, value, statement.input, angles)
-          rows.push({ ...shown, statementId: statement.id, label: curve.label, plotKind: 'curve', visible: statement.visible, warn: plot.warn })
+          rows.push({ ...shown, text: clip.warn ? `${shown.text} (${clip.warn})` : shown.text, statementId: statement.id, label: curve.label, plotKind: 'curve', visible: statement.visible, warn: clip.warn })
           continue
         }
       }
@@ -333,6 +394,34 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
   return { rows, plots }
 }
 
+function tidy(e: Expr, angles: AngleMode): Expr {
+  try {
+    return normalize(e, angles)
+  } catch {
+    return e
+  }
+}
+
+function withoutNames(env: MathEnv, names: string[]): MathEnv {
+  if (!names.some((name) => env.has(name))) return env
+  const local: MathEnv = new Map(env)
+  for (const name of names) local.delete(name)
+  return local
+}
+
+function searchIn(domains: SearchDomain[], env: MathEnv): SearchDomain[] {
+  return domains.map((domain) => ({ ...domain, min: applyEnv(domain.min, env, 0), max: applyEnv(domain.max, env, 0) }))
+}
+
+function giveValue(missing: string[]): string {
+  return `Give ${missing.join(', ')} a value above this line to draw the graph.`
+}
+
+function shortLabel(expr: Expr, fallback: string): string {
+  const text = plain(expr)
+  return text.length <= 24 ? text : fallback
+}
+
 function rowBase(id: string, input: string, label: string, text: string, formula: string, plotKind: 'curve' | 'surface', visible: boolean, warn: string | null): MathConsoleRow {
   return {
     statementId: id,
@@ -379,19 +468,19 @@ function dependentAxis(left: Expr): { name: 'x' | 'y' | 'z'; power: number } | n
   return null
 }
 
-function explicitPlot(dep: { name: 'x' | 'y' | 'z'; power: number }, rhs: Expr, env: MathEnv, angles: AngleMode): { kind: 'curve'; bodies: Expr[]; param: string; along: 'x' | 'y'; warn: string | null } | { kind: 'surface'; bodies: Expr[]; warn: string | null } | null {
-  const value = normalize(applyEnv(rhs, env, 0), angles)
+function explicitPlot(dep: { name: 'x' | 'y' | 'z'; power: number }, rhs: Expr, env: MathEnv, angles: AngleMode): { kind: 'curve'; value: Expr; bodies: Expr[]; param: string; along: 'x' | 'y'; warn: string | null } | { kind: 'surface'; value: Expr; bodies: Expr[]; warn: string | null } | null {
+  const value = normalize(rewriteAll(applyEnv(rhs, env, 0), angles), angles)
   if (freeSymbols(value).includes(dep.name)) return null
   const roots = rootBodies(value, dep.power)
   if (dep.name === 'z') {
     const unknown = freeSymbols(value).filter((name) => name !== 'x' && name !== 'y')
-    if (unknown.length > 0) return { kind: 'surface', bodies: [], warn: `Give ${unknown.join(', ')} a value above this line to draw the graph.` }
-    return { kind: 'surface', bodies: roots, warn: null }
+    if (unknown.length > 0) return { kind: 'surface', value, bodies: [], warn: giveValue(unknown) }
+    return { kind: 'surface', value, bodies: roots, warn: null }
   }
   const param = dep.name === 'y' ? 'x' : 'y'
   const unknown = freeSymbols(value).filter((name) => name !== param)
-  if (unknown.length > 0) return { kind: 'curve', bodies: [], param, along: param, warn: `Give ${unknown.join(', ')} a value above this line to draw the graph.` }
-  return { kind: 'curve', bodies: roots, param, along: param, warn: null }
+  if (unknown.length > 0) return { kind: 'curve', value, bodies: [], param, along: param, warn: giveValue(unknown) }
+  return { kind: 'curve', value, bodies: roots, param, along: param, warn: null }
 }
 
 function rootBodies(rhs: Expr, power: number): Expr[] {
@@ -406,15 +495,27 @@ function hasGeometry(plot: CurvePlot | SurfacePlot): boolean {
   return plot.sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
-function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options?: { dashed?: boolean; shade?: { from: number; to: number }; exprKey?: string; hideStroke?: boolean; along?: 'x' | 'y'; plot?: PlotOptions }): { plot: CurvePlot; warn: string | null } {
-  const style = options?.plot ?? DEFAULT_PLOT
-  const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles, style) : [])
-  const exprKey = options?.exprKey ?? (spec && spec.bodies.length === 1 ? plain(spec.bodies[0]) : undefined)
-  return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options?.dashed, shade: options?.shade, hideStroke: options?.hideStroke, along: options?.along ?? spec?.along, exprKey } }
+interface CurveOptions {
+  dashed?: boolean
+  shade?: { from: number; to: number }
+  exprKey?: string
+  hideStroke?: boolean
+  along?: 'x' | 'y'
+  plot?: PlotOptions
+  /** Only draw this interval of the input, as a Domain setting asks. */
+  clip?: Interval | null
 }
 
-function parametricPlot(id: string, label: string, color: string, visible: boolean, components: Expr[], param: string, env: MathEnv, angles: AngleMode, dashed?: boolean, plot: PlotOptions = DEFAULT_PLOT): CurvePlot {
-  const sample = (window: PlotWindow) => sampleParametric(components, param, env, window, angles, plot)
+function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options: CurveOptions = {}): CurvePlot {
+  const style = options.plot ?? DEFAULT_PLOT
+  const clip = options.clip ?? null
+  const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles, style, clip) : [])
+  const exprKey = options.exprKey ?? (spec && spec.bodies.length === 1 ? plain(spec.bodies[0]) : undefined)
+  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options.dashed, shade: options.shade, hideStroke: options.hideStroke, along: options.along ?? spec?.along, exprKey }
+}
+
+function parametricPlot(id: string, label: string, color: string, visible: boolean, components: Expr[], param: string, env: MathEnv, angles: AngleMode, style: PlotOptions, range: Interval, dashed?: boolean): CurvePlot {
+  const sample = (window: PlotWindow) => (components.length > 0 ? sampleParametric(components, param, env, window, angles, style, range) : [])
   return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed, along: 'x' }
 }
 
@@ -441,24 +542,17 @@ function pointPlot(id: string, label: string, color: string, visible: boolean, x
   return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), marker: true }
 }
 
-function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], xName: string, yName: string, env: MathEnv, angles: AngleMode, plot: PlotOptions = DEFAULT_PLOT): { plot: SurfacePlot; warn: string | null } {
-  const sample = (window: PlotWindow) => (bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, window, angles, plot)) : [])
+function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], names: [string, string], env: MathEnv, angles: AngleMode, plot: PlotOptions, clips: { x: Interval | null; y: Interval | null }): SurfacePlot {
+  const sample = (window: PlotWindow) => (bodies.length > 0 ? bodies.map((body) => sampleSurface(body, names, env, window, angles, plot, clips)) : [])
   const sheets = sample(DEFAULT_WINDOW)
-  return { warn: null, plot: { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [], sample } }
+  return { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [], sample }
 }
+
+const CAS_NOUNS: Record<string, string> = { integrate: 'Integral', fmin: 'Minimum', fmax: 'Maximum', dsolve: 'Solution' }
 
 function casLabel(expr: Expr): string {
   if (expr.type !== 'call') return 'Result'
-  if (expr.name === 'diff') return 'Derivative'
-  if (expr.name === 'integrate') return 'Integral'
-  if (expr.name === 'zeros') return 'Zeros'
-  if (expr.name === 'tangent') return 'Tangent'
-  if (expr.name === 'normal') return 'Normal'
-  if (expr.name === 'series') return 'Series'
-  if (expr.name === 'fmin') return 'Minimum'
-  if (expr.name === 'fmax') return 'Maximum'
-  if (expr.name === 'dsolve') return 'Solution'
-  return expr.name
+  return CAS_NOUNS[expr.name] ?? functionByKernel(expr.name)?.name ?? expr.name
 }
 
 function singleCurve(expr: Expr): CasCurve | null {
@@ -489,25 +583,26 @@ interface CurveNode {
   cut: boolean
 }
 
-function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions): { x: number; y: number; z: number }[] {
+function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions, clip: Interval | null): { x: number; y: number; z: number }[] {
   const path: { x: number; y: number; z: number }[] = []
-  const min = along === 'x' ? window.xMin : window.yMin
-  const max = along === 'x' ? window.xMax : window.yMax
+  const min = Math.max(along === 'x' ? window.xMin : window.yMin, clip?.min ?? -Infinity)
+  const max = Math.min(along === 'x' ? window.xMax : window.yMax, clip?.max ?? Infinity)
+  if (max < min) return path
   const ySpan = Math.max(1e-6, along === 'x' ? window.yMax - window.yMin : window.xMax - window.xMin)
-  const clip = Math.max(CLIP, 40 * Math.abs(window.xMax - window.xMin), 40 * Math.abs(window.yMax - window.yMin))
+  const limit = Math.max(CLIP, 40 * Math.abs(window.xMax - window.xMin), 40 * Math.abs(window.yMax - window.yMin))
   for (const body of bodies) {
     const at = (t: number) => {
       const value = numericValue(body, bind(env, param, t), angles)
       return value === null || !Number.isFinite(value) ? null : value
     }
     const native = sampleCurveNative(body, param, env, min, max, ySpan, angles === 'deg', style)
-    const nodes = native ?? refineSamples(min, max, { points: Math.min(style.points, 160), recursion: Math.min(style.recursion, 4), exclusions: style.exclusions, domain: null }, ySpan, at)
+    const nodes = native ?? refineSamples(min, max, { ...style, points: Math.min(style.points, 160), recursion: Math.min(style.recursion, 4) }, ySpan, at)
     let previous = false
     for (const node of nodes) {
       const value = node.y
       const x = along === 'x' ? node.t : value
       const y = along === 'x' ? value : node.t
-      const bad = x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > clip || Math.abs(y) > clip
+      const bad = x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > limit || Math.abs(y) > limit
       if (bad) {
         if (previous) path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
         previous = false
@@ -596,29 +691,40 @@ function isDiscontinuity(left: number | null, mid: number | null, right: number 
   return Math.abs(mid) > peak * 1.5 + ySpan * 0.25
 }
 
-function parametricRange(plot: PlotOptions, angles: AngleMode): { min: number; max: number } | null {
-  if (!plot.domain) return { min: -10, max: 10 }
-  const min = numericConstant(plot.domain.min, angles)
-  const max = numericConstant(plot.domain.max, angles)
-  if (min === null || max === null || !Number.isFinite(min) || !Number.isFinite(max) || min === max) return null
+function readInterval(domain: PlotDomain, env: MathEnv, angles: AngleMode): Interval | null {
+  const min = numericValue(domain.min, env, angles)
+  const max = numericValue(domain.max, env, angles)
+  if (min === null || max === null || min === max) return null
   return min < max ? { min, max } : { min: max, max: min }
 }
 
-function domainWarning(plot: PlotOptions, angles: AngleMode, param: string): string | null {
-  if (!plot.domain) return null
-  if (parametricRange(plot, angles)) return null
-  return `The domain of ${param} needs two different numbers, for example ${param} = 0..2*pi.`
+/** The interval a setting gives one input: {t: 0..2*pi}, {Domain: 0..2*pi}, or an older `t = 0..2*pi` tail. */
+function rangeOf(plot: PlotOptions, param: string, env: MathEnv, angles: AngleMode, inputs: string[] = [param]): { interval: Interval | null; warn: string | null } {
+  const domain = plot.ranges.find((range) => range.name === param) ?? plot.domain
+  if (!domain) {
+    const stray = plot.ranges.find((range) => !inputs.includes(range.name))
+    return { interval: null, warn: stray ? `This graph's input is ${param}, so write {${param}: …} or {Domain: …}.` : null }
+  }
+  const interval = readInterval(domain, env, angles)
+  return { interval, warn: interval ? null : `The domain of ${param} needs two different numbers, for example {${param}: 0..2*pi}.` }
 }
 
-function missingDomain(plot: PlotOptions, angles: AngleMode, param: string): string {
-  const range = parametricRange(plot, angles) ?? { min: -10, max: 10 }
+/** A surface can trim either input by name. A plain Domain trims both. */
+function surfaceRanges(plot: PlotOptions, names: [string, string], env: MathEnv, angles: AngleMode): { x: Interval | null; y: Interval | null; warn: string | null } {
+  const stray = plot.ranges.find((range) => !names.includes(range.name))
+  if (stray) return { x: null, y: null, warn: `This surface's inputs are ${names[0]} and ${names[1]}, so name one of those: {${names[0]}: -2..2}.` }
+  const [x, y] = names.map((name) => rangeOf(plot, name, env, angles, names))
+  return { x: x?.interval ?? null, y: y?.interval ?? null, warn: x?.warn ?? y?.warn ?? null }
+}
+
+function emptyWarning(param: string, range: Interval | null): string {
+  if (!range) return 'No real values to plot on [-10, 10].'
   const bound = (n: number) => String(Math.round(n * 1000) / 1000)
   return `No real values to plot for ${param} from ${bound(range.min)} to ${bound(range.max)}.`
 }
 
-function sampleParametric(components: Expr[], param: string, env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions): { x: number; y: number; z: number }[] {
+function sampleParametric(components: Expr[], param: string, env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions, range: Interval): { x: number; y: number; z: number }[] {
   const ySpan = Math.max(1e-6, window.yMax - window.yMin, window.xMax - window.xMin)
-  const range = parametricRange(style, angles) ?? { min: -10, max: 10 }
   const at = (t: number) => {
     const local = bind(env, param, t)
     const values = components.map((component) => numericValue(component, local, angles))
@@ -643,17 +749,22 @@ function sampleParametric(components: Expr[], param: string, env: MathEnv, windo
   return path
 }
 
-function sampleSurface(body: Expr, xName: string, yName: string, env: MathEnv, window: PlotWindow, angles: AngleMode, plot: PlotOptions): { x: number; y: number; z: number }[][] {
+function sampleSurface(body: Expr, names: [string, string], env: MathEnv, window: PlotWindow, angles: AngleMode, plot: PlotOptions, clips: { x: Interval | null; y: Interval | null }): { x: number; y: number; z: number }[][] {
   const count = Math.max(24, Math.min(80, Math.round(plot.points / 2)))
   const grid: { x: number; y: number; z: number }[][] = []
   const zSpan = Math.max(1, window.yMax - window.yMin)
+  const xMin = Math.max(window.xMin, clips.x?.min ?? -Infinity)
+  const xMax = Math.min(window.xMax, clips.x?.max ?? Infinity)
+  const yMin = Math.max(window.yMin, clips.y?.min ?? -Infinity)
+  const yMax = Math.min(window.yMax, clips.y?.max ?? Infinity)
+  if (xMax < xMin || yMax < yMin) return grid
   for (let row = 0; row < count; row += 1) {
-    const y = sampleAt(row, count, window.yMin, window.yMax)
+    const y = sampleAt(row, count, yMin, yMax)
     const line: { x: number; y: number; z: number }[] = []
     for (let col = 0; col < count; col += 1) {
-      const x = sampleAt(col, count, window.xMin, window.xMax)
-      let local = bind(env, xName, x)
-      local = bind(local, yName, y)
+      const x = sampleAt(col, count, xMin, xMax)
+      let local = bind(env, names[0], x)
+      local = bind(local, names[1], y)
       const z = numericValue(body, local, angles)
       const previous = line[line.length - 1]
       const jump = previous && z !== null && Number.isFinite(previous.z) && Number.isFinite(z) && Math.abs(z - previous.z) > zSpan * 6

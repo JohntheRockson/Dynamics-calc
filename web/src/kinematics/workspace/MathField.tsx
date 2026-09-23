@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Eq } from '../Eq'
-import { previewTex } from './math/expr'
+import { previewTex } from './math/syntax'
 import { closeOpenGroups, exitSlotsForComma, latexToSource, moveMathCursor } from './math/inputView'
 import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './math/shortcuts'
 

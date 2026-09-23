@@ -2,6 +2,7 @@
 // A scalar subexpression is handed back to normalize so fractions stay exact.
 
 import { MathError, type AngleMode, type Expr } from './expr'
+import { functionByKernel } from './functions'
 
 const LINEAR_CALLS = new Set(['dot', 'cross', 'unit', 'norm', 'mag', 'det', 'transpose', 'inv', 'trace'])
 
@@ -42,7 +43,7 @@ export function reduceAlgebra(expr: Expr, angles: AngleMode, scalar: Scalar): Ex
         return callAlgebra(node.name, node.args.map(simplify), angles, scalar)
       case 'pow':
       case 'eq':
-        throw new MathError('Use dot, cross, or matrix multiplication for vectors and matrices.')
+        throw new MathError('Use Dot, Cross, or matrix multiplication for vectors and matrices.')
       default:
         return scalar(node, angles)
     }
@@ -63,7 +64,7 @@ function multiplyAll(args: Expr[], angles: AngleMode, scalar: Scalar): Expr {
 }
 
 function multiplyPair(left: Expr, right: Expr, angles: AngleMode, scalar: Scalar): Expr {
-  if (isVec(left) && isVec(right)) throw new MathError('Use dot(u, v) or cross(u, v) to multiply vectors.')
+  if (isVec(left) && isVec(right)) throw new MathError('Use Dot(u, v) or Cross(u, v) to multiply vectors.')
   if (!isVec(left) && !isMat(left) && isVec(right)) return scaleVector(left, vectorOf(right), angles, scalar)
   if (isVec(left) && !isVec(right) && !isMat(right)) return scaleVector(right, vectorOf(left), angles, scalar)
   if (!isVec(left) && !isMat(left) && isMat(right)) return scaleMatrix(left, matrixOf(right), angles, scalar)
@@ -74,7 +75,7 @@ function multiplyPair(left: Expr, right: Expr, angles: AngleMode, scalar: Scalar
 }
 
 function divide(num: Expr, den: Expr, angles: AngleMode, scalar: Scalar): Expr {
-  if (isVec(den) || isMat(den)) throw new MathError('Divide by a scalar, or use inv for a matrix.')
+  if (isVec(den) || isMat(den)) throw new MathError('Divide by a scalar, or use Inverse for a matrix.')
   if (isVec(num)) return scaleVector(scalar({ type: 'div', num: { type: 'rat', n: 1n, d: 1n }, den }, angles), vectorOf(num), angles, scalar)
   if (isMat(num)) return scaleMatrix(scalar({ type: 'div', num: { type: 'rat', n: 1n, d: 1n }, den }, angles), matrixOf(num), angles, scalar)
   return scalar({ type: 'div', num, den }, angles)
@@ -90,7 +91,7 @@ function callAlgebra(name: string, args: Expr[], angles: AngleMode, scalar: Scal
   if (name === 'transpose' && args.length === 1) return transpose(matrixOf(args[0]))
   if (name === 'inv' && args.length === 1) return inverse(matrixOf(args[0]), angles, scalar)
   if (name === 'trace' && args.length === 1) return trace(matrixOf(args[0]), angles, scalar)
-  if (args.some((arg) => isVec(arg) || isMat(arg))) throw new MathError(`Cannot use ${name} on a vector or matrix yet.`)
+  if (args.some((arg) => isVec(arg) || isMat(arg))) throw new MathError(`Cannot use ${functionByKernel(name)?.name ?? name} on a vector or matrix yet.`)
   return scalar({ type: 'call', name, args }, angles)
 }
 
@@ -132,7 +133,7 @@ function multiplyMatrices(left: Expr[][], right: Expr[][], angles: AngleMode, sc
 }
 
 function dot(left: Expr[], right: Expr[], angles: AngleMode, scalar: Scalar): Expr {
-  if (left.length !== right.length || left.length === 0) throw new MathError('dot needs two vectors of the same length.')
+  if (left.length !== right.length || left.length === 0) throw new MathError('Dot needs two vectors of the same length.')
   return scalar({ type: 'add', args: left.map((component, index) => ({ type: 'mul', args: [component, right[index]] })) }, angles)
 }
 
@@ -166,7 +167,7 @@ function cross(left: Expr[], right: Expr[], angles: AngleMode, scalar: Scalar): 
       args: [term(left[1], right[2], left[2], right[1]), term(left[2], right[0], left[0], right[2]), term(left[0], right[1], left[1], right[0])],
     }
   }
-  throw new MathError('cross takes two vectors in the plane, or two vectors in space.')
+  throw new MathError('Cross takes two vectors in the plane, or two vectors in space.')
 }
 
 function magnitude(components: Expr[], angles: AngleMode, scalar: Scalar): Expr {
