@@ -7,6 +7,7 @@ import { formatTick, tickMarks } from '../../ticks'
 import { closeOpenGroups, exitSlotsForComma, moveMathCursor } from './inputView'
 import { axisThrough, expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './shortcuts'
+import { runSyntaxChecks } from './syntaxChecks'
 
 export function runMathChecks(): string[] {
   const errors: string[] = []
@@ -557,5 +558,5 @@ export function runMathChecks(): string[] {
   const convertedDomain = convertAngleInput('r(t) = [cos(pi), sin(t)], t = 0..2', 'rad', 'deg')
   expect(convertedDomain.includes('180') && convertedDomain.includes('t = 0..2'), `a domain survives an angle switch: ${convertedDomain}`)
 
-  return errors
+  return [...errors, ...runSyntaxChecks()]
 }
