@@ -249,7 +249,7 @@ function bindLine(line: LineRead): MathInput {
     }
     if (tail && own.length > 0) tail.options = { raw: '', entries: [...(tail.options?.entries ?? []), ...own] }
   }
-  const lineOwner = { spec: tailSpec, bare: line.kind === 'expr' && main !== null && main === tail }
+  const lineOwner = { spec: tailSpec, bare: line.kind === 'expr' && main !== null && main === tail, expr: line.expr }
   const context: BindContext = { main, graph: [] }
   if (line.kind === 'expr' && main && (main.name === 'solve' || main.name === 'plot' || main.name === 'plot3d')) {
     const bound = main.name === 'solve' ? bindSolve(main, line, plot, context) : bindPlot(main, line, plot, context)
@@ -367,15 +367,60 @@ function listWords(words: string[]): string {
   return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`
 }
 
-function unknownSetting(owner: string, key: string, options: OptionSpec[], plotHint = false): MathError {
+function unknownSetting(owner: string, key: string, options: OptionSpec[], plotHint = false, pointer: string | null = null): MathError {
   const typed = key.trim()
+  const head = options.length === 0 ? `${owner} has no settings.` : `${owner} has no setting ${typed}.`
+  if (pointer) return new MathError(`${head} ${pointer}`)
   if (options.length === 0) {
     const hint = plotHint && isGraphOption(typed) ? ` To draw it, use Plot(${owner}(x), x){${typed}: …}.` : ''
-    return new MathError(`${owner} has no settings.${hint}`)
+    return new MathError(`${head}${hint}`)
   }
   const names = options.map((option) => option.name)
   const guess = suggestName(typed, names)
-  return new MathError(`${owner} has no setting ${typed}. ${guess ? `Did you mean ${guess}?` : `It takes ${listWords(names)}.`}`)
+  return new MathError(`${head} ${guess ? `Did you mean ${guess}?` : `It takes ${listWords(names)}.`}`)
+}
+
+function childrenOf(e: Expr): Expr[] {
+  switch (e.type) {
+    case 'call':
+    case 'add':
+    case 'mul':
+    case 'vec':
+      return e.args
+    case 'div':
+      return [e.num, e.den]
+    case 'pow':
+      return [e.base, e.exp]
+    case 'mat':
+      return e.rows.flat()
+    case 'eq':
+      return [e.left, e.right]
+    case 'group':
+      return [e.body]
+    case 'caret':
+      return e.body ? [e.body] : []
+    default:
+      return []
+  }
+}
+
+function callTaking(e: Expr, key: string): FunctionSpec | null {
+  const spec = e.type === 'call' ? functionByKernel(e.name) : null
+  if (spec && findOption(spec.options, key)) return spec
+  for (const child of childrenOf(e)) {
+    const found = callTaking(child, key)
+    if (found) return found
+  }
+  return null
+}
+
+/** A block at the end of the line belongs to the outer call, so `Expand(Derivative(x^3, x)){Order: 2}` gets pointed at Derivative. */
+function innerOwner(expr: Expr, key: string): string | null {
+  const inner = callTaking(expr, key)
+  const option = inner ? findOption(inner.options, key) : null
+  if (!inner || !option) return null
+  const sample = inner.examples.find((example) => example.includes(`${option.name}:`)) ?? `${inner.name}(…){${option.name}: ${option.example}}`
+  return `${option.name} belongs to ${inner.name}, so put it right after ${inner.name}(…), as in ${sample}.`
 }
 
 const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth']
@@ -666,9 +711,9 @@ function applyGraphSetting(plot: PlotOptions, entry: OptionEntry): void {
 }
 
 /** A setting at the end of the line that the line's function did not take styles the graph. */
-function applyLineSetting(plot: PlotOptions, entry: OptionEntry, owner: { spec: FunctionSpec | null; bare: boolean }): void {
+function applyLineSetting(plot: PlotOptions, entry: OptionEntry, owner: { spec: FunctionSpec | null; bare: boolean; expr: Expr }): void {
   const spec = owner.spec
-  if (owner.bare && spec && !spec.draws) throw unknownSetting(spec.name, entry.key, optionsFor(spec), spec.section === 'basic')
+  if (owner.bare && spec && !spec.draws) throw unknownSetting(spec.name, entry.key, optionsFor(spec), spec.section === 'basic', innerOwner(owner.expr, entry.key))
   if (isGraphOption(entry.key)) {
     applyGraphSetting(plot, entry)
     return
@@ -678,9 +723,10 @@ function applyLineSetting(plot: PlotOptions, entry: OptionEntry, owner: { spec: 
     plot.ranges.push({ name: naming(key), ...readRange(key, entry, '0..2*pi') })
     return
   }
+  const pointer = innerOwner(owner.expr, key)
   const owned = spec ? optionsFor(spec) : []
-  if (spec && owned.length > 0) throw unknownSetting(spec.name, key, [...owned, ...GRAPH_OPTIONS.filter((option) => !findOption(owned, option.name))])
-  throw unknownSetting('This line', key, GRAPH_OPTIONS)
+  if (spec && owned.length > 0) throw unknownSetting(spec.name, key, [...owned, ...GRAPH_OPTIONS.filter((option) => !findOption(owned, option.name))], false, pointer)
+  throw unknownSetting('This line', key, GRAPH_OPTIONS, false, pointer)
 }
 
 /** Turn a half-typed line into something the preview can draw: `x^` and `sqrt(` become placeholders. */
