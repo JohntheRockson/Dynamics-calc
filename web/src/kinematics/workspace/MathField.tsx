@@ -115,6 +115,17 @@ export const MathField = forwardRef<MathFieldHandle, {
     field.style.height = `${field.scrollHeight}px`
   }, [value, overlay])
 
+  useEffect(() => {
+    // The caret is the only \rule (.katex-rule) in the preview. A row too narrow for its line scrolls sideways to keep it in sight.
+    const caret = focused ? wrapRef.current?.querySelector('.composer-math .katex-rule') : null
+    const line = caret?.closest('.eq-inline')
+    if (!caret || !line || line.scrollWidth <= line.clientWidth) return
+    const at = caret.getBoundingClientRect()
+    const box = line.getBoundingClientRect()
+    if (at.left < box.left) line.scrollLeft -= box.left - at.left + 12
+    else if (at.right > box.right) line.scrollLeft += at.right - box.right + 12
+  }, [focused, value, cursor])
+
   useImperativeHandle(handle, () => ({
     place(next, at) {
       const field = fieldRef.current
