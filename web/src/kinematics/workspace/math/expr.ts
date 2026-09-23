@@ -1128,12 +1128,18 @@ function log10Rat(r: Expr): Expr | null {
   return null
 }
 
+/** Exact powers past this many bits would stall the page, so they turn into decimals instead. */
+const EXACT_POWER_BITS = 3000n
+
 function powRat(base: Expr, exp: bigint): Expr {
   if (base.type !== 'rat') return base
-  if (exp < 0n) {
-    if (base.n === 0n) return { type: 'div', num: rat(1n), den: ZERO_EXPR }
-    return rat(base.d ** -exp, base.n ** -exp)
+  if (exp < 0n && base.n === 0n) return { type: 'div', num: rat(1n), den: ZERO_EXPR }
+  const size = BigInt(Math.max((base.n < 0n ? -base.n : base.n).toString(2).length, base.d.toString(2).length) - 1)
+  if (size * (exp < 0n ? -exp : exp) > EXACT_POWER_BITS) {
+    const value = Math.pow(Number(base.n) / Number(base.d), Number(exp))
+    return Number.isFinite(value) ? { type: 'dec', text: trimNum(value), value } : { type: 'pow', base, exp: rat(exp) }
   }
+  if (exp < 0n) return rat(base.d ** -exp, base.n ** -exp)
   return rat(base.n ** exp, base.d ** exp)
 }
 
