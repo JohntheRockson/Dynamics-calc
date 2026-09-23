@@ -1,0 +1,1142 @@
+"""SimLab: closed-loop scenarios, CLI, and ``python -m attitude_sim``."""
+
+from __future__ import annotations
+
+import argparse
+import warnings
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from attitude_sim.actuators import DEFAULT_DUMP_GAIN, make_actuator, parse_tau_max
+from attitude_sim.controls import DEFAULT_TORQUE_LIMIT, cubesat_controller_kwargs, make_controller
+from attitude_sim.disturbances import (
+    AerodynamicTorque,
+    CircularOrbit,
+    EnvironmentalTorques,
+    GravityGradientTorque,
+    ResidualDipoleTorque,
+    SolarRadiationPressureTorque,
+)
+from attitude_sim.estimation import (
+    COARSE_INIT_METHODS,
+    ComplementaryFilter,
+    InnovationLog,
+    MultiplicativeEKF,
+    coarse_q0_from_sensors,
+    make_estimator,
+    normalize_coarse_init_method,
+    vectors_from_sensors,
+)
+from attitude_sim.plant import RigidBody, step_rigid_body
+from attitude_sim.quaternions import (
+    geodesic_angle,
+    quat_normalize,
+    quat_to_euler321,
+)
+from attitude_sim.reaction_wheels import ReactionWheelAssembly
+from attitude_sim.scenarios import (
+    HOLD_ORBIT_INCLINATION_RAD,
+    HOLD_RESIDUAL_DIPOLE_A_M2,
+    SCENARIO_BLURBS,
+    SCENARIOS,
+    default_t_final,
+    resolve_controller,
+    resolve_use_env,
+    scenario_catalog_text,
+    scenario_state,
+)
+from attitude_sim.sensors import (
+    STAR_FOV_HALF_ANGLE,
+    GyroModel,
+    VectorSensor,
+    magnetometer,
+    star_tracker,
+    sun_sensor,
+)
+
+DIPOLE_MODELS = ("tilted", "orbit_normal")
+SRP_ECLIPSE_MODES = ("off", "on", "cylindrical")
+COARSE_INIT_METHOD_CHOICES = COARSE_INIT_METHODS
+# LEO-scale circular orbit used only when env-model flags are on.
+# Defaults preserve the prior constant-τ_d-only plant.
+DEFAULT_ORBIT_RADIUS = 7.0e6
+DEFAULT_DIPOLE_M = np.array([0.10, 0.0, 0.0])
+# Smallsat-class panel for opt-in aero / SRP (ram cannonball / absorbing plate).
+DEFAULT_PANEL_AREA = 0.4
+DEFAULT_PANEL_RCP = np.array([0.05, 0.0, 0.02])
+DEFAULT_AERO_CD = 2.2
+DEFAULT_SRP_CR = 1.0
+
+
+def default_inertia() -> np.ndarray:
+    """Principal inertia of a smallsat-class rigid body (kg·m²)."""
+    return np.diag([0.05, 0.06, 0.07])
+
+
+@dataclass
+class SimConfig:
+    inertia: np.ndarray = field(default_factory=default_inertia)
+    dt: float = 0.01
+    t_final: float = 40.0
+    controller: str = "pid"
+    estimator: str = "mekf"
+    scenario: str = "slew"
+    q0: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0]))
+    omega0: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    q_des: np.ndarray = field(default_factory=lambda: scenario_state("slew")[2])
+    torque_limit: float | None = 0.02
+    gain_scale: float = 1.0
+    actuator_tau_max: float | np.ndarray | None = None
+    actuator_tau: float | None = None
+    rw_inertia: float | np.ndarray | None = None
+    rw_h_max: float | np.ndarray | None = None
+    rw_visc: float = 0.0
+    rw_coulomb: float = 0.0
+    rw_gyroscopic: bool = True
+    actuator_h_dump: float | np.ndarray | None = None
+    actuator_dump_gain: float = DEFAULT_DUMP_GAIN
+    tau_dist: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    gravity_gradient: bool = False
+    residual_dipole: bool = False
+    aerodynamic: bool = False
+    srp: bool = False
+    orbit_radius: float = DEFAULT_ORBIT_RADIUS
+    orbit_inclination_deg: float = 0.0
+    orbit_raan_deg: float = 0.0
+    dipole_m: np.ndarray = field(default_factory=lambda: DEFAULT_DIPOLE_M.copy())
+    dipole_model: str = "tilted"
+    panel_area: float = DEFAULT_PANEL_AREA
+    panel_r_cp: np.ndarray = field(default_factory=lambda: DEFAULT_PANEL_RCP.copy())
+    aero_cd: float = DEFAULT_AERO_CD
+    srp_cr: float = DEFAULT_SRP_CR
+    srp_eclipse: str = "off"
+    mrp_plot: bool = False
+    gyro_sigma_v: float = 5e-4
+    gyro_sigma_u: float = 1e-6
+    gyro_bias: np.ndarray = field(default_factory=lambda: np.array([0.002, -0.001, 0.0015]))
+    mag_sigma: float = 3e-3
+    sun_sigma: float = 2e-3
+    use_mag: bool = True
+    use_sun: bool = True
+    use_star: bool = False
+    sun_eclipse: bool = False
+    mag_fov_half_angle: float | None = None
+    sun_fov_half_angle: float | None = None
+    star_fov_half_angle: float | None = None
+    star_sigma: float = 5e-5
+    coarse_init: bool = False
+    coarse_init_method: str = "triad"
+    seed: int = 1
+    plot: bool = True
+    gif: bool = True
+    out_dir: Path = field(default_factory=lambda: Path("outputs"))
+    log_innovations: Path | None = None
+
+    @property
+    def artifact_stem(self) -> str:
+        return self.scenario
+
+
+@dataclass
+class SimLog:
+    t: np.ndarray
+    q: np.ndarray
+    omega: np.ndarray
+    tau: np.ndarray
+    q_hat: np.ndarray
+    omega_hat: np.ndarray
+    q_des: np.ndarray
+    euler: np.ndarray
+    euler_des: np.ndarray
+    att_error: np.ndarray
+    att_error_hat: np.ndarray | None
+    est_att_error: np.ndarray | None
+    controller: str
+    estimator: str
+    scenario: str = "slew"
+    tau_env: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    h_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    tau_ext: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    plot_path: Path | None = None
+    gif_path: Path | None = None
+    innovation_csv: Path | None = None
+    mean_nis: float | None = None
+    mrp_plot_path: Path | None = None
+    env_plot_path: Path | None = None
+    omega_wheel: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    rw_tau_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
+    rw_h_sat: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=bool))
+
+    @property
+    def final_att_error_deg(self) -> float:
+        return float(np.rad2deg(self.att_error[-1]))
+
+    @property
+    def peak_rate(self) -> float:
+        """Peak ``‖ω‖`` (rad/s) over the log."""
+        if self.omega.size == 0 or not np.all(np.isfinite(self.omega)):
+            return float("nan")
+        return float(np.max(np.linalg.norm(self.omega, axis=1)))
+
+    @property
+    def sat_fraction(self) -> float:
+        """Fraction of samples with any-axis torque or momentum saturation."""
+        n = int(self.t.size)
+        if n == 0:
+            return float("nan")
+        mask = np.zeros(n, dtype=bool)
+        if self.rw_tau_sat.size:
+            tau_sat = np.asarray(self.rw_tau_sat).reshape(n, 3)
+            mask |= np.any(tau_sat, axis=1)
+        if self.rw_h_sat.size:
+            h_sat = np.asarray(self.rw_h_sat).reshape(n, 3)
+            mask |= np.any(h_sat, axis=1)
+        if self.rw_tau_sat.size == 0 and self.rw_h_sat.size == 0:
+            return 0.0
+        return float(np.mean(mask))
+
+
+def make_scenario_config(
+    scenario: str = "slew",
+    *,
+    dt: float = 0.01,
+    t_final: float | None = None,
+    controller: str | None = None,
+    estimator: str = "mekf",
+    angle_deg: float | None = None,
+    tau_dist: np.ndarray | None = None,
+    actuator_tau_max: float | np.ndarray | None = None,
+    actuator_tau: float | None = None,
+    rw_inertia: float | np.ndarray | None = None,
+    rw_h_max: float | np.ndarray | None = None,
+    rw_visc: float = 0.0,
+    rw_coulomb: float = 0.0,
+    rw_gyroscopic: bool = True,
+    actuator_h_dump: float | np.ndarray | None = None,
+    actuator_dump_gain: float = DEFAULT_DUMP_GAIN,
+    gravity_gradient: bool = False,
+    residual_dipole: bool = False,
+    aerodynamic: bool = False,
+    srp: bool = False,
+    orbit_radius: float | None = None,
+    orbit_inclination_deg: float | None = None,
+    orbit_raan_deg: float | None = None,
+    dipole_m: np.ndarray | None = None,
+    dipole_model: str | None = None,
+    panel_area: float | None = None,
+    panel_r_cp: np.ndarray | None = None,
+    aero_cd: float | None = None,
+    srp_cr: float | None = None,
+    srp_eclipse: str | None = None,
+    use_mag: bool = True,
+    use_sun: bool = True,
+    use_star: bool = False,
+    sun_eclipse: bool = False,
+    mag_fov_half_angle: float | None = None,
+    sun_fov_half_angle: float | None = None,
+    star_fov_half_angle: float | None = None,
+    star_sigma: float | None = None,
+    coarse_init: bool = False,
+    coarse_init_method: str = "triad",
+    gyro_sigma_v: float | None = None,
+    gyro_sigma_u: float | None = None,
+    mag_sigma: float | None = None,
+    sun_sigma: float | None = None,
+    seed: int = 1,
+    plot: bool = True,
+    gif: bool = True,
+    out_dir: Path = Path("outputs"),
+    log_innovations: Path | None = None,
+    use_env: bool | None = None,
+    env_flag: bool = False,
+    no_env: bool = False,
+    mrp_plot: bool | None = None,
+) -> SimConfig:
+    """Named SimLab presets. Plant / controller / estimator cores are unchanged.
+
+    ``gyro_sigma_v`` / ``gyro_sigma_u`` (and mag/sun ``sigma``) retune the
+    truth sensors *and* — via ``make_sim_estimator`` — the MEKF Farrenkopf
+    ``Q_d``.  ``None`` keeps the ``SimConfig`` defaults.
+
+    ``gravity_gradient`` / ``residual_dipole`` / ``aerodynamic`` / ``srp``
+    default off so the stock demos stay on the constant-``τ_d`` plant.
+    ``hold`` (or ``--env``) turns GG + residual dipole on with a demo-scale
+    residual dipole.  ``--no-env`` turns GG/dipole off.  Orbit / dipole /
+    panel knobs are stored even when the models are off.
+    ``coarse_init`` stays false (true ``q_0`` demo).  ``coarse_init_method``
+    is ``triad`` unless QUEST / Davenport is requested.
+    """
+    q0, omega0, q_des = scenario_state(scenario, angle_deg=angle_deg)
+    name = scenario.lower()
+    dist = np.zeros(3) if tau_dist is None else np.asarray(tau_dist, dtype=float).reshape(3)
+    want_env = resolve_use_env(name, use_env=use_env, env_flag=env_flag, no_env=no_env)
+    gg = bool(gravity_gradient) or want_env
+    rd = bool(residual_dipole) or want_env
+    if no_env:
+        gg = False
+        rd = False
+    write_mrp = bool(mrp_plot) if mrp_plot is not None else name in {"hold", "eigenaxis"}
+    cfg = SimConfig(
+        dt=dt,
+        t_final=default_t_final(name) if t_final is None else t_final,
+        controller=resolve_controller(name, controller),
+        estimator=estimator,
+        scenario=name,
+        q0=q0,
+        omega0=omega0,
+        q_des=q_des,
+        tau_dist=dist,
+        actuator_tau_max=actuator_tau_max,
+        actuator_tau=actuator_tau,
+        rw_inertia=rw_inertia,
+        rw_h_max=rw_h_max,
+        rw_visc=rw_visc,
+        rw_coulomb=rw_coulomb,
+        rw_gyroscopic=rw_gyroscopic,
+        actuator_h_dump=actuator_h_dump,
+        actuator_dump_gain=actuator_dump_gain,
+        gravity_gradient=gg,
+        residual_dipole=rd,
+        aerodynamic=aerodynamic,
+        srp=srp,
+        mrp_plot=write_mrp,
+        use_mag=use_mag,
+        use_sun=use_sun,
+        use_star=use_star,
+        sun_eclipse=sun_eclipse,
+        mag_fov_half_angle=mag_fov_half_angle,
+        sun_fov_half_angle=sun_fov_half_angle,
+        star_fov_half_angle=star_fov_half_angle,
+        coarse_init=coarse_init,
+        coarse_init_method=coarse_init_method,
+        seed=seed,
+        plot=plot,
+        gif=gif,
+        out_dir=out_dir,
+    )
+    if want_env and orbit_inclination_deg is None:
+        cfg.orbit_inclination_deg = float(np.rad2deg(HOLD_ORBIT_INCLINATION_RAD))
+    if want_env and dipole_m is None:
+        cfg.dipole_m = HOLD_RESIDUAL_DIPOLE_A_M2.copy()
+    if orbit_radius is not None:
+        cfg.orbit_radius = float(orbit_radius)
+    if orbit_inclination_deg is not None:
+        cfg.orbit_inclination_deg = float(orbit_inclination_deg)
+    if orbit_raan_deg is not None:
+        cfg.orbit_raan_deg = float(orbit_raan_deg)
+    if dipole_m is not None:
+        cfg.dipole_m = np.asarray(dipole_m, dtype=float).reshape(3)
+    if dipole_model is not None:
+        cfg.dipole_model = str(dipole_model)
+    if panel_area is not None:
+        cfg.panel_area = float(panel_area)
+    if panel_r_cp is not None:
+        cfg.panel_r_cp = np.asarray(panel_r_cp, dtype=float).reshape(3)
+    if aero_cd is not None:
+        cfg.aero_cd = float(aero_cd)
+    if srp_cr is not None:
+        cfg.srp_cr = float(srp_cr)
+    if srp_eclipse is not None:
+        cfg.srp_eclipse = str(srp_eclipse)
+    cfg.coarse_init_method = normalize_coarse_init_method(cfg.coarse_init_method)
+    if gyro_sigma_v is not None:
+        cfg.gyro_sigma_v = float(gyro_sigma_v)
+    if gyro_sigma_u is not None:
+        cfg.gyro_sigma_u = float(gyro_sigma_u)
+    if mag_sigma is not None:
+        cfg.mag_sigma = float(mag_sigma)
+    if sun_sigma is not None:
+        cfg.sun_sigma = float(sun_sigma)
+    if star_sigma is not None:
+        cfg.star_sigma = float(star_sigma)
+    if log_innovations is not None:
+        cfg.log_innovations = Path(log_innovations)
+    return cfg
+
+
+def make_sim_estimator(
+    cfg: SimConfig,
+    q0: np.ndarray,
+) -> ComplementaryFilter | MultiplicativeEKF | None:
+    """Build the SimLab estimator, forwarding gyro densities to the MEKF.
+
+    ``SimConfig.gyro_sigma_v`` / ``gyro_sigma_u`` are the truth-gyro ARW/RRW
+    densities *and* the MEKF Farrenkopf process-noise densities.  Mahony has
+    no process-noise matrix; ``truth`` returns ``None``.
+    """
+    mode = cfg.estimator.lower()
+    if mode in {"mekf", "kalman", "ekf"}:
+        return make_estimator(
+            mode,
+            q0=q0,
+            sigma_v=cfg.gyro_sigma_v,
+            sigma_u=cfg.gyro_sigma_u,
+        )
+    return make_estimator(mode, q0=q0)
+
+
+def _env_models_requested(cfg: SimConfig) -> bool:
+    return bool(cfg.gravity_gradient or cfg.residual_dipole or cfg.aerodynamic or cfg.srp)
+
+
+def _srp_eclipse_flag(mode: str) -> bool | str:
+    """Map SimLab ``srp_eclipse`` to :class:`SolarRadiationPressureTorque`."""
+    key = str(mode).lower()
+    if key == "off":
+        return False
+    if key == "on":
+        return True
+    if key == "cylindrical":
+        return "cylindrical"
+    raise ValueError(f"srp_eclipse must be one of {SRP_ECLIPSE_MODES}")
+
+
+def make_sim_disturbances(cfg: SimConfig) -> EnvironmentalTorques | None:
+    """Optional env models (GG / dipole / aero / SRP; default off).
+
+    When every flag is false this returns ``None`` so the closed-loop
+    plant matches the prior constant-``τ_d``-only contract.  Enabled
+    models share one bound :class:`CircularOrbit` and are sampled ZOH at
+    the left endpoint of each SimLab step (same hold as the actuator).
+    """
+    if not _env_models_requested(cfg):
+        return None
+    radius = float(cfg.orbit_radius)
+    if not np.isfinite(radius) or radius <= 0.0:
+        raise ValueError("orbit_radius must be positive")
+    inc = float(cfg.orbit_inclination_deg)
+    raan = float(cfg.orbit_raan_deg)
+    if not np.isfinite(inc) or not np.isfinite(raan):
+        raise ValueError("orbit inclination and RAAN must be finite")
+    model = str(cfg.dipole_model)
+    if model not in DIPOLE_MODELS:
+        raise ValueError(f"dipole_model must be one of {DIPOLE_MODELS}")
+    eclipse = str(cfg.srp_eclipse)
+    if eclipse not in SRP_ECLIPSE_MODES:
+        raise ValueError(f"srp_eclipse must be one of {SRP_ECLIPSE_MODES}")
+    area = float(cfg.panel_area)
+    cd = float(cfg.aero_cd)
+    cr = float(cfg.srp_cr)
+    if not np.isfinite(area) or area < 0.0:
+        raise ValueError("panel_area must be nonnegative")
+    if not np.isfinite(cd) or cd < 0.0:
+        raise ValueError("aero_cd must be nonnegative")
+    if not np.isfinite(cr) or cr < 0.0:
+        raise ValueError("srp_cr must be nonnegative")
+    r_cp = np.asarray(cfg.panel_r_cp, dtype=float).reshape(3)
+    if not np.all(np.isfinite(r_cp)):
+        raise ValueError("panel_r_cp must be finite")
+    orbit = CircularOrbit(
+        radius=radius,
+        inclination=np.deg2rad(inc),
+        raan=np.deg2rad(raan),
+    )
+    gg = GravityGradientTorque(cfg.inertia, orbit=orbit) if cfg.gravity_gradient else None
+    mag = None
+    if cfg.residual_dipole:
+        mag = ResidualDipoleTorque(
+            np.asarray(cfg.dipole_m, dtype=float).reshape(3),
+            orbit=orbit,
+            model=model,
+        )
+    aero = None
+    if cfg.aerodynamic:
+        aero = AerodynamicTorque(r_cp, area, cd=cd, orbit=orbit)
+    srp = None
+    if cfg.srp:
+        srp = SolarRadiationPressureTorque(
+            r_cp,
+            area,
+            cr=cr,
+            orbit=orbit,
+            eclipse=_srp_eclipse_flag(eclipse),
+        )
+    return EnvironmentalTorques(
+        gravity_gradient=gg, residual_dipole=mag, aerodynamic=aero, srp=srp
+    )
+
+
+def run_slew(cfg: SimConfig | None = None) -> SimLog:
+    """Closed-loop SimLab run (named scenario); optionally writes plot/GIF.
+
+    ``run_sim`` is a public alias — this is not slew-only.  Environmental
+    torques from ``make_sim_disturbances`` are added to the plant input after
+    the actuator, together with an optional dump pairing ``τ_ext``.
+    ``step_rigid_body`` is unchanged.
+    """
+    cfg = cfg if cfg is not None else SimConfig()
+    if cfg.dt <= 0.0:
+        raise ValueError("dt must be positive")
+    if cfg.t_final < 0.0:
+        raise ValueError("t_final must be non-negative")
+    rng = np.random.default_rng(cfg.seed)
+    body = RigidBody(cfg.inertia)
+    tau_for_tune = (
+        DEFAULT_TORQUE_LIMIT if cfg.torque_limit is None else float(cfg.torque_limit)
+    )
+    tune = cubesat_controller_kwargs(cfg.controller, cfg.inertia, tau_max=tau_for_tune)
+    ctrl = make_controller(
+        cfg.controller,
+        cfg.inertia,
+        torque_limit=cfg.torque_limit,
+        gain_scale=cfg.gain_scale,
+        **tune,
+    )
+    ctrl.reset()
+    actuator = make_actuator(
+        tau_max=cfg.actuator_tau_max,
+        time_constant=cfg.actuator_tau,
+        wheel_inertia=cfg.rw_inertia,
+        h_max=cfg.rw_h_max,
+        visc_friction=cfg.rw_visc,
+        coulomb_friction=cfg.rw_coulomb,
+        gyroscopic=cfg.rw_gyroscopic,
+        h_dump=cfg.actuator_h_dump,
+        dump_gain=cfg.actuator_dump_gain,
+    )
+    actuator.reset()
+
+    q = quat_normalize(cfg.q0)
+    omega = np.asarray(cfg.omega0, dtype=float).reshape(3).copy()
+    q_des = quat_normalize(cfg.q_des)
+    tau_dist = np.asarray(cfg.tau_dist, dtype=float).reshape(3)
+    env = make_sim_disturbances(cfg)
+
+    # Full-state feedback does not consume measurements. Skip gyro / vector
+    # construction and sampling so the truth path stays cheap. Coarse TRIAD /
+    # QUEST / Davenport init only applies when an estimator will run.
+    gyro: GyroModel | None = None
+    sensors: list[VectorSensor] = []
+    q_est0 = q
+    if cfg.estimator.lower() != "truth":
+        gyro = GyroModel(
+            sigma_v=cfg.gyro_sigma_v,
+            sigma_u=cfg.gyro_sigma_u,
+            bias=np.asarray(cfg.gyro_bias, dtype=float).copy(),
+            seed=rng,
+        )
+        if cfg.use_mag:
+            sensors.append(
+                magnetometer(
+                    sigma=cfg.mag_sigma,
+                    seed=rng,
+                    fov_half_angle=cfg.mag_fov_half_angle,
+                )
+            )
+        if cfg.use_sun:
+            sensors.append(
+                sun_sensor(
+                    sigma=cfg.sun_sigma,
+                    seed=rng,
+                    eclipse=cfg.sun_eclipse,
+                    fov_half_angle=cfg.sun_fov_half_angle,
+                )
+            )
+        if cfg.use_star:
+            sensors.append(
+                star_tracker(
+                    sigma=cfg.star_sigma,
+                    seed=rng,
+                    fov_half_angle=(
+                        STAR_FOV_HALF_ANGLE
+                        if cfg.star_fov_half_angle is None
+                        else float(cfg.star_fov_half_angle)
+                    ),
+                )
+            )
+        if cfg.coarse_init:
+            method = normalize_coarse_init_method(cfg.coarse_init_method)
+            try:
+                q_est0 = coarse_q0_from_sensors(q, sensors, method=method)
+            except ValueError as exc:
+                warnings.warn(
+                    f"coarse {method.upper()} init skipped ({exc}; "
+                    "fewer than two available vector sensors after "
+                    "FOV/eclipse gating); estimator starts at true q0",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                q_est0 = q
+    estimator = make_sim_estimator(cfg, q_est0)
+    if estimator is not None and not sensors:
+        warnings.warn(
+            f"estimator {cfg.estimator!r} is running with no vector sensors "
+            "(gyro-only); full attitude is not observable from rate alone",
+            UserWarning,
+            stacklevel=2,
+        )
+    if cfg.log_innovations is not None:
+        if isinstance(estimator, MultiplicativeEKF):
+            if estimator.innovation_log is None:
+                estimator.innovation_log = InnovationLog()
+        else:
+            warnings.warn(
+                "SimConfig.log_innovations is MEKF-only "
+                f"(estimator={cfg.estimator!r}); skipping",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    n = int(np.round(cfg.t_final / cfg.dt)) + 1
+    t = np.arange(n, dtype=float) * cfg.dt
+    q_hist = np.zeros((n, 4))
+    w_hist = np.zeros((n, 3))
+    tau_hist = np.zeros((n, 3))
+    tau_env_hist = np.zeros((n, 3))
+    h_wheel_hist = np.zeros((n, 3))
+    tau_ext_hist = np.zeros((n, 3))
+    qh_hist = np.zeros((n, 4))
+    wh_hist = np.zeros((n, 3))
+    rw: ReactionWheelAssembly | None = (
+        actuator if isinstance(actuator, ReactionWheelAssembly) else None
+    )
+    ww_hist = np.zeros((n, 3)) if rw is not None else np.zeros((0, 3))
+    tau_sat_hist = np.zeros((n, 3), dtype=bool) if rw is not None else np.zeros((0, 3), dtype=bool)
+    h_sat_hist = np.zeros((n, 3), dtype=bool) if rw is not None else np.zeros((0, 3), dtype=bool)
+
+    for k in range(n):
+        q_hist[k] = q
+        w_hist[k] = omega
+
+        if estimator is None or gyro is None:
+            q_hat, omega_hat = q.copy(), omega.copy()
+        else:
+            omega_m = gyro.measure(omega, cfg.dt)
+            vecs = vectors_from_sensors(q, sensors) if sensors else None
+            q_hat, omega_hat = estimator.step(omega_m, cfg.dt, vecs, t=float(t[k]))
+
+        qh_hist[k] = q_hat
+        wh_hist[k] = omega_hat
+        tau_cmd = ctrl.command(q_hat, omega_hat, q_des, omega_des=None, dt=cfg.dt)
+        tau = actuator.apply(tau_cmd, cfg.dt, omega=omega)
+        tau_hist[k] = tau
+        h_wheel_hist[k] = actuator.momentum
+        if hasattr(actuator, "external_torque"):
+            tau_ext_hist[k] = actuator.external_torque
+        if rw is not None:
+            ww_hist[k] = rw.wheel_speed
+            tau_sat_hist[k] = rw.torque_saturated
+            h_sat_hist[k] = rw.momentum_saturated
+        if env is not None:
+            tau_env_hist[k] = np.asarray(
+                env.tau_body(q, omega, float(t[k])), dtype=float
+            ).reshape(3)
+        # τ[k] is held over [t[k], t[k+1]).  Environmental torque is ZOH at
+        # the left endpoint (same hold as the actuator).  Optional dump
+        # pairing τ_ext cancels the wheel dump on the spacecraft.  Do not
+        # take an extra unused plant step after the last logged sample.
+        if k + 1 < n:
+            q, omega = step_rigid_body(
+                body,
+                q,
+                omega,
+                tau + tau_dist + tau_env_hist[k] + tau_ext_hist[k],
+                cfg.dt,
+            )
+
+    euler = np.vstack([quat_to_euler321(qi) for qi in q_hist])
+    att_error = np.array([geodesic_angle(qi, q_des) for qi in q_hist])
+    att_error_hat = np.array([geodesic_angle(qi, q_des) for qi in qh_hist])
+    if estimator is None:
+        est_att_error = None
+        att_error_hat_out = None
+    else:
+        est_att_error = np.array([geodesic_angle(qh_hist[i], q_hist[i]) for i in range(n)])
+        att_error_hat_out = att_error_hat
+
+    log = SimLog(
+        t=t,
+        q=q_hist,
+        omega=w_hist,
+        tau=tau_hist,
+        q_hat=qh_hist,
+        omega_hat=wh_hist,
+        q_des=q_des,
+        euler=euler,
+        euler_des=quat_to_euler321(q_des),
+        att_error=att_error,
+        att_error_hat=att_error_hat_out,
+        est_att_error=est_att_error,
+        controller=cfg.controller,
+        estimator=cfg.estimator,
+        scenario=cfg.scenario,
+        tau_env=tau_env_hist,
+        h_wheel=h_wheel_hist,
+        tau_ext=tau_ext_hist,
+        omega_wheel=ww_hist,
+        rw_tau_sat=tau_sat_hist,
+        rw_h_sat=h_sat_hist,
+    )
+
+    if (
+        isinstance(estimator, MultiplicativeEKF)
+        and estimator.innovation_log is not None
+        and cfg.log_innovations is not None
+    ):
+        log.innovation_csv = estimator.innovation_log.write_csv(cfg.log_innovations)
+        if estimator.innovation_log.samples:
+            log.mean_nis = estimator.innovation_log.mean_nis()
+
+    if cfg.plot or cfg.gif:
+        from attitude_sim.plots import (
+            plot_env_torque,
+            plot_mrp_error,
+            plot_slew,
+            write_attitude_gif,
+        )
+
+        out = Path(cfg.out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        stem = cfg.artifact_stem
+        if cfg.plot:
+            log.plot_path = plot_slew(log, out / f"{stem}_summary.png")
+            if env is not None:
+                log.env_plot_path = plot_env_torque(log, out / f"{stem}_env_torque.png")
+            if cfg.mrp_plot:
+                log.mrp_plot_path = plot_mrp_error(log, out / f"{stem}_mrp.png")
+        if cfg.gif:
+            log.gif_path = write_attitude_gif(log, out / f"{stem}_attitude.gif")
+    return log
+
+
+run_sim = run_slew
+
+
+def build_parser() -> argparse.ArgumentParser:
+    scenario_help = "; ".join(f"{name} = {SCENARIO_BLURBS[name]}" for name in SCENARIOS)
+    p = argparse.ArgumentParser(
+        prog="python -m attitude_sim",
+        description=(
+            "Milestone 1 SimLab: closed-loop rigid-body attitude scenarios "
+            "(dynamics + control + estimation)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=scenario_catalog_text(),
+    )
+    p.add_argument(
+        "--scenario",
+        choices=SCENARIOS,
+        default="slew",
+        help=scenario_help,
+    )
+    p.add_argument(
+        "--list-scenarios",
+        action="store_true",
+        help="print named scenarios and exit (no sim)",
+    )
+    p.add_argument(
+        "--controller",
+        choices=("pid", "lqr"),
+        default=None,
+        help="feedback law (default: pid, or lqr for --scenario eigenaxis)",
+    )
+    p.add_argument(
+        "--estimator",
+        choices=("truth", "mekf", "mahony"),
+        default="mekf",
+        help="controller measurement source (truth = full-state feedback)",
+    )
+    p.add_argument(
+        "--t-final",
+        type=float,
+        default=None,
+        help="run duration (s); default 40 slew / 30 detumble / 30 hold / 20 eigenaxis",
+    )
+    p.add_argument("--dt", type=float, default=0.01, help="sample / RK4 step (s)")
+    p.add_argument("--out-dir", type=Path, default=Path("outputs"), help="plot/GIF directory")
+    p.add_argument("--no-plot", action="store_true", help="skip PNG summary")
+    p.add_argument("--no-gif", action="store_true", help="skip attitude GIF")
+    p.add_argument(
+        "--mrp-plot",
+        action="store_true",
+        help="write {stem}_mrp.png (σ from logged q; on by default for hold/eigenaxis)",
+    )
+    p.add_argument("--no-mag", action="store_true", help="disable magnetometer")
+    p.add_argument("--no-sun", action="store_true", help="disable sun sensor")
+    p.add_argument(
+        "--env",
+        action="store_true",
+        help="enable GG + residual-dipole EnvironmentalTorques on any scenario (hold is on by default)",
+    )
+    p.add_argument(
+        "--no-env",
+        action="store_true",
+        help="disable EnvironmentalTorques (overrides hold / --env / --gravity-gradient / --residual-dipole)",
+    )
+    p.add_argument(
+        "--coarse-init",
+        action="store_true",
+        help=(
+            "coarse attitude from mag+sun at t=0 so MEKF/Mahony need not "
+            "start at true q0 (default: start at true q0, current demo). "
+            "Solver is --coarse-init-method (default TRIAD)"
+        ),
+    )
+    p.add_argument(
+        "--coarse-init-method",
+        choices=COARSE_INIT_METHOD_CHOICES,
+        default="triad",
+        help=(
+            "Wahba solver used with --coarse-init: triad (default, two-vector), "
+            "quest, or davenport (q-method; both use all available vectors)"
+        ),
+    )
+    p.add_argument("--seed", type=int, default=1, help="RNG seed for sensors")
+    p.add_argument(
+        "--angle-deg",
+        type=float,
+        default=None,
+        help=(
+            "commanded principal rotation (deg) for slew (default 75) and "
+            "eigenaxis (default 30); ignored for detumble and hold"
+        ),
+    )
+    p.add_argument(
+        "--tau-dist",
+        default="0,0,0",
+        help="constant body-frame disturbance torque [N·m], comma-separated (e.g. 0.002,0,0)",
+    )
+    p.add_argument(
+        "--gravity-gradient",
+        action="store_true",
+        help=(
+            "add gravity-gradient τ_gg = 3(μ/r³)(r̂_b × J r̂_b) on a circular orbit "
+            "(default: off except --scenario hold / --env)"
+        ),
+    )
+    p.add_argument(
+        "--residual-dipole",
+        action="store_true",
+        help=(
+            "add residual-dipole τ_m = m_b × B_b from a frozen Earth dipole "
+            "(default: off except --scenario hold / --env)"
+        ),
+    )
+    p.add_argument(
+        "--aerodynamic",
+        action="store_true",
+        help=(
+            "add panel/box aero τ = r_cp × (−½ ρ v² C_d A n̂) with an exponential "
+            "atmosphere (default: off; prior demos unchanged)"
+        ),
+    )
+    p.add_argument(
+        "--srp",
+        action="store_true",
+        help=(
+            "add SRP τ = r_cp × (P_srp c_r A cosθ û_sun) with an umbra stub "
+            "(default: off; prior demos unchanged)"
+        ),
+    )
+    p.add_argument(
+        "--orbit-radius",
+        type=float,
+        default=DEFAULT_ORBIT_RADIUS,
+        metavar="M",
+        help="circular-orbit radius [m] for env models (default: 7e6 LEO-scale)",
+    )
+    p.add_argument(
+        "--orbit-inc-deg",
+        type=float,
+        default=None,
+        metavar="DEG",
+        help="orbit inclination [deg] for env models (default: 0, or 51.6 for hold)",
+    )
+    p.add_argument(
+        "--orbit-raan-deg",
+        type=float,
+        default=0.0,
+        metavar="DEG",
+        help="orbit RAAN [deg] for env models (default: 0)",
+    )
+    p.add_argument(
+        "--dipole-m",
+        default=None,
+        help="residual body dipole [A·m²], comma-separated (hold default is demo-scale)",
+    )
+    p.add_argument(
+        "--dipole-model",
+        choices=DIPOLE_MODELS,
+        default="tilted",
+        help="Earth field for --residual-dipole: tilted (default 11.5°) or orbit_normal",
+    )
+    p.add_argument(
+        "--panel-area",
+        type=float,
+        default=DEFAULT_PANEL_AREA,
+        metavar="M2",
+        help="panel area [m²] for --aerodynamic / --srp (default: 0.4)",
+    )
+    p.add_argument(
+        "--panel-rcp",
+        default="0.05,0,0.02",
+        help="body-frame centre of pressure [m] for --aerodynamic / --srp",
+    )
+    p.add_argument(
+        "--aero-cd",
+        type=float,
+        default=DEFAULT_AERO_CD,
+        metavar="CD",
+        help="drag coefficient for --aerodynamic (default: 2.2)",
+    )
+    p.add_argument(
+        "--srp-cr",
+        type=float,
+        default=DEFAULT_SRP_CR,
+        metavar="CR",
+        help="reflectivity coefficient for --srp (1=absorb, default: 1)",
+    )
+    p.add_argument(
+        "--srp-eclipse",
+        choices=SRP_ECLIPSE_MODES,
+        default="off",
+        help="SRP umbra stub: off (sunlit, default), on (force eclipse), cylindrical Earth shadow",
+    )
+    p.add_argument(
+        "--actuator-tau-max",
+        default=None,
+        help=(
+            "per-axis reaction-wheel torque limit [N·m]: scalar or x,y,z "
+            "(default: unlimited; controller Euclidean |τ| clamp is unchanged)"
+        ),
+    )
+    p.add_argument(
+        "--actuator-tau",
+        type=float,
+        default=None,
+        help="first-order actuator lag time constant [s] (default: none / instantaneous)",
+    )
+    p.add_argument(
+        "--rw-h-max",
+        default=None,
+        help=(
+            "per-axis reaction-wheel momentum limit [N·m·s]: scalar or x,y,z "
+            "(enables the RW assembly; default: clip/lag actuator only)"
+        ),
+    )
+    p.add_argument(
+        "--rw-inertia",
+        default=None,
+        help=(
+            "per-axis wheel spin inertia I_w [kg·m²]: scalar or x,y,z "
+            "(default 2e-4 when --rw-h-max is set)"
+        ),
+    )
+    p.add_argument(
+        "--rw-visc",
+        type=float,
+        default=0.0,
+        help="viscous wheel friction b [N·m·s] (default: 0)",
+    )
+    p.add_argument(
+        "--rw-coulomb",
+        type=float,
+        default=0.0,
+        help="smoothed Coulomb wheel friction c [N·m] (default: 0)",
+    )
+    p.add_argument(
+        "--rw-no-gyro",
+        action="store_true",
+        help="drop the ω×h_w couple from the RW body torque (default: include it)",
+    )
+    p.add_argument(
+        "--actuator-h-dump",
+        default=None,
+        help=(
+            "wheel-momentum dump threshold [N·m·s]: scalar or x,y,z "
+            "(default: off; dump uses leftover wheel authority after the attitude command)"
+        ),
+    )
+    p.add_argument(
+        "--actuator-dump-gain",
+        type=float,
+        default=DEFAULT_DUMP_GAIN,
+        help="deadzone dump gain [1/s] (default: 1; ignored unless --actuator-h-dump is set)",
+    )
+    p.add_argument(
+        "--gyro-sigma-v",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help=(
+            "gyro ARW density σ_v [rad/s/√Hz]; also MEKF Farrenkopf Qd (default: SimConfig 5e-4)"
+        ),
+    )
+    p.add_argument(
+        "--gyro-sigma-u",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help=(
+            "gyro RRW density σ_u [rad/s²/√Hz]; also MEKF Farrenkopf Qd (default: SimConfig 1e-6)"
+        ),
+    )
+    p.add_argument(
+        "--mag-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="magnetometer Cartesian σ (default: SimConfig 3e-3)",
+    )
+    p.add_argument(
+        "--sun-sigma",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="sun-sensor Cartesian σ (default: SimConfig 2e-3)",
+    )
+    p.add_argument(
+        "--log-innovations",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "write MEKF vector NIS / innovation CSV (default: off). "
+            "Mahony/truth skip with a warning"
+        ),
+    )
+    return p
+
+
+def _parse_vec3(text: str, name: str) -> np.ndarray:
+    parts = [p.strip() for p in str(text).split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"{name} must be three comma-separated numbers, got {text!r}")
+    try:
+        return np.array([float(p) for p in parts], dtype=float)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be three comma-separated numbers, got {text!r}") from exc
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.list_scenarios:
+        print(scenario_catalog_text())
+        return 0
+    try:
+        tau_dist = _parse_vec3(args.tau_dist, "--tau-dist")
+        dipole_m = (
+            _parse_vec3(args.dipole_m, "--dipole-m") if args.dipole_m is not None else None
+        )
+        panel_r_cp = _parse_vec3(args.panel_rcp, "--panel-rcp")
+        actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")
+        rw_h_max = parse_tau_max(args.rw_h_max, "--rw-h-max")
+        rw_inertia = parse_tau_max(args.rw_inertia, "--rw-inertia")
+        actuator_h_dump = parse_tau_max(args.actuator_h_dump, "--actuator-h-dump")
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.dt <= 0.0:
+        parser.error("--dt must be positive")
+    if args.actuator_tau is not None and args.actuator_tau < 0.0:
+        parser.error("--actuator-tau must be >= 0")
+    if args.rw_visc < 0.0:
+        parser.error("--rw-visc must be >= 0")
+    if args.rw_coulomb < 0.0:
+        parser.error("--rw-coulomb must be >= 0")
+    if args.actuator_dump_gain < 0.0:
+        parser.error("--actuator-dump-gain must be >= 0")
+    if args.orbit_radius <= 0.0:
+        parser.error("--orbit-radius must be positive")
+    if args.panel_area < 0.0:
+        parser.error("--panel-area must be >= 0")
+    if args.aero_cd < 0.0:
+        parser.error("--aero-cd must be >= 0")
+    if args.srp_cr < 0.0:
+        parser.error("--srp-cr must be >= 0")
+    for flag, value in (
+        ("--orbit-inc-deg", args.orbit_inc_deg),
+        ("--orbit-raan-deg", args.orbit_raan_deg),
+    ):
+        if value is not None and not np.isfinite(value):
+            parser.error(f"{flag} must be finite")
+    for flag, value in (
+        ("--gyro-sigma-v", args.gyro_sigma_v),
+        ("--gyro-sigma-u", args.gyro_sigma_u),
+        ("--mag-sigma", args.mag_sigma),
+        ("--sun-sigma", args.sun_sigma),
+    ):
+        if value is not None and value < 0.0:
+            parser.error(f"{flag} must be >= 0")
+    cfg = make_scenario_config(
+        args.scenario,
+        dt=args.dt,
+        t_final=args.t_final,
+        controller=args.controller,
+        estimator=args.estimator,
+        angle_deg=args.angle_deg,
+        tau_dist=tau_dist,
+        actuator_tau_max=actuator_tau_max,
+        actuator_tau=args.actuator_tau,
+        rw_inertia=rw_inertia,
+        rw_h_max=rw_h_max,
+        rw_visc=args.rw_visc,
+        rw_coulomb=args.rw_coulomb,
+        rw_gyroscopic=not args.rw_no_gyro,
+        actuator_h_dump=actuator_h_dump,
+        actuator_dump_gain=args.actuator_dump_gain,
+        gravity_gradient=args.gravity_gradient,
+        residual_dipole=args.residual_dipole,
+        aerodynamic=args.aerodynamic,
+        srp=args.srp,
+        orbit_radius=args.orbit_radius,
+        orbit_inclination_deg=args.orbit_inc_deg,
+        orbit_raan_deg=args.orbit_raan_deg,
+        dipole_m=dipole_m,
+        dipole_model=args.dipole_model,
+        panel_area=args.panel_area,
+        panel_r_cp=panel_r_cp,
+        aero_cd=args.aero_cd,
+        srp_cr=args.srp_cr,
+        srp_eclipse=args.srp_eclipse,
+        use_mag=not args.no_mag,
+        use_sun=not args.no_sun,
+        coarse_init=args.coarse_init,
+        coarse_init_method=args.coarse_init_method,
+        gyro_sigma_v=args.gyro_sigma_v,
+        gyro_sigma_u=args.gyro_sigma_u,
+        mag_sigma=args.mag_sigma,
+        sun_sigma=args.sun_sigma,
+        seed=args.seed,
+        plot=not args.no_plot,
+        gif=not args.no_gif,
+        out_dir=args.out_dir,
+        log_innovations=args.log_innovations,
+        env_flag=args.env,
+        no_env=args.no_env,
+        mrp_plot=True if args.mrp_plot else None,
+    )
+    log = run_slew(cfg)
+    env_norm = float(np.linalg.norm(log.tau_env[-1])) if log.tau_env.size else 0.0
+    print(
+        f"{log.scenario} complete: controller={log.controller} estimator={log.estimator} "
+        f"final_att_error={log.final_att_error_deg:.3f} deg  "
+        f"final_||omega||={np.linalg.norm(log.omega[-1]):.4f} rad/s  "
+        f"final_||tau_env||={env_norm:.3e} N·m"
+    )
+    if log.h_wheel.size:
+        print(
+            f"  RW: peak_rate={log.peak_rate:.4f} rad/s  "
+            f"sat_fraction={log.sat_fraction:.3f}  "
+            f"peak_|h_w|={float(np.max(np.linalg.norm(log.h_wheel, axis=1))):.4f} N·m·s"
+        )
+    if log.plot_path is not None:
+        print(f"plot: {log.plot_path}")
+    if log.env_plot_path is not None:
+        print(f"env:  {log.env_plot_path}")
+    if log.mrp_plot_path is not None:
+        print(f"mrp:  {log.mrp_plot_path}")
+    if log.gif_path is not None:
+        print(f"gif:  {log.gif_path}")
+    if log.innovation_csv is not None:
+        nis_txt = ""
+        if log.mean_nis is not None:
+            nis_txt = f"  mean_NIS={log.mean_nis:.3f} (χ²_2, E=2)"
+        print(f"innovations: {log.innovation_csv}{nis_txt}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
