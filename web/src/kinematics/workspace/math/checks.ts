@@ -1,7 +1,7 @@
 import { chooseProbe } from '../../probe'
-import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../document'
+import { appendMath, convertDocumentAngles, emptyDocument, exampleDocument, setMathVisible } from '../document'
 import { evaluateDocument } from '../evaluate'
-import { previewTex, validateMath } from './expr'
+import { convertAngleInput, previewTex, validateMath } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
 import { formatTick, tickMarks } from '../../ticks'
 import { closeOpenGroups, exitSlotsForComma, moveMathCursor } from './inputView'
@@ -475,6 +475,33 @@ export function runMathChecks(): string[] {
   const optionsWithCaret = previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6', 20)
   expect(Boolean(optionsWithCaret?.includes('\\sin')), `a caret inside the plot options tail still previews: ${optionsWithCaret}`)
   expect(Boolean(previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6')?.includes('\\sin')), 'the plot options tail still previews without a caret')
+
+  expect(convertAngleInput('sin(pi)', 'rad', 'deg') === 'sin(180)', `radians pi becomes 180 degrees: ${convertAngleInput('sin(pi)', 'rad', 'deg')}`)
+  expect(convertAngleInput('sin(180)', 'deg', 'rad') === 'sin(pi)', `180 degrees becomes pi: ${convertAngleInput('sin(180)', 'deg', 'rad')}`)
+  expect(convertAngleInput('sin(pi/2)', 'rad', 'deg') === 'sin(90)', `pi/2 becomes 90: ${convertAngleInput('sin(pi/2)', 'rad', 'deg')}`)
+  expect(convertAngleInput('sin(90)', 'deg', 'rad') === 'sin(pi/2)', `90 becomes pi/2: ${convertAngleInput('sin(90)', 'deg', 'rad')}`)
+  expect(convertAngleInput('sin(30)', 'deg', 'rad') === 'sin(pi/6)', `30 degrees becomes pi/6: ${convertAngleInput('sin(30)', 'deg', 'rad')}`)
+  expect(convertAngleInput('cos(45)', 'deg', 'rad') === 'cos(pi/4)', `45 degrees becomes pi/4: ${convertAngleInput('cos(45)', 'deg', 'rad')}`)
+  expect(convertAngleInput('tan(60)', 'deg', 'rad') === 'tan(pi/3)', `60 degrees becomes pi/3: ${convertAngleInput('tan(60)', 'deg', 'rad')}`)
+  expect(convertAngleInput('sin(2)', 'rad', 'deg') === 'sin(360/pi)', `a bare radian stays exact: ${convertAngleInput('sin(2)', 'rad', 'deg')}`)
+  expect(convertAngleInput('y = sin(x)', 'rad', 'deg') === 'y = sin(x)', 'a free variable stays written the way it was')
+  expect(convertAngleInput('asin(1)', 'rad', 'deg') === 'asin(1)', 'inverse trig input is not an angle')
+  expect(convertAngleInput('diff(sin(x), x)', 'rad', 'deg') === 'diff(sin(x), x)', 'a derivative in x stays written in x')
+  expect(convertAngleInput('sin(x + pi)', 'rad', 'deg') === 'sin(x + 180)', `a constant offset converts: ${convertAngleInput('sin(x + pi)', 'rad', 'deg')}`)
+  expect(convertAngleInput('f(x) = sin(x), plotpoints = 160', 'rad', 'deg') === 'f(x) = sin(x), plotpoints = 160', 'an unchanged curve keeps its plot options')
+  const withPoints = convertAngleInput('f(x) = sin(pi), plotpoints = 160', 'rad', 'deg')
+  expect(withPoints === 'f(x) = sin(180), plotpoints = 160', `a converted curve keeps its plot options: ${withPoints}`)
+  let angleDoc = appendMath(emptyDocument(), 'sin(pi)')
+  const radAngle = evaluateDocument(angleDoc).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(radAngle.includes('sin(pi)') && radAngle.includes('0') && !radAngle.includes('0.05'), `sin(pi) radians: ${radAngle}`)
+  angleDoc = convertDocumentAngles(angleDoc, 'rad', 'deg')
+  const degStatement = angleDoc.statements.find((statement) => statement.type === 'math')
+  expect(degStatement?.type === 'math' && degStatement.input === 'sin(180)', `stored input becomes sin(180): ${degStatement?.type === 'math' ? degStatement.input : ''}`)
+  const degAngle = evaluateDocument(angleDoc, 0, 'deg').blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(degAngle.includes('180') && degAngle.includes('0') && !degAngle.includes('0.05'), `sin(180) degrees stays 0: ${degAngle}`)
+  const restored = convertDocumentAngles(angleDoc, 'deg', 'rad')
+  const restoredStatement = restored.statements.find((statement) => statement.type === 'math')
+  expect(restoredStatement?.type === 'math' && restoredStatement.input === 'sin(pi)', `switching back restores sin(pi): ${restoredStatement?.type === 'math' ? restoredStatement.input : ''}`)
 
   return errors
 }

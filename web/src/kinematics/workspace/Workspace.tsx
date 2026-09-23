@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Eq } from '../Eq'
 import { usePlayback } from '../../hooks/usePlayback'
 import { Composer } from './Composer'
-import { appendMath, commitCommand, emptyDocument, exampleDocument, removeStatement, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
+import { appendMath, commitCommand, convertDocumentAngles, emptyDocument, exampleDocument, removeStatement, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
 import { previewTex, validateMath, type AngleMode } from './math/expr'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
 import { FigurePane } from './FigurePane'
@@ -182,6 +182,8 @@ export function Workspace() {
   const [decimal, setDecimal] = useState<Record<string, boolean>>({})
   const [planes, setPlanes] = useState<Record<string, boolean>>({})
   const [angles, setAngles] = useState<AngleMode>('rad')
+  const anglesRef = useRef(angles)
+  anglesRef.current = angles
   const compiled = useMemo(() => compileDocument(doc, angles), [doc, angles])
   const playback = usePlayback(Math.max(compiled.duration, 0.001))
 
@@ -205,7 +207,13 @@ export function Workspace() {
             className="btn btn-ghost workspace-clear"
             aria-pressed={angles === 'deg'}
             aria-label={angles === 'deg' ? 'Angles are in degrees. Switch to radians.' : 'Angles are in radians. Switch to degrees.'}
-            onClick={() => setAngles((current) => (current === 'rad' ? 'deg' : 'rad'))}
+            onClick={() => {
+              const from = anglesRef.current
+              const to: AngleMode = from === 'rad' ? 'deg' : 'rad'
+              anglesRef.current = to
+              setAngles(to)
+              setDoc((current) => convertDocumentAngles(current, from, to))
+            }}
           >
             {angles === 'deg' ? 'Degrees' : 'Radians'}
           </button>

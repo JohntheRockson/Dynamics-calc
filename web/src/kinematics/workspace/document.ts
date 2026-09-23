@@ -3,6 +3,7 @@
 // can call. Units are SI; angles on the document are radians.
 
 import { commandById } from './commands'
+import { convertAngleInput, type AngleMode } from './math/expr'
 
 export const PROPERTY_KEYS = [
   'x',
@@ -249,6 +250,20 @@ export function commitCommand(doc: WorkspaceDocument, commandId: string, args: R
                   : null
   if (!scalarKey) return { doc, error: 'Unknown statement.' }
   return setScalar(doc, name, scalarKey, args.value, scalarKey === 'psi')
+}
+
+/** Rewrite stored math so a radians/degrees switch changes angle inputs and keeps the values. */
+export function convertDocumentAngles(doc: WorkspaceDocument, from: AngleMode, to: AngleMode): WorkspaceDocument {
+  if (from === to) return doc
+  let changed = false
+  const statements = doc.statements.map((statement) => {
+    if (statement.type !== 'math') return statement
+    const input = convertAngleInput(statement.input, from, to)
+    if (input === statement.input) return statement
+    changed = true
+    return { ...statement, input }
+  })
+  return changed ? { ...doc, statements } : doc
 }
 
 export function appendMath(doc: WorkspaceDocument, input: string): WorkspaceDocument {

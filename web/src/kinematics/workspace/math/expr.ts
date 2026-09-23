@@ -1940,3 +1940,140 @@ function exprKey(e: Expr): string {
       return e.body ? exprKey(e.body) : 'caret'
   }
 }
+
+const DIRECT_TRIG = new Set(['sin', 'cos', 'tan'])
+const ANGLE_LITERAL_CALLS = new Set(['sqrt', 'abs', 'ln', 'log', 'exp'])
+
+/**
+ * Switching radians and degrees rewrites constant trig inputs so the values stay put.
+ * `sin(pi)` becomes `sin(180)`, and `sin(180)` becomes `sin(pi)`. A free variable such as
+ * `sin(x)` is left alone, because that variable is read in the unit you just picked.
+ */
+export function convertAngleInput(input: string, from: AngleMode, to: AngleMode): string {
+  if (from === to) return input
+  try {
+    const turned = latexToSource(input).trim()
+    const { source, plot } = takePlotOptions(turned)
+    const raw = autoClose(source)
+    if (!raw) return input
+    const root = parseExpr(raw)
+    const converted = convertExpr(root, from, to)
+    if (exprKey(converted) === exprKey(root)) return input
+    const next = `${plain(converted)}${plotSuffix(plot)}`
+    parseMathInput(next)
+    return next
+  } catch {
+    return input
+  }
+}
+
+function plotSuffix(plot: PlotOptions): string {
+  const parts: string[] = []
+  if (plot.points !== DEFAULT_PLOT.points) parts.push(`plotpoints = ${plot.points}`)
+  if (plot.recursion !== DEFAULT_PLOT.recursion) parts.push(`maxrecursion = ${plot.recursion}`)
+  if (!plot.exclusions) parts.push('exclusions = false')
+  return parts.length ? `, ${parts.join(', ')}` : ''
+}
+
+function convertExpr(e: Expr, from: AngleMode, to: AngleMode): Expr {
+  const walked = convertChildren(e, from, to)
+  if (walked.type !== 'call' || walked.args.length !== 1 || !DIRECT_TRIG.has(walked.name)) return walked
+  const arg = walked.args[0]
+  if (!arg) return walked
+  return { type: 'call', name: walked.name, args: [rescaleAngle(arg, from, to)] }
+}
+
+function convertChildren(e: Expr, from: AngleMode, to: AngleMode): Expr {
+  const visit = (child: Expr) => convertExpr(child, from, to)
+  switch (e.type) {
+    case 'rat':
+    case 'dec':
+    case 'sym':
+      return e
+    case 'add':
+    case 'mul':
+      return { ...e, args: e.args.map(visit) }
+    case 'div':
+      return { type: 'div', num: visit(e.num), den: visit(e.den) }
+    case 'pow':
+      return { type: 'pow', base: visit(e.base), exp: visit(e.exp) }
+    case 'call':
+      return { type: 'call', name: e.name, args: e.args.map(visit) }
+    case 'vec':
+      return { type: 'vec', args: e.args.map(visit) }
+    case 'mat':
+      return { type: 'mat', rows: e.rows.map((row) => row.map(visit)) }
+    case 'eq':
+      return { type: 'eq', left: visit(e.left), right: visit(e.right) }
+    case 'group':
+      return { type: 'group', body: visit(e.body) }
+    case 'caret':
+      return e.body ? { ...e, body: visit(e.body) } : e
+  }
+}
+
+/** Numbers, pi, and arithmetic are an angle written in the current unit. A trig call already yields a pure number. */
+function isAngleLiteral(e: Expr): boolean {
+  switch (e.type) {
+    case 'rat':
+    case 'dec':
+      return true
+    case 'sym':
+      return bareConstant(e)
+    case 'add':
+    case 'mul':
+      return e.args.every(isAngleLiteral)
+    case 'div':
+      return isAngleLiteral(e.num) && isAngleLiteral(e.den)
+    case 'pow':
+      return isAngleLiteral(e.base) && isAngleLiteral(e.exp)
+    case 'group':
+      return isAngleLiteral(e.body)
+    case 'caret':
+      return e.body ? isAngleLiteral(e.body) : false
+    case 'call':
+      return ANGLE_LITERAL_CALLS.has(e.name) && e.args.every(isAngleLiteral)
+    default:
+      return false
+  }
+}
+
+function rescaleAngle(arg: Expr, from: AngleMode, to: AngleMode): Expr {
+  const body = peelGroup(arg)
+  if (body.type === 'add') return normalize({ type: 'add', args: body.args.map((term) => rescaleTerm(term, from, to)) }, 'rad')
+  if (isAngleLiteral(body)) return scaleAngle(body, from)
+  return rescaleNegativeSum(body, from, to) ?? arg
+}
+
+function rescaleTerm(term: Expr, from: AngleMode, to: AngleMode): Expr {
+  const body = peelGroup(term)
+  if (isAngleLiteral(body)) return scaleAngle(body, from)
+  return rescaleNegativeSum(body, from, to) ?? term
+}
+
+function rescaleNegativeSum(e: Expr, from: AngleMode, to: AngleMode): Expr | null {
+  if (e.type !== 'mul' || e.args.length !== 2) return null
+  const sign = e.args[0]
+  if (sign.type !== 'rat' || sign.n !== -1n || sign.d !== 1n) return null
+  const inner = peelGroup(e.args[1])
+  if (inner.type !== 'add') return null
+  return normalize({ type: 'mul', args: [rat(-1n), { type: 'add', args: inner.args.map((part) => rescaleTerm(part, from, to)) }] }, 'rad')
+}
+
+function scaleAngle(e: Expr, from: AngleMode): Expr {
+  const pi: Expr = { type: 'sym', name: 'pi' }
+  const factor: Expr = from === 'rad' ? { type: 'div', num: rat(180n), den: pi } : { type: 'div', num: pi, den: rat(180n) }
+  const scaled = normalize({ type: 'mul', args: [peelGroup(e), factor] }, 'rad')
+  if (!containsDecimal(e) || scaled.type === 'rat') return scaled
+  const n = evalConst(scaled, 'rad')
+  if (n === null || !Number.isFinite(n)) return scaled
+  return snap(n) ?? scaled
+}
+
+function containsDecimal(e: Expr): boolean {
+  let found = false
+  walk(e, (node) => {
+    if (node.type === 'dec') found = true
+  })
+  return found
+}
