@@ -110,6 +110,13 @@ from attitude_sim.scenarios import (
     scenario_catalog_text,
 )
 from attitude_sim.sim import SimConfig, SimLog, make_scenario_config, run_sim, run_slew
+from attitude_sim.slosh import (
+    SloshPendulum,
+    slosh_omega_dot,
+    slosh_reaction_torque,
+    step_slosh,
+    step_slosh_attitude,
+)
 
 # Mahony is the complementary-filter implementation; keep both names public.
 MahonyFilter = ComplementaryFilter
@@ -136,6 +143,7 @@ __all__ = [
     "RigidBody",
     "SimConfig",
     "SimLog",
+    "SloshPendulum",
     "SolarRadiationPressureTorque",
     "SpinStability",
     "TorqueActuator",
@@ -197,6 +205,8 @@ __all__ = [
     "sample_polhode",
     "scenario_catalog_text",
     "shape_pid_command",
+    "slosh_omega_dot",
+    "slosh_reaction_torque",
     "solve_care",
     "srp_torque",
     "step_flex",
@@ -204,6 +214,8 @@ __all__ = [
     "step_gyrostat",
     "step_gyrostat_attitude",
     "step_rigid_body",
+    "step_slosh",
+    "step_slosh_attitude",
     "trapezoid_inertial_impulse",
     "triad_attitude",
     "try_triad_q0_from_sensors",
