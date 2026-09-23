@@ -351,17 +351,22 @@ export function Scene2D({ bodies, height = 260, xLabel = 'x (m)', yLabel = 'y (m
     ctx.restore()
 
     ctx.font = '11px var(--font-mono), monospace'
-    ctx.lineWidth = 3
+    ctx.lineWidth = 2
     const drawn: TickLabel[] = []
     for (const label of labels) {
-      if (drawn.some((item) => Math.hypot(item.x - label.x, item.y - label.y) < 22)) continue
-      drawn.push(label)
+      const textWidth = ctx.measureText(label.text).width
+      let x = label.x
+      if (label.align === 'center') x = Math.min(width - 2 - textWidth / 2, Math.max(2 + textWidth / 2, x))
+      else if (label.align === 'right') x = Math.min(width - 2, Math.max(2 + textWidth, x))
+      else x = Math.min(width - 2 - textWidth, Math.max(2, x))
+      if (drawn.some((item) => Math.hypot(item.x - x, item.y - label.y) < 18)) continue
+      drawn.push({ ...label, x })
       ctx.textAlign = label.align
       ctx.textBaseline = label.baseline
       ctx.strokeStyle = '#111926'
-      ctx.strokeText(label.text, label.x, label.y)
+      ctx.strokeText(label.text, x, label.y)
       ctx.fillStyle = '#d5deea'
-      ctx.fillText(label.text, label.x, label.y)
+      ctx.fillText(label.text, x, label.y)
     }
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'

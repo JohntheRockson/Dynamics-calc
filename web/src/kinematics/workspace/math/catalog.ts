@@ -30,7 +30,7 @@ export const MATH_SECTIONS: MathSection[] = [
       { name: 'Expand', template: 'expand((x + 1)(x + 2))', blurb: 'Distribute, including FOIL' },
       { name: 'Factor', template: 'factor(x^2 - 1)', blurb: 'Factor an integer or a polynomial' },
       { name: 'Zeros', template: 'zeros(x^2 - 1)', blurb: 'Roots of an expression' },
-      { name: 'Solve', template: 'solve(x + y = 3, x - y = 1)', blurb: 'One equation, or a linear system' },
+      { name: 'Solve', template: 'solve(x + y = 3, x - y = 1)', blurb: 'A linear system, or solve(eq1, eq2, (0, 2*pi)) to search a domain' },
     ],
   },
   {

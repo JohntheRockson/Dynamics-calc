@@ -2,8 +2,10 @@
 // y = and x = are curves too. z = and z^2 = are surfaces. Other results stay in the console.
 
 import type { Statement } from '../document'
-import { containsCas, evaluateCas, rewriteAll, solveLinearSystem, type CasArrow, type CasCurve, type CasParametric, type CasPoint } from './cas'
+import { containsCas, evaluateCas, rewriteAll, solveSystem, type CasArrow, type CasCurve, type CasParametric, type CasPoint } from './cas'
+import { sampleCurveNative } from './plotter'
 import {
+  DEFAULT_PLOT,
   MathError,
   applyEnv,
   approximate,
@@ -16,15 +18,16 @@ import {
   present,
   solveEquation,
   tex,
+  texName,
   type AngleMode,
   type Expr,
   type MathEnv,
+  type PlotOptions,
 } from './expr'
 
 const PLOT_COLORS = ['#59d67f', '#f5a524', '#a78bfa', '#fb6a6a', '#5aa8ff', '#e879f9']
-const CURVE_SAMPLES = 201
-const SURFACE_SAMPLES = 61
 const CLIP = 1e4
+const MAX_CURVE_POINTS = 3600
 const AXES = new Set(['x', 'y', 'z'])
 
 export interface PlotWindow {
@@ -154,7 +157,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         env.set(parsed.name, { kind: 'fn', params: parsed.params, body })
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
           const color = nextColor()
-          const plot = parametricPlot(statement.id, label, color, statement.visible, body.args, parsed.params[0], env, angles)
+          const plot = parametricPlot(statement.id, label, color, statement.visible, body.args, parsed.params[0], env, angles, undefined, parsed.plot)
           const warn = hasGeometry(plot) ? null : 'No real values to plot for t from -10 to 10.'
           plots.push(plot)
           rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
@@ -163,8 +166,8 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const missing = freeSymbols(body).filter((name) => !parsed.params.includes(name) && !env.has(name))
         const color = nextColor()
         const plot = parsed.params.length === 2
-          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [body], parsed.params[0], parsed.params[1], env, angles)
-          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param: parsed.params[0], along: 'x' }, env, angles)
+          ? surfacePlot(statement.id, label, color, statement.visible, missing.length ? [] : [body], parsed.params[0], parsed.params[1], env, angles, parsed.plot)
+          : curvePlot(statement.id, label, color, statement.visible, missing.length ? null : { bodies: [body], param: parsed.params[0], along: 'x' }, env, angles, { plot: parsed.plot })
         if (missing.length > 0) plot.warn = `Give ${missing.join(', ')} a value above this line to draw the graph.`
         else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
         plots.push(plot.plot)
@@ -221,8 +224,8 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           const formulaTex = `${tex(equation.left)} = ${tex(equation.right)}`
           const formulaText = `${plain(equation.left)} = ${plain(equation.right)}`
           const plot = plotted.kind === 'surface'
-            ? surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, 'x', 'y', env, angles)
-            : curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles)
+            ? surfacePlot(statement.id, label, color, statement.visible, plotted.bodies, 'x', 'y', env, angles, parsed.plot)
+            : curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, env, angles, { plot: parsed.plot })
           if (plotted.warn) plot.warn = plotted.warn
           else if (!hasGeometry(plot.plot)) plot.warn = 'No real values to plot on [-10, 10].'
           plots.push(plot.plot)
@@ -231,7 +234,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         }
       }
       if (parsed.kind === 'system') {
-        const solved = solveLinearSystem(parsed.equations.map((equation) => applyEnv(equation, env, 0)), angles)
+        const solved = solveSystem(parsed.equations.map((equation) => applyEnv(equation, env, 0)), parsed.domains, angles)
         pushVisual(statement.id, statement.input, 'Solve', solved.text, solved.tex, solved.curves, solved.points, solved.parametrics, solved.arrows, statement.visible, solved.warn)
         continue
       }
@@ -402,29 +405,15 @@ function hasGeometry(plot: CurvePlot | SurfacePlot): boolean {
   return plot.sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
-function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options?: { dashed?: boolean; shade?: { from: number; to: number }; exprKey?: string; hideStroke?: boolean; along?: 'x' | 'y' }): { plot: CurvePlot; warn: string | null } {
-  const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles) : [])
+function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options?: { dashed?: boolean; shade?: { from: number; to: number }; exprKey?: string; hideStroke?: boolean; along?: 'x' | 'y'; plot?: PlotOptions }): { plot: CurvePlot; warn: string | null } {
+  const style = options?.plot ?? DEFAULT_PLOT
+  const sample = (window: PlotWindow) => (spec && spec.bodies.length > 0 ? sampleBranches(spec.bodies, spec.param, spec.along, env, window, angles, style) : [])
   const exprKey = options?.exprKey ?? (spec && spec.bodies.length === 1 ? plain(spec.bodies[0]) : undefined)
   return { warn: null, plot: { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: options?.dashed, shade: options?.shade, hideStroke: options?.hideStroke, along: options?.along ?? spec?.along, exprKey } }
 }
 
-const PARAM_SAMPLES = 241
-
-function parametricPlot(id: string, label: string, color: string, visible: boolean, components: Expr[], param: string, env: MathEnv, angles: AngleMode, dashed?: boolean): CurvePlot {
-  const sample = (_window: PlotWindow) => {
-    const path: { x: number; y: number; z: number }[] = []
-    for (let i = 0; i < PARAM_SAMPLES; i += 1) {
-      const t = sampleAt(i, PARAM_SAMPLES, -10, 10)
-      const local = bind(env, param, t)
-      const values = components.map((component) => numericValue(component, local, angles))
-      if (values.some((value) => value === null || !Number.isFinite(value))) {
-        path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
-        continue
-      }
-      path.push({ x: values[0] ?? Number.NaN, y: values[1] ?? Number.NaN, z: values[2] ?? 0 })
-    }
-    return path
-  }
+function parametricPlot(id: string, label: string, color: string, visible: boolean, components: Expr[], param: string, env: MathEnv, angles: AngleMode, dashed?: boolean, plot: PlotOptions = DEFAULT_PLOT): CurvePlot {
+  const sample = (window: PlotWindow) => sampleParametric(components, param, env, window, angles, plot)
   return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed, along: 'x' }
 }
 
@@ -451,8 +440,8 @@ function pointPlot(id: string, label: string, color: string, visible: boolean, x
   return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), marker: true }
 }
 
-function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], xName: string, yName: string, env: MathEnv, angles: AngleMode): { plot: SurfacePlot; warn: string | null } {
-  const sample = (window: PlotWindow) => (bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, window, angles)) : [])
+function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], xName: string, yName: string, env: MathEnv, angles: AngleMode, plot: PlotOptions = DEFAULT_PLOT): { plot: SurfacePlot; warn: string | null } {
+  const sample = (window: PlotWindow) => (bodies.length > 0 ? bodies.map((body) => sampleSurface(body, xName, yName, env, window, angles, plot)) : [])
   const sheets = sample(DEFAULT_WINDOW)
   return { warn: null, plot: { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [], sample } }
 }
@@ -479,7 +468,7 @@ function singleCurve(expr: Expr): CasCurve | null {
 }
 
 function labelTex(name: string, params: string[]): string {
-  return `${name}\\left(${params.join(', ')}\\right)`
+  return `${texName(name)}\\left(${params.map((param) => texName(param)).join(', ')}\\right)`
 }
 
 function sampleAt(index: number, count: number, min: number, max: number): number {
@@ -493,42 +482,160 @@ function bind(env: MathEnv, name: string, value: number): MathEnv {
   return next
 }
 
-function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: MathEnv, window: PlotWindow, angles: AngleMode): { x: number; y: number; z: number }[] {
+interface CurveNode {
+  t: number
+  y: number | null
+  cut: boolean
+}
+
+function sampleBranches(bodies: Expr[], param: string, along: 'x' | 'y', env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions): { x: number; y: number; z: number }[] {
   const path: { x: number; y: number; z: number }[] = []
   const min = along === 'x' ? window.xMin : window.yMin
   const max = along === 'x' ? window.xMax : window.yMax
+  const ySpan = Math.max(1e-6, along === 'x' ? window.yMax - window.yMin : window.xMax - window.xMin)
   const clip = Math.max(CLIP, 40 * Math.abs(window.xMax - window.xMin), 40 * Math.abs(window.yMax - window.yMin))
   for (const body of bodies) {
-    let previous = false
-    for (let i = 0; i < CURVE_SAMPLES; i += 1) {
-      const t = sampleAt(i, CURVE_SAMPLES, min, max)
+    const at = (t: number) => {
       const value = numericValue(body, bind(env, param, t), angles)
-      const x = along === 'x' ? t : value
-      const y = along === 'x' ? value : t
-      if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > clip || Math.abs(y) > clip) {
+      return value === null || !Number.isFinite(value) ? null : value
+    }
+    const native = sampleCurveNative(body, param, env, min, max, ySpan, angles === 'deg', style)
+    const nodes = native ?? refineSamples(min, max, { points: Math.min(style.points, 160), recursion: Math.min(style.recursion, 4), exclusions: style.exclusions }, ySpan, at)
+    let previous = false
+    for (const node of nodes) {
+      const value = node.y
+      const x = along === 'x' ? node.t : value
+      const y = along === 'x' ? value : node.t
+      const bad = x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > clip || Math.abs(y) > clip
+      if (bad) {
         if (previous) path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
         previous = false
         continue
       }
       path.push({ x, y, z: 0 })
       previous = true
+      if (node.cut) {
+        path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
+        previous = false
+      }
     }
     path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
   }
   return path
 }
 
-function sampleSurface(body: Expr, xName: string, yName: string, env: MathEnv, window: PlotWindow, angles: AngleMode): { x: number; y: number; z: number }[][] {
+function refineSamples(min: number, max: number, style: PlotOptions, ySpan: number, at: (t: number) => number | null): CurveNode[] {
+  const count = Math.max(12, style.points)
+  const span = Math.max(1e-12, max - min)
+  const times: number[] = []
+  for (let i = 0; i < count; i += 1) times.push(sampleAt(i, count, min, max))
+  if (min < 0 && max > 0) {
+    let nearest = 0
+    for (let i = 1; i < times.length; i += 1) if (Math.abs(times[i] ?? 0) < Math.abs(times[nearest] ?? 0)) nearest = i
+    if (Math.abs(times[nearest] ?? 0) > 1e-12) {
+      times[nearest] = 0
+      times.sort((left, right) => left - right)
+    }
+  }
+  let nodes: CurveNode[] = times.map((t) => ({ t, y: at(t), cut: false }))
+  for (let level = 0; level <= style.recursion; level += 1) {
+    const last = level === style.recursion
+    const next: CurveNode[] = []
+    let grew = false
+    for (let i = 0; i < nodes.length - 1; i += 1) {
+      const left = nodes[i]
+      const right = nodes[i + 1]
+      if (!left || !right) continue
+      next.push({ ...left, cut: false })
+      const midT = (left.t + right.t) / 2
+      const tooFine = right.t - left.t < span / 10000
+      const midY = at(midT)
+      if (!last && !tooFine && nodes.length < MAX_CURVE_POINTS && shouldSplit(left.y, midY, right.y, ySpan)) {
+        next.push({ t: midT, y: midY, cut: false })
+        grew = true
+      } else if (style.exclusions && isDiscontinuity(left.y, midY, right.y, ySpan)) next[next.length - 1].cut = true
+    }
+    const tail = nodes[nodes.length - 1]
+    if (tail) next.push({ ...tail, cut: false })
+    nodes = next
+    if (!grew) break
+  }
+  if (style.exclusions) markSpikes(nodes, ySpan)
+  return nodes
+}
+
+function markSpikes(nodes: CurveNode[], ySpan: number): void {
+  for (let index = 1; index < nodes.length - 1; index += 1) {
+    const left = nodes[index - 1]?.y
+    const mid = nodes[index]?.y
+    const right = nodes[index + 1]?.y
+    if (left === null || left === undefined || mid === null || mid === undefined || right === null || right === undefined) continue
+    const peak = Math.max(Math.abs(left), Math.abs(right))
+    if (Math.abs(mid) > peak * 3 + ySpan && Math.abs(mid) > ySpan * 2) {
+      const before = nodes[index - 1]
+      const at = nodes[index]
+      if (before) before.cut = true
+      if (at) at.cut = true
+    }
+  }
+}
+
+function shouldSplit(left: number | null, mid: number | null, right: number | null, ySpan: number): boolean {
+  if (left === null || right === null || mid === null) return true
+  const bend = Math.abs(mid - (left + right) / 2)
+  const spike = Math.abs(mid) > Math.max(Math.abs(left), Math.abs(right)) * 3 + ySpan * 0.35
+  return bend > Math.max(ySpan * 0.012, 1e-4) || spike
+}
+
+function isDiscontinuity(left: number | null, mid: number | null, right: number | null, ySpan: number): boolean {
+  if (left === null || right === null || mid === null) return true
+  const between = (mid - left) * (mid - right) <= 0
+  if (between) return false
+  const peak = Math.max(Math.abs(left), Math.abs(right))
+  return Math.abs(mid) > peak * 1.5 + ySpan * 0.25
+}
+
+function sampleParametric(components: Expr[], param: string, env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions): { x: number; y: number; z: number }[] {
+  const ySpan = Math.max(1e-6, window.yMax - window.yMin, window.xMax - window.xMin)
+  const at = (t: number) => {
+    const local = bind(env, param, t)
+    const values = components.map((component) => numericValue(component, local, angles))
+    if (values.some((value) => value === null || !Number.isFinite(value))) return null
+    return values[0] ?? null
+  }
+  const nodes = refineSamples(-10, 10, style, ySpan, at)
+  const path: { x: number; y: number; z: number }[] = []
+  for (const node of nodes) {
+    if (node.y === null || node.cut) {
+      path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
+      continue
+    }
+    const local = bind(env, param, node.t)
+    const values = components.map((component) => numericValue(component, local, angles))
+    if (values.some((value) => value === null || !Number.isFinite(value))) {
+      path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
+      continue
+    }
+    path.push({ x: values[0] ?? Number.NaN, y: values[1] ?? Number.NaN, z: values[2] ?? 0 })
+  }
+  return path
+}
+
+function sampleSurface(body: Expr, xName: string, yName: string, env: MathEnv, window: PlotWindow, angles: AngleMode, plot: PlotOptions): { x: number; y: number; z: number }[][] {
+  const count = Math.max(24, Math.min(80, Math.round(plot.points / 2)))
   const grid: { x: number; y: number; z: number }[][] = []
-  for (let row = 0; row < SURFACE_SAMPLES; row += 1) {
-    const y = sampleAt(row, SURFACE_SAMPLES, window.yMin, window.yMax)
+  const zSpan = Math.max(1, window.yMax - window.yMin)
+  for (let row = 0; row < count; row += 1) {
+    const y = sampleAt(row, count, window.yMin, window.yMax)
     const line: { x: number; y: number; z: number }[] = []
-    for (let col = 0; col < SURFACE_SAMPLES; col += 1) {
-      const x = sampleAt(col, SURFACE_SAMPLES, window.xMin, window.xMax)
+    for (let col = 0; col < count; col += 1) {
+      const x = sampleAt(col, count, window.xMin, window.xMax)
       let local = bind(env, xName, x)
       local = bind(local, yName, y)
       const z = numericValue(body, local, angles)
-      line.push({ x, y, z: z === null || Math.abs(z) > CLIP ? Number.NaN : z })
+      const previous = line[line.length - 1]
+      const jump = previous && z !== null && Number.isFinite(previous.z) && Number.isFinite(z) && Math.abs(z - previous.z) > zSpan * 6
+      line.push({ x, y, z: z === null || Math.abs(z) > CLIP || (plot.exclusions && jump) ? Number.NaN : z })
     }
     grid.push(line)
   }

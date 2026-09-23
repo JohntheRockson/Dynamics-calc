@@ -32,5 +32,7 @@ export function formatTick(value: number, step: number): string {
   const mantDec = Math.abs(mant - Math.round(mant)) < 1e-6 ? 0 : tenth < 1e-6 ? 1 : 2
   const decimals = Math.min(6, Math.max(0, mantDec - exp))
   const snapped = Math.round(value / step) * step
-  return snapped.toFixed(decimals).replace(/\.?0+$/, '')
+  const text = snapped.toFixed(decimals)
+  if (!text.includes('.')) return text
+  return text.replace(/0+$/, '').replace(/\.$/, '')
 }

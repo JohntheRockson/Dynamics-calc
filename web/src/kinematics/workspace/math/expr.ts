@@ -103,51 +103,138 @@ function divRat(a: Rat, b: Rat): Rat {
   return out ?? ONE
 }
 
+const IDENT = '[A-Za-zαβγδεζηθικλμνξπρστυφχψω][A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]*'
+
+export interface PlotOptions {
+  points: number
+  recursion: number
+  exclusions: boolean
+}
+
+export interface SearchDomain {
+  name: string | null
+  min: Expr
+  max: Expr
+}
+
+export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true }
+
 export function parseMathInput(input: string): MathInput {
-  const raw = autoClose(latexToSource(input).trim())
+  const turned = latexToSource(input).trim()
+  const { source, plot } = takePlotOptions(turned)
+  const raw = autoClose(source)
   if (!raw) throw new MathError('Enter a calculation.')
-  const fn2 = /^([A-Za-z][A-Za-z0-9]*)\s*\(\s*([A-Za-z][A-Za-z0-9]*)\s*,\s*([A-Za-z][A-Za-z0-9]*)\s*\)\s*=\s*([\s\S]+)$/.exec(raw)
+  const fn2 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*,\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
   if (fn2) {
-    assertDefinable(fn2[1])
-    if (fn2[2] === fn2[3]) throw new MathError('Use two different inputs.')
-    return { kind: 'fn', name: fn2[1], params: [fn2[2], fn2[3]], body: parseExpr(fn2[4]), raw }
+    const name = naming(fn2[1] ?? '')
+    const params = [naming(fn2[2] ?? ''), naming(fn2[3] ?? '')]
+    assertDefinable(name)
+    if (params[0] === params[1]) throw new MathError('Use two different inputs.')
+    return { kind: 'fn', name, params, body: parseExpr(fn2[4] ?? ''), raw, plot }
   }
-  const fn1 = /^([A-Za-z][A-Za-z0-9]*)\s*\(\s*([A-Za-z][A-Za-z0-9]*)\s*\)\s*=\s*([\s\S]+)$/.exec(raw)
+  const fn1 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
   if (fn1) {
-    assertDefinable(fn1[1])
-    return { kind: 'fn', name: fn1[1], params: [fn1[2]], body: parseExpr(fn1[3]), raw }
+    const name = naming(fn1[1] ?? '')
+    assertDefinable(name)
+    return { kind: 'fn', name, params: [naming(fn1[2] ?? '')], body: parseExpr(fn1[3] ?? ''), raw, plot }
   }
   const expr = parseExpr(raw)
   if (expr.type === 'eq' && expr.left.type === 'call') {
     throw new MathError('Define a curve as f(x) = … or a surface as f(x, y) = ….')
   }
   if (expr.type === 'eq' && expr.left.type === 'sym' && !RESERVED.has(expr.left.name)) {
-    return { kind: 'assign', name: expr.left.name, expr: expr.right, raw }
+    return { kind: 'assign', name: expr.left.name, expr: expr.right, raw, plot }
   }
-  if (expr.type === 'call' && expr.name === 'solve') return parseSolve(expr, raw)
-  return { kind: 'expr', expr, raw }
+  if (expr.type === 'call' && expr.name === 'solve') return parseSolve(expr, raw, plot)
+  return { kind: 'expr', expr, raw, plot }
 }
 
 export type MathInput =
-  | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string }
-  | { kind: 'assign'; name: string; expr: Expr; raw: string }
-  | { kind: 'solve'; equation: Expr; variable: string | null; raw: string }
-  | { kind: 'system'; equations: Expr[]; raw: string }
-  | { kind: 'expr'; expr: Expr; raw: string }
+  | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string; plot: PlotOptions }
+  | { kind: 'assign'; name: string; expr: Expr; raw: string; plot: PlotOptions }
+  | { kind: 'solve'; equation: Expr; variable: string | null; raw: string; plot: PlotOptions }
+  | { kind: 'system'; equations: Expr[]; domains: SearchDomain[]; raw: string; plot: PlotOptions }
+  | { kind: 'expr'; expr: Expr; raw: string; plot: PlotOptions }
+
+function naming(raw: string): string {
+  const chars = [...raw]
+  if (chars.length === 1) {
+    const greek = greekCharName(chars[0] ?? '')
+    if (greek) return greek
+  }
+  return canonicalGreek(raw)
+}
+
+function takePlotOptions(source: string): { source: string; plot: PlotOptions } {
+  let rest = source.trim()
+  const plot: PlotOptions = { ...DEFAULT_PLOT }
+  const pattern = /,\s*(plotpoints|maxrecursion|exclusions)\s*=\s*([^\s,]+)\s*$/i
+  for (let n = 0; n < 6; n += 1) {
+    const match = pattern.exec(rest)
+    if (!match) break
+    const key = (match[1] ?? '').toLowerCase()
+    const raw = match[2] ?? ''
+    if (key === 'exclusions') {
+      const flag = raw.toLowerCase()
+      plot.exclusions = flag !== 'false' && flag !== '0' && flag !== 'off' && flag !== 'none'
+    } else {
+      const value = Number(raw)
+      if (!Number.isFinite(value)) throw new MathError(key === 'plotpoints' ? 'plotpoints needs a number of samples.' : 'maxrecursion needs a whole number.')
+      if (key === 'plotpoints') plot.points = Math.max(12, Math.min(800, Math.round(value)))
+      else plot.recursion = Math.max(0, Math.min(8, Math.round(value)))
+    }
+    rest = rest.slice(0, match.index).trim()
+  }
+  return { source: rest, plot }
+}
 
 function assertDefinable(name: string): void {
   if (RESERVED.has(name)) throw new MathError(`${name} is built in.`)
 }
 
-function parseSolve(expr: Expr, raw: string): MathInput {
+function parseSolve(expr: Expr, raw: string, plot: PlotOptions): MathInput {
   if (expr.type !== 'call') throw new MathError('Use solve(equation) or solve(equation, x).')
-  if (expr.args.length >= 2 && expr.args.every((arg) => arg.type === 'eq')) return { kind: 'system', equations: expr.args, raw }
-  if (expr.args.length === 1) return { kind: 'solve', equation: expr.args[0], variable: null, raw }
-    if (expr.args.length === 2 && expr.args[1].type === 'sym') {
-    if (bareConstant(expr.args[1])) throw new MathError(`${expr.args[1].name} is a constant.`)
-    return { kind: 'solve', equation: expr.args[0], variable: expr.args[1].name, raw }
+  if (expr.args.length >= 2 && expr.args[0]?.type === 'eq' && expr.args[1]?.type === 'eq') {
+    const equations: Expr[] = []
+    let index = 0
+    while (index < expr.args.length && expr.args[index]?.type === 'eq') {
+      const equation = expr.args[index]
+      if (equation) equations.push(equation)
+      index += 1
+    }
+    return { kind: 'system', equations, domains: parseDomains(expr.args.slice(index)), raw, plot }
   }
-  throw new MathError('Use solve(equation), solve(equation, x), or solve(eq1, eq2).')
+  if (expr.args.length === 1) return { kind: 'solve', equation: expr.args[0], variable: null, raw, plot }
+  if (expr.args.length === 2 && expr.args[1].type === 'sym') {
+    if (bareConstant(expr.args[1])) throw new MathError(`${expr.args[1].name} is a constant.`)
+    return { kind: 'solve', equation: expr.args[0], variable: expr.args[1].name, raw, plot }
+  }
+  throw new MathError('Use solve(equation), solve(equation, x), solve(eq1, eq2), or solve(eq1, eq2, (0, 2*pi)).')
+}
+
+function parseDomains(args: Expr[]): SearchDomain[] {
+  const domains: SearchDomain[] = []
+  let index = 0
+  while (index < args.length) {
+    const arg = args[index]
+    if (arg?.type === 'vec' && arg.args.length === 2) {
+      domains.push({ name: null, min: arg.args[0] ?? ZERO_EXPR, max: arg.args[1] ?? ZERO_EXPR })
+      index += 1
+      continue
+    }
+    if (arg?.type === 'vec' && arg.args.length === 3 && arg.args[0]?.type === 'sym') {
+      domains.push({ name: arg.args[0].name, min: arg.args[1] ?? ZERO_EXPR, max: arg.args[2] ?? ZERO_EXPR })
+      index += 1
+      continue
+    }
+    if (arg?.type === 'sym' && args[index + 1] && args[index + 2]) {
+      domains.push({ name: arg.name, min: args[index + 1] ?? ZERO_EXPR, max: args[index + 2] ?? ZERO_EXPR })
+      index += 3
+      continue
+    }
+    throw new MathError('Use solve(eq1, eq2) or solve(eq1, eq2, (0, 2*pi)).')
+  }
+  return domains
 }
 
 function autoClose(input: string): string {
@@ -516,8 +603,8 @@ export function previewTex(input: string, cursor?: number): string | null {
     const marked = at === null ? input : `${input.slice(0, at)}${MATH_CARET}${input.slice(at)}`
     const parsed = parseMathInput(cookPreview(marked))
     if (parsed.kind === 'fn') {
-      const params = parsed.params.join(', ')
-      return `${parsed.name}\\left(${params}\\right) = ${tex(parsed.body)}`
+      const params = parsed.params.map((name) => texSymbol(name)).join(', ')
+      return `${texSymbol(parsed.name)}\\left(${params}\\right) = ${tex(parsed.body)}`
     }
     if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(parsed.expr)}`
     if (parsed.kind === 'solve') {
@@ -1155,7 +1242,7 @@ function checkCall(name: string, args: Expr[]): void {
   const needsOne = new Set(['sqrt', 'ln', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan', 'decimal', 'fraction', 'factor', 'expand'])
   if (needsOne.has(name) && args.length !== 1) throw new MathError(`${name} needs one value.`)
   if (name === 'log' && args.length !== 1 && args.length !== 2) throw new MathError('log takes a value, or a value and a base.')
-  if (name === 'solve' && (args.length < 1 || args.length > 4)) throw new MathError('Use solve(equation), solve(equation, x), or solve(eq1, eq2).')
+  if (name === 'solve' && (args.length < 1 || args.length > 8)) throw new MathError('Use solve(equation), solve(equation, x), solve(eq1, eq2), or solve(eq1, eq2, (0, 2*pi)).')
   if ((name === 'gcd' || name === 'lcm') && args.length < 2) throw new MathError(`${name} needs at least two whole numbers.`)
   if ((name === 'mod' || name === 'rem') && args.length !== 2) throw new MathError('Use mod(a, b) for the remainder.')
   if (name === 'zeros' && args.length !== 1 && args.length !== 2) throw new MathError('Use zeros(expr) or zeros(expr, x).')
@@ -1597,6 +1684,10 @@ function subscriptName(body: string): string {
   if (body === '?') return '?'
   if (!/^[A-Za-z0-9]+$/.test(body)) throw new MathError('Use _ after a name, for example e_r or theta_0.')
   return canonicalGreek(body)
+}
+
+export function texName(name: string): string {
+  return texSymbol(name)
 }
 
 function texSymbol(name: string): string {

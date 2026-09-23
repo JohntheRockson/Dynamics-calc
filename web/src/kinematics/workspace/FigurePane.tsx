@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { onPlotterReady } from './math/plotter'
 import { PlaybackBar } from '../../components/PlaybackBar'
 import type { Playback } from '../../hooks/usePlayback'
 import { Scene2D } from '../Scene2D'
@@ -14,6 +15,9 @@ export function FigurePane({ view, playback, planes }: { view: WorkspaceView; pl
   const [span, setSpan] = useState(10)
   const [graphView, setGraphView] = useState<GraphView>('iso')
   const [lift, setLift] = useState(false)
+  const [plotterEpoch, setPlotterEpoch] = useState(0)
+
+  useEffect(() => onPlotterReady(() => setPlotterEpoch((epoch) => epoch + 1)), [])
 
   useEffect(() => {
     const stage = stageRef.current
@@ -55,7 +59,7 @@ export function FigurePane({ view, playback, planes }: { view: WorkspaceView; pl
 
   const domain = math3d && view.surfaces.length > 0 ? windowFor : surfaceDomain(view.surfaces)
   const drawnBodies: FigureBody[] = view.bodies.map((body) => {
-    if (motion || body.role !== 'plot' || !body.sample) return body
+    if (motion || body.role !== 'plot' || !body.sample || plotterEpoch < 0) return body
     const path = body.sample(windowFor)
     return { ...body, path: show3d && domain ? clipToDomain(path, domain) : path }
   })

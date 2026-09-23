@@ -13,6 +13,7 @@ import {
   tex,
   type AngleMode,
   type Expr,
+  type SearchDomain,
 } from './expr'
 
 export interface CasCurve {
@@ -1008,11 +1009,167 @@ function valueNamed(name: string, args: Expr[], angles: AngleMode): Expr {
   }
 }
 
-export function solveLinearSystem(equations: Expr[], angles: AngleMode): CasVisual {
-  const solved = solveLinear(equations, angles)
+export function solveSystem(equations: Expr[], domains: SearchDomain[], angles: AngleMode): CasVisual {
+  try {
+    const solved = solveLinear(equations, angles)
+    if (domains.length === 0) return presentLinear(solved)
+    const numbers = solved.values.map((value) => numericConstant(normalize(value, angles), angles))
+    if (numbers.every((value) => value !== null) && fitsDomains(solved.names, numbers as number[], domains, equations, angles)) return presentLinear(solved)
+    throw new MathError('The solution is outside that domain.')
+  } catch (error) {
+    const nonlinear = error instanceof MathError && error.message === 'That system is not linear.'
+    if (!nonlinear) throw error
+    if (domains.length === 0) throw new MathError('That system is not linear. Add a domain to search, for example solve(eq1, eq2, (0, 2*pi)).')
+    return solveNumeric(equations, domains, angles)
+  }
+}
+
+function presentLinear(solved: { names: string[]; values: Expr[]; curves: CasCurve[] }): CasVisual {
   const parts = solved.names.map((name, index) => `${name} = ${plain(solved.values[index] ?? ZERO)}`)
   const texParts = solved.names.map((name, index) => `${tex(S(name))} = ${tex(solved.values[index] ?? ZERO)}`)
   return { text: parts.join(', '), tex: texParts.join(', '), curves: solved.curves, points: [], parametrics: [], arrows: [], warn: null }
+}
+
+const TRIG = new Set(['sin', 'cos', 'tan', 'asin', 'acos', 'atan'])
+
+function usesTrig(expr: Expr, name: string): boolean {
+  if (expr.type === 'call' && TRIG.has(expr.name) && expr.args.some((arg) => freeSymbols(arg).includes(name))) return true
+  if (expr.type === 'add' || expr.type === 'mul' || expr.type === 'call' || expr.type === 'vec') return expr.args.some((arg) => usesTrig(arg, name))
+  if (expr.type === 'mat') return expr.rows.some((row) => row.some((arg) => usesTrig(arg, name)))
+  if (expr.type === 'div') return usesTrig(expr.num, name) || usesTrig(expr.den, name)
+  if (expr.type === 'pow') return usesTrig(expr.base, name) || usesTrig(expr.exp, name)
+  if (expr.type === 'eq') return usesTrig(expr.left, name) || usesTrig(expr.right, name)
+  if (expr.type === 'group') return usesTrig(expr.body, name)
+  if (expr.type === 'caret') return expr.body ? usesTrig(expr.body, name) : false
+  return false
+}
+
+function domainEnds(domain: SearchDomain, angles: AngleMode): { min: number; max: number } {
+  const min = numericConstant(normalize(domain.min, angles), angles)
+  const max = numericConstant(normalize(domain.max, angles), angles)
+  if (min === null || max === null || !(max > min)) throw new MathError('Use a domain such as (0, 2*pi), with the right end greater than the left.')
+  return { min, max }
+}
+
+function boxesFor(names: string[], equations: Expr[], domains: SearchDomain[], angles: AngleMode): { name: string; min: number; max: number }[] {
+  const trig = names.filter((name) => equations.some((equation) => usesTrig(equation, name)))
+  const unnamed = domains.filter((domain) => domain.name === null)
+  if (unnamed.length > 1) throw new MathError('Name each domain, for example solve(eq1, eq2, (theta, 0, 2*pi)).')
+  return names.map((name) => {
+    const named = domains.find((domain) => domain.name === name)
+    if (named) return { name, ...domainEnds(named, angles) }
+    const shared = unnamed[0]
+    if (shared && (trig.length === 0 || trig.includes(name))) return { name, ...domainEnds(shared, angles) }
+    return { name, min: -40, max: 40 }
+  })
+}
+
+function fitsDomains(names: string[], values: number[], domains: SearchDomain[], equations: Expr[], angles: AngleMode): boolean {
+  const boxes = boxesFor(names, equations, domains, angles)
+  return boxes.every((box, index) => {
+    const value = values[index]
+    return value !== undefined && value >= box.min - 1e-6 && value <= box.max + 1e-6
+  })
+}
+
+function solveNumeric(equations: Expr[], domains: SearchDomain[], angles: AngleMode): CasVisual {
+  if (equations.length !== 2) throw new MathError('Use two equations, for example solve(eq1, eq2, (0, 2*pi)).')
+  const zeros = equations.map((equation) => normalize(equationZero(equation), angles))
+  const names = [...new Set(zeros.flatMap((zero) => freeSymbols(zero)))].filter((name) => name !== 'pi' && name !== 'e')
+  if (names.length !== 2) throw new MathError('A system of two equations needs two unknowns.')
+  const boxes = boxesFor(names, equations, domains, angles)
+  const evaluate = (xs: number[]) => {
+    const map = new Map(names.map((name, index) => [name, { type: 'dec' as const, text: String(xs[index] ?? 0), value: xs[index] ?? 0 }]))
+    const values = zeros.map((zero) => numericConstant(substitute(zero, map), angles))
+    if (values.some((value) => value === null || !Number.isFinite(value))) return null
+    return values as number[]
+  }
+  const seeds: { xs: number[]; err: number }[] = []
+  const steps = boxes.map((box) => (box.max - box.min < 20 ? 48 : 16))
+  const count0 = steps[0] ?? 16
+  const count1 = steps[1] ?? 16
+  for (let i = 0; i <= count0; i += 1) {
+    for (let j = 0; j <= count1; j += 1) {
+      const xs = boxes.map((box, index) => box.min + ((box.max - box.min) * (index === 0 ? i : j)) / (steps[index] ?? 1))
+      const value = evaluate(xs)
+      if (!value) continue
+      seeds.push({ xs, err: Math.hypot(value[0] ?? 0, value[1] ?? 0) })
+    }
+  }
+  seeds.sort((a, b) => a.err - b.err)
+  const found: number[][] = []
+  for (const seed of seeds.slice(0, 36)) {
+    const hit = newtonSystem(evaluate, seed.xs, boxes)
+    if (!hit) continue
+    if (found.some((other) => other.every((value, index) => Math.abs(value - (hit[index] ?? 0)) <= 2e-3 * Math.max(1, Math.abs(value))))) continue
+    found.push(hit)
+    if (found.length >= 8) break
+  }
+  if (found.length === 0) throw new MathError('No solution on that domain.')
+  const pieces = found.map((xs) => names.map((name, index) => `${name} = ${plain(shownRoot(xs[index] ?? 0))}`).join(', '))
+  const texPieces = found.map((xs) => names.map((name, index) => `${tex(S(name))} = ${tex(shownRoot(xs[index] ?? 0))}`).join(', '))
+  const where = boxes.map((box) => `${box.name} from ${decimalText(box.min)} to ${decimalText(box.max)}`).join(', ')
+  return { text: pieces.join(' or '), tex: texPieces.join(' \\;\\text{or}\\; '), curves: [], points: [], parametrics: [], arrows: [], warn: `Searched ${where}.` }
+}
+
+function shownRoot(value: number): Expr {
+  const nearest = Math.round(value)
+  if (Math.abs(value - nearest) < 1e-5 && Math.abs(nearest) < 1e9) return R(BigInt(nearest))
+  return { type: 'dec', text: decimalText(value), value }
+}
+
+function newtonSystem(evaluate: (xs: number[]) => number[] | null, start: number[], boxes: { min: number; max: number }[]): number[] | null {
+  let xs = start.slice()
+  for (let step = 0; step < 18; step += 1) {
+    const value = evaluate(xs)
+    if (!value) return null
+    const error = Math.hypot(value[0] ?? 0, value[1] ?? 0)
+    if (error < 1e-8) return insideBox(xs, boxes) ? xs : null
+    const columns: number[][] = []
+    for (let index = 0; index < xs.length; index += 1) {
+      const span = Math.max(1e-4, Math.abs(boxes[index]?.max ?? 1) - (boxes[index]?.min ?? 0))
+      const h = Math.max(1e-6, span * 1e-6)
+      const shifted = xs.slice()
+      shifted[index] = (shifted[index] ?? 0) + h
+      const next = evaluate(shifted)
+      if (!next) return null
+      columns.push(next.map((item, row) => (item - (value[row] ?? 0)) / h))
+    }
+    const delta = solve2(columns[0]?.[0] ?? 0, columns[1]?.[0] ?? 0, columns[0]?.[1] ?? 0, columns[1]?.[1] ?? 0, value[0] ?? 0, value[1] ?? 0)
+    if (!delta) return null
+    let scale = 1
+    let moved = xs
+    for (let damp = 0; damp < 5; damp += 1) {
+      moved = xs.map((item, index) => item - (delta[index] ?? 0) * scale)
+      const trial = evaluate(moved)
+      if (!trial) {
+        scale *= 0.5
+        continue
+      }
+      if (Math.hypot(trial[0] ?? 0, trial[1] ?? 0) <= error * 1.2) break
+      scale *= 0.5
+    }
+    if (moved.some((item) => !Number.isFinite(item) || Math.abs(item) > 1e6)) return null
+    xs = moved
+  }
+  const final = evaluate(xs)
+  if (!final || Math.hypot(final[0] ?? 0, final[1] ?? 0) > 1e-6 || !insideBox(xs, boxes)) return null
+  return xs
+}
+
+function insideBox(xs: number[], boxes: { min: number; max: number }[]): boolean {
+  return xs.every((value, index) => {
+    const box = boxes[index]
+    if (!box) return false
+    const slack = 1e-5 * Math.max(1, box.max - box.min)
+    return value >= box.min - slack && value <= box.max + slack
+  })
+}
+
+function solve2(a: number, b: number, c: number, d: number, fx: number, fy: number): [number, number] | null {
+  const det = a * d - b * c
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null
+  return [(d * fx - b * fy) / det, (a * fy - c * fx) / det]
 }
 
 export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {

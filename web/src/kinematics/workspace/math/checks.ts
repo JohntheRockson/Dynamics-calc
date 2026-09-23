@@ -3,7 +3,7 @@ import { appendMath, emptyDocument, exampleDocument, setMathVisible } from '../d
 import { evaluateDocument } from '../evaluate'
 import { previewTex, validateMath } from './expr'
 import { clipToDomain, sheetsFromCurve } from './extrude'
-import { tickMarks } from '../../ticks'
+import { formatTick, tickMarks } from '../../ticks'
 import { moveMathCursor } from './inputView'
 import { expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, looksLikeMath } from './shortcuts'
@@ -381,6 +381,47 @@ export function runMathChecks(): string[] {
   expect(moveMathCursor(slot, closing, 'up') === slot.indexOf('/'), 'up returns to the numerator')
   const groupedProduct = evaluateDocument(appendMath(emptyDocument(), '(1+2)*3')).blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(groupedProduct?.text.includes('9')), `grouping still multiplies: ${groupedProduct?.text}`)
+
+  expect(formatTick(10, 2) === '10' && formatTick(20, 2) === '20' && formatTick(-10, 2) === '-10', `tick labels keep their zeros: ${formatTick(10, 2)}, ${formatTick(20, 2)}`)
+  expect(formatTick(2, 0.5) === '2' && formatTick(1.5, 0.5) === '1.5', `fractional ticks still trim: ${formatTick(2, 0.5)}`)
+
+  const greekPreview = previewTex('f(sigma) = sigma') ?? ''
+  const greekRow = evaluateDocument(appendMath(emptyDocument(), 'f(theta) = theta^2')).blocks.flatMap((block) => block.rows)[0]
+  expect(greekPreview.startsWith('f\\left(\\sigma\\right)'), `a parameter keeps the greek symbol: ${greekPreview}`)
+  expect(Boolean(greekRow?.tex?.startsWith('f\\left(\\theta\\right)')), `a saved parameter keeps the greek symbol: ${greekRow?.tex}`)
+
+  const singular = evaluateDocument(appendMath(emptyDocument(), 'f(x) = 1/cos(x)^2'))
+  const singularPath = singular.bodies.find((body) => body.role === 'plot')?.path ?? []
+  const pole = Math.PI / 2
+  let beforePole = false
+  let brokeAtPole = false
+  let connectedAcross = false
+  for (const point of singularPath) {
+    const finite = Number.isFinite(point.x) && Number.isFinite(point.y)
+    if (!finite) {
+      if (beforePole) brokeAtPole = true
+      continue
+    }
+    if (point.x < pole) {
+      beforePole = true
+      brokeAtPole = false
+    } else if (beforePole) {
+      connectedAcross = !brokeAtPole
+      break
+    }
+  }
+  expect(beforePole && !connectedAcross, `singular curves break at a pole: before ${beforePole}, connected ${connectedAcross}`)
+
+  const coarse = evaluateDocument(appendMath(emptyDocument(), 'g(x) = sin(x), plotpoints = 20, maxrecursion = 0, exclusions = false'))
+  const coarsePath = coarse.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.y)) ?? []
+  expect(coarsePath.length === 20, `plotpoints sets the sample count: ${coarsePath.length}`)
+
+  const nonlinear = evaluateDocument(appendMath(emptyDocument(), 'solve(10 = sigma*(cos(theta))^2, 5 = sigma*(sin(theta))^2, (0, 2*pi))'))
+  const nonlinearRow = nonlinear.blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(nonlinearRow?.text.includes('15') && nonlinearRow.text.includes('theta') && !nonlinearRow.text.includes('not linear')), `a domain searches a nonlinear system: ${nonlinearRow?.text}`)
+  const missingDomain = evaluateDocument(appendMath(emptyDocument(), 'solve(10 = sigma*(cos(theta))^2, 5 = sigma*(sin(theta))^2)'))
+  const missingRow = missingDomain.blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(missingRow?.text.includes('domain')), `a nonlinear system asks for a domain: ${missingRow?.text}`)
 
   return errors
 }

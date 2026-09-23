@@ -306,7 +306,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         <button type="button" className="btn btn-ghost workspace-clear" aria-expanded={menu} onClick={() => setMenu((current) => !current)}>
           Functions
         </button>
-        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y). Up and down move between the top and bottom of a fraction, and left and right move across. A prime dots the previous symbol, and _ writes a subscript.' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
+        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter adds this calculation. / starts f(x), and // starts f(x, y). Up and down move between the top and bottom of a fraction, and left and right move across. A prime dots the previous symbol, and _ writes a subscript. plotpoints, maxrecursion, and exclusions tune a graph. A domain such as (0, 2*pi) searches a nonlinear system.' : 'Type math, or a statement such as point or circle. / starts a function.')}</p>
       </div>
     </form>
   )
