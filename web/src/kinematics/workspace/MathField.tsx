@@ -88,7 +88,7 @@ export const MathField = forwardRef<MathFieldHandle, {
   const [focused, setFocused] = useState(false)
   const [dismissed, setDismissed] = useState<string | null>(null)
   const [pick, setPick] = useState({ key: '', index: 0, moved: false })
-  const lines = lineViews(value, cursor)
+  const lines = lineViews(value, focused ? cursor : -1)
   const overlay = lines.some((line) => line.tex)
   const liveMath = math || looksLikeMath(value)
   const assist = assistOn && focused && liveMath && dismissed !== value ? assistAt(value, cursor) : null
