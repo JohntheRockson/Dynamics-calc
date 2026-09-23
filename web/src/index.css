@@ -1594,6 +1594,165 @@ textarea.num-input {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.math-assist {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: max-content;
+  min-width: 240px;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.math-assist-signature {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.math-assist-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+}
+.math-assist-param.is-active {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.math-assist-braces {
+  margin-left: 3px;
+  color: #8d9db3;
+}
+.math-assist-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+}
+.math-assist-dim {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+.math-assist-text {
+  margin: 0;
+  color: var(--text-dim);
+}
+.math-assist-text.is-warning {
+  color: var(--accent-2);
+}
+.math-assist-text.is-dim {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.math-assist-example {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.math-assist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 216px;
+  overflow: auto;
+}
+.math-assist-list button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.math-assist-list button.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+}
+.math-assist-label {
+  font-family: var(--font-mono);
+  color: var(--text);
+  white-space: nowrap;
+}
+.math-assist-detail {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.math-assist-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.math-assist-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.math-assist-options li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.math-assist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 420px;
+}
+.math-assist-chips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.math-assist-chips button.is-active {
+  border-color: var(--accent-dim);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+}
+.math-assist-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.math-assist-keys {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-align: right;
+}
+
 .workspace-figure {
   overflow: hidden;
 }

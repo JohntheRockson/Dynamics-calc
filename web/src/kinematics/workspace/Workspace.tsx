@@ -86,6 +86,7 @@ function MathRowEditor({ input, onCommit }: { input: string; onCommit: (value: s
       <MathField
         value={draft}
         label="Edit statement"
+        math
         onValue={setDraft}
         onSubmit={(value) => {
           if (value.trim() === input.trim()) return
