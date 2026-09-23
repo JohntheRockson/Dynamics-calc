@@ -15,14 +15,6 @@ from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from attitude_sim.mrp import quat_to_mrp
-from attitude_sim.plant import principal_moments_and_axes
-from attitude_sim.polhode import (
-    energy_casimir,
-    herpolhode_plane_residual,
-    polhode_regime,
-    polhode_residuals,
-    sample_polhode_intersection,
-)
 from attitude_sim.quaternions import quat_error, quat_to_rotation
 from attitude_sim.scenarios import SCENARIO_TITLES
 
@@ -230,187 +222,6 @@ def plot_env_torque(log, path: Path) -> Path:
     return path
 
 
-def _as_inertia(inertia) -> np.ndarray:
-    if inertia is None:
-        # Same stock smallsat J as SimConfig.default_inertia (avoid importing sim).
-        return np.diag([0.05, 0.06, 0.07])
-    if hasattr(inertia, "inertia"):
-        return np.asarray(inertia.inertia, dtype=float)
-    return np.asarray(inertia, dtype=float).reshape(3, 3)
-
-
-def energy_casimir_from_omega(inertia, omega: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Evaluate plant ``(T, |h|²)`` helpers on a logged body-rate history."""
-    J = _as_inertia(inertia)
-    w = np.asarray(omega, dtype=float).reshape(-1, 3)
-    t = np.empty(len(w), dtype=float)
-    h2 = np.empty(len(w), dtype=float)
-    for k, wk in enumerate(w):
-        t[k], h2[k] = energy_casimir(J, wk)
-    return t, h2
-
-
-def energy_casimir_from_log(log, inertia=None) -> tuple[np.ndarray, np.ndarray]:
-    """Post-process ``(T, |h|²)`` from a SimLab ``SimLog.omega`` (or a polhode traj)."""
-    J = inertia
-    if J is None:
-        J = getattr(log, "inertia", None)
-    stored_t = getattr(log, "T", None)
-    stored_h2 = getattr(log, "h2", None)
-    if stored_t is not None and stored_h2 is not None:
-        return np.asarray(stored_t, dtype=float), np.asarray(stored_h2, dtype=float)
-    return energy_casimir_from_omega(J, log.omega)
-
-
-def plot_polhode(source, path: Path, *, inertia=None) -> Path:
-    """3-D body polhode + optional herpolhode from a traj or logged ``ω``.
-
-    Overlay is the algebraic energy–Casimir intersection through ``ω[0]``
-    (:func:`attitude_sim.polhode.sample_polhode_intersection`).  Closed-loop
-    logs (nonzero ``τ``) leave that curve; the torque-free demo stays on it.
-    """
-    _style()
-    omega = np.asarray(source.omega, dtype=float).reshape(-1, 3)
-    J = inertia if inertia is not None else getattr(source, "inertia", None)
-    J = _as_inertia(J)
-    geom = sample_polhode_intersection(J, omega[0], n=240)
-    regime = polhode_regime(J, omega[0]).value
-    w_I = getattr(source, "omega_inertial", None)
-    if w_I is None:
-        w_I = getattr(source, "omega_I", None)
-    moments, axes = principal_moments_and_axes(J)
-
-    def _equal_3d(ax3, pts: np.ndarray, *, center: np.ndarray | None = None) -> None:
-        xyz = np.asarray(pts, dtype=float).reshape(-1, 3)
-        if center is None:
-            mid = np.zeros(3)
-            span = float(np.max(np.abs(xyz))) + 0.05
-        else:
-            mid = np.asarray(center, dtype=float).reshape(3)
-            span = float(np.max(np.linalg.norm(xyz - mid, axis=1))) + 0.05
-        ax3.set_xlim(mid[0] - span, mid[0] + span)
-        ax3.set_ylim(mid[1] - span, mid[1] + span)
-        ax3.set_zlim(mid[2] - span, mid[2] + span)
-        ax3.set_box_aspect((1, 1, 1))
-        ax3.view_init(elev=22, azim=38)
-
-    fig = plt.figure(figsize=(11.2, 5.2))
-    ax = fig.add_subplot(1, 2, 1, projection="3d")
-    ax.plot(geom[:, 0], geom[:, 1], geom[:, 2], color="#9ecae1", lw=1.0, alpha=0.85, label="intersection")
-    ax.plot(omega[:, 0], omega[:, 1], omega[:, 2], color="#3182bd", lw=1.6, label=r"$\omega(t)$")
-    ax.scatter(*omega[0], color="k", s=28, depthshade=False, label=r"$\omega_0$")
-    scale = 0.45 * float(np.max(np.abs(omega))) + 0.05
-    for i, color in enumerate(("#e45756", "#54a24b", "#4c78a8")):
-        e = axes[:, i] * scale
-        ax.plot([0.0, e[0]], [0.0, e[1]], [0.0, e[2]], color=color, lw=1.2, ls=":")
-    ax.set_xlabel(r"$\omega_x$")
-    ax.set_ylabel(r"$\omega_y$")
-    ax.set_zlabel(r"$\omega_z$")
-    ax.set_title(f"Body polhode  ({regime})")
-    ax.legend(loc="upper left", fontsize=8)
-    _equal_3d(ax, np.vstack([omega, geom]))
-
-    if w_I is not None:
-        w_I = np.asarray(w_I, dtype=float).reshape(-1, 3)
-        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
-        ax2.plot(w_I[:, 0], w_I[:, 1], w_I[:, 2], color="#f58518", lw=1.6, label=r"$\omega_I(t)$")
-        ax2.scatter(*w_I[0], color="k", s=28, depthshade=False, label=r"$\omega_{I,0}$")
-        ax2.set_xlabel(r"$\omega_{I,x}$")
-        ax2.set_ylabel(r"$\omega_{I,y}$")
-        ax2.set_zlabel(r"$\omega_{I,z}$")
-        ax2.set_title("Herpolhode (inertial)")
-        ax2.legend(loc="upper left", fontsize=8)
-        _equal_3d(ax2, w_I, center=np.mean(w_I, axis=0))
-    else:
-        t = np.asarray(getattr(source, "t", np.arange(len(omega))), dtype=float)
-        ax2 = fig.add_subplot(1, 2, 2)
-        for i, lab in enumerate([r"$\omega_x$", r"$\omega_y$", r"$\omega_z$"]):
-            ax2.plot(t, omega[:, i], label=lab)
-        ax2.set_xlabel("t (s)")
-        ax2.set_ylabel("rad/s")
-        ax2.set_title("Body rates")
-        ax2.legend()
-
-    title = _scenario_title(source)
-    fig.suptitle(
-        f"Polhode / herpolhode (post-process)  |  {title}  |  "
-        f"I=({moments[0]:.3g},{moments[1]:.3g},{moments[2]:.3g})",
-        fontsize=12,
-    )
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.86, bottom=0.08, wspace=0.18)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=140)
-    plt.close(fig)
-    return path
-
-
-def plot_energy_casimir(source, path: Path, *, inertia=None) -> Path:
-    """Energy and Casimir time series plus residuals vs the first sample.
-
-    Uses :func:`attitude_sim.polhode.energy_casimir` / ``polhode_residuals``
-    (and the invariable-plane residual when inertial ``ω`` / ``h`` exist).
-    """
-    _style()
-    t = np.asarray(source.t, dtype=float)
-    omega = np.asarray(source.omega, dtype=float).reshape(-1, 3)
-    J = inertia if inertia is not None else getattr(source, "inertia", None)
-    J = _as_inertia(J)
-    energy, h2 = energy_casimir_from_log(source, J)
-    r_t = np.empty(len(omega), dtype=float)
-    r_h = np.empty(len(omega), dtype=float)
-    t0 = float(energy[0]) if energy.size else 0.0
-    h20 = float(h2[0]) if h2.size else 0.0
-    for k, wk in enumerate(omega):
-        r_t[k], r_h[k] = polhode_residuals(J, wk, t0, h20)
-    plane = None
-    w_I = getattr(source, "omega_inertial", None)
-    h_I = getattr(source, "h_inertial", None)
-    if w_I is not None and h_I is not None:
-        w_I = np.asarray(w_I, dtype=float).reshape(-1, 3)
-        h_I = np.asarray(h_I, dtype=float).reshape(-1, 3)
-        plane = np.array(
-            [herpolhode_plane_residual(w_I[k], h_I[k], float(energy[k])) for k in range(len(t))]
-        )
-
-    fig, axes = plt.subplots(3, 1, figsize=(8.6, 8.4), constrained_layout=True, sharex=True)
-    ax = axes[0]
-    ax.plot(t, energy, color="#4c78a8", label=r"$T=\frac{1}{2}\omega\cdot J\omega$")
-    if energy.size and abs(t0) > 0.0:
-        ax.axhline(t0, color="#4c78a8", ls="--", lw=0.9, alpha=0.7)
-    ax.set_ylabel("J")
-    ax.set_title("Rotational kinetic energy")
-    ax.legend(loc="best")
-
-    ax = axes[1]
-    ax.plot(t, h2, color="#f58518", label=r"$|h|^2=|J\omega|^2$")
-    if h2.size and abs(h20) > 0.0:
-        ax.axhline(h20, color="#f58518", ls="--", lw=0.9, alpha=0.7)
-    ax.set_ylabel(r"$(\mathrm{N\cdot m\cdot s})^{2}$")
-    ax.set_title("Lie–Poisson Casimir")
-    ax.legend(loc="best")
-
-    ax = axes[2]
-    ax.plot(t, r_t, color="#4c78a8", label=r"$r_T=\omega^T J\omega-2T_0$")
-    ax.plot(t, r_h, color="#f58518", label=r"$r_h=|J\omega|^2-|h|_0^2$")
-    if plane is not None:
-        ax.plot(t, plane, color="#54a24b", ls="--", label=r"$r_{plane}=\omega_I\cdot h_I-2T$")
-    ax.set_ylabel("residual")
-    ax.set_xlabel("t (s)")
-    ax.set_title("First-integral residuals vs t=0 (torque-free ~ RK4 truncation)")
-    ax.legend(loc="best")
-
-    fig.suptitle(
-        f"Energy–Casimir (post-process)  |  {_scenario_title(source)}",
-        fontsize=12,
-    )
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=140)
-    plt.close(fig)
-    return path
-
-
 MC_ERROR_HIST_NAME = "mc_final_att_error_hist.png"
 MC_SETTLE_SCATTER_NAME = "mc_settle_vs_noise.png"
 
@@ -435,16 +246,11 @@ def _trial_failed(trial) -> bool:
 def _mc_title(summary) -> str:
     controller = getattr(summary, "controller", "?")
     estimator = getattr(summary, "estimator", "?")
-    scenario = getattr(summary, "scenario", "slew")
     n = getattr(summary, "n", len(getattr(summary, "trials", []) or []))
     n_fail = getattr(summary, "n_fail", 0)
     t_final = getattr(summary, "t_final", float("nan"))
     t_txt = f"{t_final:g}" if np.isfinite(float(t_final)) else "?"
-    env = "  env-on" if bool(getattr(summary, "env_on", False)) else ""
-    return (
-        f"Monte Carlo {scenario}  N={n}  fail={n_fail}  "
-        f"{controller}+{estimator}{env}  t_final={t_txt} s"
-    )
+    return f"Monte Carlo slew  N={n}  fail={n_fail}  {controller}+{estimator}  t_final={t_txt} s"
 
 
 def plot_mc_error_histogram(summary, path: Path) -> Path:

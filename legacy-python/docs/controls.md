@@ -224,17 +224,7 @@ python -m attitude_sim --scenario hold --estimator truth --no-gif
 
 # principal-axis slew; default controller is LQR
 python -m attitude_sim --scenario eigenaxis --no-gif
-python -m attitude_sim --scenario polhode --no-gif
 python -m attitude_sim --list-scenarios
-```
-
-`--scenario polhode` is open-loop (plant `sample_herpolhode`, no PID/LQR).
-Monte Carlo may sample the closed-loop names:
-
-```bash
-python -m attitude_sim.monte_carlo --n 20 --scenario eigenaxis --estimator truth
-python -m attitude_sim.monte_carlo --n 20 --scenario hold --estimator truth
-python -m attitude_sim.monte_carlo --n 20 --scenario slew --env --estimator truth
 ```
 
 `--tau-dist` is a constant body-frame disturbance added to the plant only; the

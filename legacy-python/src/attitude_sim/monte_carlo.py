@@ -1,14 +1,10 @@
-"""Monte Carlo / noise-sweep harness for closed-loop SimLab scenarios.
+"""Monte Carlo / noise-sweep harness for closed-loop slews.
 
-Each trial is a stock ``run_slew`` with bounded randomization of initial
-attitude/rate, sensor noise seed and scale, and optional mild
-principal-inertia perturbation.  Default scenario is the rest-to-rest
-**slew**.  ``hold`` / ``eigenaxis`` and opt-in environmental models
-(``--env``, aero/SRP flags) reuse the same ``SimConfig`` path.  Detumble
-and the torque-free ``polhode`` demo stay single-run SimLab checkouts.
-
-Plant, controllers, and estimators are not rewritten — this module only
-samples ``SimConfig`` and aggregates metrics.
+Each trial is a stock SimLab rest-to-rest slew (``run_slew``) with bounded
+randomization of initial attitude/rate, sensor noise seed and scale, and
+optional mild principal-inertia perturbation.  Plant, controllers, and
+estimators are not rewritten — this module only samples ``SimConfig`` and
+aggregates metrics.
 """
 
 from __future__ import annotations
@@ -26,13 +22,6 @@ from attitude_sim.actuators import parse_tau_max
 from attitude_sim.controls import cubesat_gain_report
 from attitude_sim.plant import inertia_from_principal, principal_moments_and_axes
 from attitude_sim.quaternions import axis_angle_to_quat, geodesic_angle
-from attitude_sim.scenarios import (
-    MC_SCENARIOS,
-    default_angle_deg,
-    default_controller,
-    default_t_final,
-    require_mc_scenario,
-)
 from attitude_sim.sim import (
     SimConfig,
     SimLog,
@@ -54,7 +43,6 @@ class MonteCarloConfig:
 
     n: int = 50
     seed: int = 0
-    scenario: str = "slew"
     controller: str = "pid"
     estimator: str = "mekf"
     dt: float = 0.01
@@ -81,12 +69,6 @@ class MonteCarloConfig:
     gyro_sigma_u: float | None = None
     mag_sigma: float | None = None
     sun_sigma: float | None = None
-    use_env: bool = False
-    no_env: bool = False
-    gravity_gradient: bool = False
-    residual_dipole: bool = False
-    aerodynamic: bool = False
-    srp: bool = False
     actuator_tau_max: float | np.ndarray | None = None
     rw_inertia: float | np.ndarray | None = None
     rw_h_max: float | np.ndarray | None = None
@@ -110,7 +92,6 @@ class TrialResult:
     fail_reason: str = ""
     gain_scale: float = 1.0
     tau_dist_norm: float = 0.0
-    env_on: bool = False
     peak_rate: float = float("nan")
     sat_fraction: float = 0.0
 
@@ -140,8 +121,6 @@ class MonteCarloSummary:
     estimator: str
     t_final: float
     settle_deg: float
-    scenario: str = "slew"
-    env_on: bool = False
     peak_rate_max: float = float("nan")
     peak_rate_mean: float = float("nan")
     sat_fraction_mean: float = 0.0
@@ -312,17 +291,12 @@ def _trial_seed(master: int, trial: int) -> int:
     return int((int(master) + 10007 * (int(trial) + 1)) % (2**31 - 1))
 
 
-def _mc_env_on(cfg: SimConfig) -> bool:
-    return bool(cfg.gravity_gradient or cfg.residual_dipole or cfg.aerodynamic or cfg.srp)
-
-
 def sample_trial_config(
     mc: MonteCarloConfig,
     trial: int,
     rng: np.random.Generator,
 ) -> tuple[SimConfig, dict[str, float]]:
-    """Draw one randomized closed-loop ``SimConfig`` plus the sampled extras."""
-    name = require_mc_scenario(mc.scenario)
+    """Draw one randomized slew ``SimConfig`` plus the sampled extras."""
     q0 = sample_bounded_attitude(rng, mc.q0_max_deg)
     omega0 = rng.uniform(-mc.omega0_max, mc.omega0_max, size=3)
     noise_scale = log_uniform(rng, mc.noise_scale_min, mc.noise_scale_max)
@@ -330,7 +304,7 @@ def sample_trial_config(
     trial_seed = _trial_seed(mc.seed, trial)
 
     cfg = make_scenario_config(
-        name,
+        "slew",
         dt=mc.dt,
         t_final=mc.t_final,
         controller=mc.controller,
@@ -345,12 +319,6 @@ def sample_trial_config(
         seed=trial_seed,
         plot=False,
         gif=False,
-        use_env=True if mc.use_env else None,
-        no_env=mc.no_env,
-        gravity_gradient=mc.gravity_gradient,
-        residual_dipole=mc.residual_dipole,
-        aerodynamic=mc.aerodynamic,
-        srp=mc.srp,
     )
     cfg.q0 = q0
     cfg.omega0 = np.asarray(omega0, dtype=float)
@@ -398,7 +366,6 @@ def sample_trial_config(
         "cubesat_wn": float(report.wn),
         "cubesat_recommended_wn": float(report.recommended_wn),
         "cubesat_kp_00": float(report.kp[0, 0]),
-        "env_on": 1.0 if _mc_env_on(cfg) else 0.0,
     }
     return cfg, extras
 
@@ -432,7 +399,6 @@ def score_trial(
         noise_scale=extras["noise_scale"],
         gain_scale=float(extras.get("gain_scale", 1.0)),
         tau_dist_norm=float(extras.get("tau_dist_norm", 0.0)),
-        env_on=bool(extras.get("env_on", 0.0)),
         peak_rate=float(log.peak_rate),
         sat_fraction=float(log.sat_fraction),
         failed=failed,
@@ -476,14 +442,12 @@ def summarize(mc: MonteCarloConfig, trials: list[TrialResult]) -> MonteCarloSumm
         estimator=mc.estimator,
         t_final=mc.t_final,
         settle_deg=mc.settle_deg,
-        scenario=require_mc_scenario(mc.scenario),
-        env_on=any(t.env_on for t in trials),
         trials=trials,
     )
 
 
 def run_monte_carlo(mc: MonteCarloConfig | None = None) -> MonteCarloSummary:
-    """Run ``mc.n`` closed-loop trials and return aggregated metrics."""
+    """Run ``mc.n`` closed-loop slews and return aggregated metrics."""
     mc = mc if mc is not None else MonteCarloConfig()
     if mc.n < 1:
         raise ValueError("n must be >= 1")
@@ -529,10 +493,8 @@ def format_summary(summary: MonteCarloSummary) -> str:
     return "\n".join(
         [
             (
-                f"Monte Carlo {getattr(summary, 'scenario', 'slew')}  N={summary.n}  "
-                f"controller={summary.controller}  estimator={summary.estimator}  "
-                f"t_final={summary.t_final:.3g} s"
-                f"{'  env-on' if getattr(summary, 'env_on', False) else ''}"
+                f"Monte Carlo slew  N={summary.n}  controller={summary.controller}  "
+                f"estimator={summary.estimator}  t_final={summary.t_final:.3g} s"
             ),
             (
                 f"failures: {summary.n_fail}/{summary.n}  "
@@ -628,7 +590,6 @@ def trial_from_row(row: dict) -> TrialResult:
         tau_dist_norm=_as_float(row.get("tau_dist_norm"))
         if row.get("tau_dist_norm") not in (None, "")
         else 0.0,
-        env_on=bool(row.get("env_on", False)),
         peak_rate=_as_float(row.get("peak_rate"))
         if row.get("peak_rate") not in (None, "")
         else float("nan"),
@@ -667,8 +628,6 @@ def summary_from_dict(payload: dict) -> MonteCarloSummary:
         estimator=str(payload.get("estimator") or ""),
         t_final=_as_float(payload.get("t_final")),
         settle_deg=_as_float(payload.get("settle_deg")),
-        scenario=str(payload.get("scenario") or "slew"),
-        env_on=bool(payload.get("env_on", False)),
         trials=trials,
     )
 
@@ -681,70 +640,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m attitude_sim.monte_carlo",
         description=(
-            "Monte Carlo robustness sweep of closed-loop SimLab scenarios "
-            "(randomized IC, sensor noise, optional inertia / gain / disturbance / env). "
-            "Default is slew; --scenario hold|eigenaxis and --env are opt-in. "
-            "Detumble and --scenario polhode stay single-run SimLab checkouts."
+            "Monte Carlo robustness sweep of closed-loop slews "
+            "(randomized IC, sensor noise, optional inertia / gain / disturbance). "
+            "Slew-only: detumble is a SimLab scenario, not part of this harness."
         ),
     )
     p.add_argument("--n", type=int, default=50, help="number of trials")
     p.add_argument("--seed", type=int, default=0, help="master RNG seed")
-    p.add_argument(
-        "--scenario",
-        choices=MC_SCENARIOS,
-        default="slew",
-        help="closed-loop pack name (default: slew; hold uses env unless --no-env)",
-    )
-    p.add_argument(
-        "--controller",
-        choices=("pid", "lqr"),
-        default=None,
-        help="feedback law (default: pid, or lqr for --scenario eigenaxis)",
-    )
+    p.add_argument("--controller", choices=("pid", "lqr"), default="pid")
     p.add_argument("--estimator", choices=("truth", "mekf", "mahony"), default="mekf")
-    p.add_argument(
-        "--t-final",
-        type=float,
-        default=None,
-        help="per-trial duration (s); default 40 slew / 30 hold / 20 eigenaxis",
-    )
+    p.add_argument("--t-final", type=float, default=40.0, help="per-trial duration (s)")
     p.add_argument("--dt", type=float, default=0.01, help="sample / RK4 step (s)")
-    p.add_argument(
-        "--angle-deg",
-        type=float,
-        default=None,
-        help="commanded principal rotation (deg); default 75 slew / 30 eigenaxis",
-    )
-    p.add_argument(
-        "--env",
-        action="store_true",
-        help="enable GG + residual-dipole EnvironmentalTorques on each trial (hold is on by default)",
-    )
-    p.add_argument(
-        "--no-env",
-        action="store_true",
-        help="disable GG/dipole (overrides hold / --env / --gravity-gradient / --residual-dipole)",
-    )
-    p.add_argument(
-        "--gravity-gradient",
-        action="store_true",
-        help="opt-in gravity-gradient model on every trial (default: off except hold / --env)",
-    )
-    p.add_argument(
-        "--residual-dipole",
-        action="store_true",
-        help="opt-in residual-dipole model on every trial (default: off except hold / --env)",
-    )
-    p.add_argument(
-        "--aerodynamic",
-        action="store_true",
-        help="opt-in aero model on every trial (default: off)",
-    )
-    p.add_argument(
-        "--srp",
-        action="store_true",
-        help="opt-in SRP model on every trial (default: off)",
-    )
+    p.add_argument("--angle-deg", type=float, default=75.0, help="commanded slew (deg)")
     p.add_argument(
         "--q0-max-deg",
         type=float,
@@ -876,20 +783,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
-    name = require_mc_scenario(args.scenario)
-    controller = args.controller if args.controller is not None else default_controller(name)
-    t_final = float(args.t_final) if args.t_final is not None else default_t_final(name)
-    angle = default_angle_deg(name, args.angle_deg)
     if args.rw_sat_stress:
         mc = rw_saturation_config(
             n=args.n,
             seed=args.seed,
-            scenario=name,
-            controller=controller,
+            controller=args.controller,
             estimator=args.estimator,
             dt=args.dt,
-            t_final=t_final,
-            angle_deg=angle,
+            t_final=args.t_final,
+            angle_deg=args.angle_deg,
             q0_max_deg=args.q0_max_deg,
             omega0_max=args.omega0_max,
             inertia_frac=args.inertia_frac,
@@ -901,12 +803,6 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
             gyro_sigma_u=args.gyro_sigma_u,
             mag_sigma=args.mag_sigma,
             sun_sigma=args.sun_sigma,
-            use_env=bool(args.env),
-            no_env=bool(args.no_env),
-            gravity_gradient=bool(args.gravity_gradient),
-            residual_dipole=bool(args.residual_dipole),
-            aerodynamic=bool(args.aerodynamic),
-            srp=bool(args.srp),
         )
         # Keep the noisy-sensor / disturbance defaults unless the caller
         # moved the noise-scale bounds away from the parser defaults.
@@ -919,12 +815,11 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
         mc = MonteCarloConfig(
             n=args.n,
             seed=args.seed,
-            scenario=name,
-            controller=controller,
+            controller=args.controller,
             estimator=args.estimator,
             dt=args.dt,
-            t_final=t_final,
-            angle_deg=angle,
+            t_final=args.t_final,
+            angle_deg=args.angle_deg,
             q0_max_deg=args.q0_max_deg,
             omega0_max=args.omega0_max,
             noise_scale_min=args.noise_scale_min,
@@ -939,12 +834,6 @@ def config_from_args(args: argparse.Namespace) -> MonteCarloConfig:
             gyro_sigma_u=args.gyro_sigma_u,
             mag_sigma=args.mag_sigma,
             sun_sigma=args.sun_sigma,
-            use_env=bool(args.env),
-            no_env=bool(args.no_env),
-            gravity_gradient=bool(args.gravity_gradient),
-            residual_dipole=bool(args.residual_dipole),
-            aerodynamic=bool(args.aerodynamic),
-            srp=bool(args.srp),
         )
     if args.actuator_tau_max is not None:
         mc.actuator_tau_max = parse_tau_max(args.actuator_tau_max, "--actuator-tau-max")

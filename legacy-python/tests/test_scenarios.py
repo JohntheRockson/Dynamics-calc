@@ -7,18 +7,14 @@ import pytest
 
 from attitude_sim.controls import PID_WN, default_cubesat_inertia
 from attitude_sim.plots import attitude_error_mrp, mrp_error_from_log
-from attitude_sim.polhode import polhode_regime, polhode_residuals
 from attitude_sim.quaternions import geodesic_angle, quat_error
 from attitude_sim.scenarios import (
     EIGENAXIS_ANGLE_DEG,
     EIGENAXIS_AXIS,
-    MC_SCENARIOS,
-    POLHODE_OMEGA0,
     SCENARIOS,
     default_controller,
     default_t_final,
     make_hold_environmental_torques,
-    require_mc_scenario,
     resolve_controller,
     resolve_use_env,
     scenario_catalog_text,
@@ -36,13 +32,11 @@ def test_scenario_cubesat_gains_match_stock_helpers():
 
 
 def test_scenario_names_include_hold_and_eigenaxis():
-    assert SCENARIOS == ("slew", "detumble", "hold", "eigenaxis", "polhode")
+    assert SCENARIOS == ("slew", "detumble", "hold", "eigenaxis")
     assert default_controller("hold") == "pid"
     assert default_controller("eigenaxis") == "lqr"
-    assert default_controller("polhode") == "none"
     assert default_t_final("hold") == 30.0
     assert default_t_final("eigenaxis") == 20.0
-    assert default_t_final("polhode") == 15.0
     assert resolve_controller("eigenaxis", None) == "lqr"
     assert resolve_controller("eigenaxis", "pid") == "pid"
     assert resolve_controller("hold", "lqr") == "lqr"
@@ -52,8 +46,7 @@ def test_catalog_lists_all_named_scenarios():
     text = scenario_catalog_text()
     for name in SCENARIOS:
         assert name in text
-    assert "polhode" in text
-    assert "hold|eigenaxis" in text or "opt-in" in text.lower()
+    assert "slew-only" in text
 
 
 def test_hold_preset_identity_and_env_torques():
@@ -193,67 +186,6 @@ def test_hold_env_factory_matches_preset():
     # Same models; bound orbits may differ by arg-of-latitude, but both are millinewton-scale.
     assert np.linalg.norm(tau_a) > 1e-5
     assert np.linalg.norm(tau_b) > 1e-5
-
-
-def test_polhode_preset_is_torque_free_open_loop():
-    cfg = make_scenario_config("polhode", plot=False, gif=False)
-    np.testing.assert_allclose(cfg.omega0, POLHODE_OMEGA0)
-    np.testing.assert_allclose(cfg.q0, [1.0, 0.0, 0.0, 0.0])
-    assert cfg.controller == "none"
-    assert cfg.estimator == "truth"
-    assert cfg.t_final == 15.0
-    assert cfg.polhode_plot is True
-    assert cfg.gravity_gradient is False
-    assert cfg.residual_dipole is False
-    assert cfg.aerodynamic is False
-    assert cfg.srp is False
-    assert make_sim_disturbances(cfg) is None
-    # Env / τ_d flags cannot break the torque-free contract.
-    forced = make_scenario_config(
-        "polhode",
-        plot=False,
-        gif=False,
-        env_flag=True,
-        gravity_gradient=True,
-        aerodynamic=True,
-        srp=True,
-        tau_dist=np.array([0.01, 0.0, 0.0]),
-    )
-    assert forced.gravity_gradient is False
-    np.testing.assert_allclose(forced.tau_dist, 0.0)
-    assert make_sim_disturbances(forced) is None
-
-
-def test_run_polhode_conserves_energy_casimir_via_plant_helper():
-    log = run_slew(
-        make_scenario_config(
-            "polhode",
-            t_final=2.0,
-            dt=0.01,
-            plot=False,
-            gif=False,
-        )
-    )
-    assert log.scenario == "polhode"
-    assert log.controller == "none"
-    assert log.estimator == "truth"
-    np.testing.assert_allclose(log.tau, 0.0, atol=0.0)
-    assert log.T is not None and log.h2 is not None
-    t0, h20 = float(log.T[0]), float(log.h2[0])
-    r_t, r_h = polhode_residuals(log.inertia, log.omega[-1], t0, h20)
-    assert abs(r_t) / max(abs(2.0 * t0), 1e-16) < 1e-8
-    assert abs(r_h) / max(abs(h20), 1e-16) < 1e-8
-    np.testing.assert_allclose(np.linalg.norm(log.q, axis=1), 1.0, atol=1e-12)
-    assert polhode_regime(log.inertia, log.omega[0]).value == "around_min"
-
-
-def test_mc_scenario_names_reject_polhode_and_detumble():
-    assert MC_SCENARIOS == ("slew", "hold", "eigenaxis")
-    assert require_mc_scenario("hold") == "hold"
-    with pytest.raises(ValueError, match="not closed-loop"):
-        require_mc_scenario("polhode")
-    with pytest.raises(ValueError, match="not closed-loop"):
-        require_mc_scenario("detumble")
 
 
 def test_resolve_use_env_precedence():

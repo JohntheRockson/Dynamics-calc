@@ -34,7 +34,6 @@ def test_parser_defaults_to_slew():
     assert args.env is False
     assert args.no_env is False
     assert args.mrp_plot is False
-    assert args.polhode_plot is False
     assert args.list_scenarios is False
     assert args.gyro_sigma_v is None
     assert args.gyro_sigma_u is None
@@ -92,9 +91,6 @@ def test_parser_hold_eigenaxis_and_env_flags():
     assert eigen.scenario == "eigenaxis"
     assert eigen.env
     assert eigen.angle_deg == 12.0
-    polh = build_parser().parse_args(["--scenario", "polhode", "--polhode-plot"])
-    assert polh.scenario == "polhode"
-    assert polh.polhode_plot
 
 
 def test_make_scenario_config_stems():
@@ -102,14 +98,10 @@ def test_make_scenario_config_stems():
     det = make_scenario_config("detumble", plot=False, gif=False)
     hold = make_scenario_config("hold", plot=False, gif=False)
     eigen = make_scenario_config("eigenaxis", plot=False, gif=False)
-    polh = make_scenario_config("polhode", plot=False, gif=False)
     assert slew.artifact_stem == "slew"
     assert det.artifact_stem == "detumble"
     assert hold.artifact_stem == "hold"
     assert eigen.artifact_stem == "eigenaxis"
-    assert polh.artifact_stem == "polhode"
-    assert polh.estimator == "truth"
-    assert polh.polhode_plot is True
     assert abs(det.omega0).max() > 0.2
     assert slew.coarse_init is False
     assert slew.coarse_init_method == "triad"
@@ -190,7 +182,6 @@ def test_main_both_scenarios_smoke():
     assert main(["--scenario", "detumble", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
     assert main(["--scenario", "hold", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
     assert main(["--scenario", "eigenaxis", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
-    assert main(["--scenario", "polhode", "--t-final", "0.05", "--no-plot", "--no-gif"]) == 0
 
 
 def test_main_list_scenarios():
@@ -328,23 +319,6 @@ def test_main_env_and_mrp_cli_smoke(tmp_path):
     )
     assert (tmp_path / "hold_off" / "hold_summary.png").is_file()
     assert not (tmp_path / "hold_off" / "hold_env_torque.png").exists()
-    assert (
-        main(
-            [
-                "--scenario",
-                "polhode",
-                "--t-final",
-                "0.12",
-                "--no-gif",
-                "--out-dir",
-                str(tmp_path / "polhode"),
-            ]
-        )
-        == 0
-    )
-    assert (tmp_path / "polhode" / "polhode_summary.png").is_file()
-    assert (tmp_path / "polhode" / "polhode_polhode.png").is_file()
-    assert (tmp_path / "polhode" / "polhode_casimir.png").is_file()
 
 
 def test_main_rejects_bad_tau_dist():
