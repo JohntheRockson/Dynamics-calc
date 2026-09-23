@@ -1548,19 +1548,49 @@ textarea.num-input {
   z-index: 6;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: 8px;
+  padding: 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-  max-height: 280px;
+  max-height: min(440px, 62vh);
+}
+.math-menu-rule {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.math-menu-rule code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 0 4px;
+  white-space: nowrap;
 }
 .math-menu-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
-.math-menu-tabs button,
+.math-menu-tabs button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.math-menu-tabs button:hover {
+  color: var(--text);
+}
+.math-menu-tabs button.is-on,
 .workspace-tools button[aria-pressed='true'] {
   border-color: rgba(90, 168, 255, 0.45);
   background: rgba(90, 168, 255, 0.16);
@@ -1572,26 +1602,62 @@ textarea.num-input {
   padding: 0;
   overflow: auto;
 }
-.math-menu li button {
+.math-menu li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 3px 0 5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.math-menu li:last-child {
+  border-bottom: 0;
+}
+.math-menu-item {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   width: 100%;
   text-align: left;
   gap: 2px;
-  padding: 6px 8px;
+  padding: 5px 8px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  font: inherit;
 }
-.math-menu li button span:last-child {
-  color: var(--text-dim);
-  font-size: 11px;
-}
-.math-menu li button:hover {
+.math-menu-item:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+.math-menu-signature {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.math-menu-settings {
+  margin-left: 2px;
+  color: #8d9db3;
+}
+.math-menu-summary {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.math-menu-example {
+  margin-left: 4px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.math-menu-example:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .math-assist {
