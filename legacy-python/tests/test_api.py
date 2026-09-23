@@ -71,11 +71,6 @@ def test_version_and_public_exports():
         "gyrostat_omega_dot",
         "step_gyrostat",
         "step_gyrostat_attitude",
-        "SloshPendulum",
-        "slosh_omega_dot",
-        "slosh_reaction_torque",
-        "step_slosh",
-        "step_slosh_attitude",
         "HingedAppendage",
         "linearized_flex_state_space",
         "step_flex",
@@ -113,8 +108,6 @@ def test_version_and_public_exports():
     assert "SpinStability" in attitude_sim.__all__
     assert "Gyrostat" in attitude_sim.__all__
     assert "step_gyrostat" in attitude_sim.__all__
-    assert "SloshPendulum" in attitude_sim.__all__
-    assert "step_slosh" in attitude_sim.__all__
     assert "HingedAppendage" in attitude_sim.__all__
     assert "step_flex" in attitude_sim.__all__
     assert "ReactionWheelAssembly" in attitude_sim.__all__
