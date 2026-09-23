@@ -19,6 +19,8 @@ import {
   type Statement,
   type WorkspaceDocument,
 } from './document'
+import { compileMath, type CurvePlot, type PlotWindow, type SurfacePlot } from './math/eval'
+import type { AngleMode } from './math/expr'
 
 export interface RowModel {
   id: string
@@ -26,8 +28,20 @@ export interface RowModel {
   label: string
   text: string
   tex: string | null
-  source: 'given' | 'solved'
+  source: 'given' | 'solved' | 'error'
   formula: string | null
+  /** Set when this row draws a graph. */
+  plotKind?: 'curve' | 'surface' | null
+  visible?: boolean
+  /** Plain text is kept for checks. Hide it when TeX already shows the same line. */
+  showText?: boolean
+  /** The line the user typed, when this row came from the math console. */
+  input?: string
+  exactTex?: string | null
+  exactText?: string | null
+  approxTex?: string | null
+  approxText?: string | null
+  preferDecimal?: boolean
 }
 
 export interface BlockModel {
@@ -47,7 +61,26 @@ export interface FigureBody {
   index: number
   dashed?: boolean
   hideMarker?: boolean
+  hideStroke?: boolean
+  arrow?: boolean
+  shade?: { from: number; to: number }
+  along?: 'x' | 'y'
   velocity?: { x: number; y: number; z: number }
+  role?: 'plot'
+  /** Resample a math curve across the window that is on screen. */
+  sample?: (window: PlotWindow) => { x: number; y: number; z: number }[]
+  statementId?: string
+}
+
+export interface FigureSurface {
+  label: string
+  color: string
+  grid: { x: number; y: number; z: number }[][]
+  sheets?: { x: number; y: number; z: number }[][][]
+  /** A swept curve keeps one color. A height graph blends from low to high. */
+  flat?: boolean
+  /** Resample a math surface when the 3D window changes. */
+  sample?: (window: PlotWindow) => { x: number; y: number; z: number }[][][]
 }
 
 export interface WorkspaceView {
@@ -56,6 +89,7 @@ export interface WorkspaceView {
   fitKey: string
   blocks: BlockModel[]
   bodies: FigureBody[]
+  surfaces: FigureSurface[]
 }
 
 interface Sample {
@@ -110,6 +144,8 @@ interface RelativeModel {
 export interface CompiledDocument {
   points: PointModel[]
   relatives: RelativeModel[]
+  mathRows: RowModel[]
+  plots: Array<CurvePlot | SurfacePlot>
   dimension: 2 | 3
   duration: number
   fitKey: string
@@ -120,6 +156,11 @@ const TRACE_STEPS = 180
 
 function isSolverKey(key: PropertyKey): key is Extract<PropertyKey, Qty> {
   return key !== 'z' && key !== 'vz' && key !== 'az'
+}
+
+function surfaceHasFiniteZ(plot: SurfacePlot): boolean {
+  const sheets = plot.sheets.length > 0 ? plot.sheets : [plot.grid]
+  return sheets.some((grid) => grid.some((row) => row.some((point) => Number.isFinite(point.z))))
 }
 
 function nearlyEqual(a: number, b: number): boolean {
@@ -292,7 +333,7 @@ function circleGuide(motion: Motion): { x: number; y: number; z: number }[] | nu
   return pts
 }
 
-export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
+export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad'): CompiledDocument {
   const points: PointModel[] = []
   for (const statement of doc.statements) {
     if (statement.type !== 'point') continue
@@ -322,10 +363,31 @@ export function compileDocument(doc: WorkspaceDocument): CompiledDocument {
   const relatives: RelativeModel[] = doc.statements
     .filter((s): s is Extract<Statement, { type: 'relative' }> => s.type === 'relative')
     .map((s) => ({ id: s.id, from: s.from, to: s.to }))
+  const math = compileMath(doc.statements, angles)
+  const mathRows: RowModel[] = math.rows.map((row) => ({
+    id: row.statementId,
+    statementId: row.statementId,
+    label: row.label,
+    text: row.text,
+    tex: row.tex,
+    source: row.tex ? (row.plotKind ? 'given' : 'solved') : 'error',
+    formula: null,
+    plotKind: row.plotKind,
+    visible: row.visible,
+    showText: row.plotKind ? Boolean(row.warn) : !row.tex,
+    input: row.input,
+    exactTex: row.exactTex,
+    exactText: row.exactText,
+    approxTex: row.approxTex,
+    approxText: row.approxText,
+    preferDecimal: row.preferDecimal,
+  }))
   const duration = points.reduce((max, point) => Math.max(max, point.simulate ?? 0), 0)
-  const dimension: 2 | 3 = points.some((point) => point.hasZ) ? 3 : 2
-  const fitKey = `${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}`
-  return { points, relatives, dimension, duration, fitKey }
+  const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && surfaceHasFiniteZ(plot))
+  const spaceCurve = math.plots.some((plot) => plot.kind === 'curve' && plot.visible && plot.path.some((point) => Number.isFinite(point.z) && Math.abs(point.z) > 1e-6))
+  const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible || spaceCurve ? 3 : 2
+  const fitKey = `${angles}:${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
+  return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey }
 }
 
 function knownsAt(point: PointModel, time: number): Partial<Record<Qty, number>> {
@@ -544,11 +606,27 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
     blocks.push({ id: relative.id, title: `${relative.from} relative to ${relative.to}`, color, rows, note, removeId: relative.id })
   }
 
-  return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies }
+  if (compiled.mathRows.length > 0) {
+    blocks.push({ id: 'math', title: 'Math', color: '#59d67f', rows: compiled.mathRows, note: null, removeId: '' })
+  }
+
+  for (const plot of compiled.plots) {
+    if (!plot.visible || plot.kind !== 'curve') continue
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, dashed: plot.dashed, hideMarker: !plot.marker, hideStroke: plot.hideStroke, arrow: plot.arrow, shade: plot.shade, along: plot.along, role: 'plot', sample: plot.sample, statementId: plot.statementId })
+  }
+
+  const surfaces: FigureSurface[] = []
+  for (const plot of compiled.plots) {
+    if (!plot.visible || plot.kind !== 'surface') continue
+    if (!surfaceHasFiniteZ(plot)) continue
+    surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid, sheets: plot.sheets, sample: plot.sample })
+  }
+
+  return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces }
 }
 
-export function evaluateDocument(doc: WorkspaceDocument, time = 0): WorkspaceView {
-  return viewAt(compileDocument(doc), time)
+export function evaluateDocument(doc: WorkspaceDocument, time = 0, angles: AngleMode = 'rad'): WorkspaceView {
+  return viewAt(compileDocument(doc, angles), time)
 }
 
 export function runWorkspaceChecks(): string[] {

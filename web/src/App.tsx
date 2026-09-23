@@ -42,7 +42,7 @@ export default function App() {
       <p className="footer-note">
         {section === 'attitude'
           ? "Rust engine (`engine/`) cross-validated against the original Python reference (`legacy-python/`) — see the README for scope and parity notes."
-          : 'Workspace: type a statement on the left, and the figure on the right is 2D or 3D, depending on the problem. Solver: 1D particle and 2D projectile unknowns from the values you know.'}
+          : 'Workspace: type math or a statement on the left. Results stay in the list, and graphs share the figure. Solver: 1D particle and 2D projectile unknowns from the values you know.'}
       </p>
     </div>
   )

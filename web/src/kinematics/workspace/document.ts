@@ -3,6 +3,7 @@
 // can call. Units are SI; angles on the document are radians.
 
 import { commandById } from './commands'
+import { convertAngleInput, type AngleMode } from './math/expr'
 
 export const PROPERTY_KEYS = [
   'x',
@@ -61,6 +62,7 @@ export type Statement =
   | { id: string; type: 'path'; point: string; path: PathKind }
   | { id: string; type: 'relative'; from: string; to: string }
   | { id: string; type: 'simulate'; point: string; duration: number }
+  | { id: string; type: 'math'; input: string; visible: boolean }
 
 export interface WorkspaceDocument {
   nextId: number
@@ -248,6 +250,43 @@ export function commitCommand(doc: WorkspaceDocument, commandId: string, args: R
                   : null
   if (!scalarKey) return { doc, error: 'Unknown statement.' }
   return setScalar(doc, name, scalarKey, args.value, scalarKey === 'psi')
+}
+
+/** Rewrite stored math so a radians/degrees switch changes angle inputs and keeps the values. */
+export function convertDocumentAngles(doc: WorkspaceDocument, from: AngleMode, to: AngleMode): WorkspaceDocument {
+  if (from === to) return doc
+  let changed = false
+  const statements = doc.statements.map((statement) => {
+    if (statement.type !== 'math') return statement
+    const input = convertAngleInput(statement.input, from, to)
+    if (input === statement.input) return statement
+    changed = true
+    return { ...statement, input }
+  })
+  return changed ? { ...doc, statements } : doc
+}
+
+export function replaceMath(doc: WorkspaceDocument, id: string, input: string): WorkspaceDocument {
+  const text = input.trim()
+  if (!text) return removeStatement(doc, id)
+  return {
+    ...doc,
+    statements: doc.statements.map((statement) => (statement.id === id && statement.type === 'math' ? { ...statement, input: text } : statement)),
+  }
+}
+
+export function appendMath(doc: WorkspaceDocument, input: string): WorkspaceDocument {
+  const text = input.trim()
+  const slot = allocate(doc)
+  const statement: Statement = { id: slot.id, type: 'math', input: text, visible: true }
+  return { ...slot.doc, statements: [...slot.doc.statements, statement] }
+}
+
+export function setMathVisible(doc: WorkspaceDocument, id: string, visible: boolean): WorkspaceDocument {
+  return {
+    ...doc,
+    statements: doc.statements.map((statement) => (statement.id === id && statement.type === 'math' ? { ...statement, visible } : statement)),
+  }
 }
 
 export function removeStatement(doc: WorkspaceDocument, id: string): WorkspaceDocument {
