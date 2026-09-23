@@ -195,6 +195,15 @@ select {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.kin-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
 }
 
 .kin-tabs {
@@ -1318,7 +1327,161 @@ button.statement-main:hover {
     min-height: 460px;
     order: -1;
   }
+  .kin-lab {
+    flex: none;
+  }
   .workspace-console {
     min-height: 520px;
   }
+}
+
+/* ---------- Kinematics solver ---------- */
+
+.solver-kind-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.solver-kind-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.solver-kind-bar .segmented {
+  width: auto;
+}
+
+.known-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.known-pair .known-row {
+  grid-template-columns: 18px 32px 1fr 40px;
+}
+
+.kin-controls .segmented {
+  width: 100%;
+  flex-wrap: wrap;
+}
+.kin-controls .segmented button {
+  flex: 1 1 25%;
+  min-width: 0;
+}
+
+.expr-input {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.known-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.known-heading {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+
+.known-row {
+  display: grid;
+  grid-template-columns: 18px 44px 1fr 52px;
+  gap: 8px;
+  align-items: center;
+}
+
+.known-row.is-unknown {
+  opacity: 0.42;
+}
+
+.known-row input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.known-sym {
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.known-unit {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.known-lock {
+  text-align: center;
+  font-size: 11px;
+  color: var(--success);
+}
+
+.target-picks {
+  display: flex;
+  gap: 6px;
+}
+
+.target-picks button {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--panel-3);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.target-picks button.active {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+  color: var(--text);
+  border-color: var(--accent-dim);
+}
+
+.stat-card.computed .label {
+  color: var(--accent);
+}
+
+.stat-card.computed .val {
+  color: var(--accent);
+}
+
+.solver-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 0;
+}
+
+.alt-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.alt-roots button {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.alt-roots button.active {
+  border-color: var(--accent-dim);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
 }
