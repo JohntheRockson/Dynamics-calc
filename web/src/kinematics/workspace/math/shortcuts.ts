@@ -1,6 +1,7 @@
 import { COMMANDS } from '../commands'
 import { FUNCTION_WORDS, completeFunctionName, findFunction } from './functions'
 import { containsGreekLetter, isGreekName, isGreekPrefix } from './expr'
+import { exitSlots } from './inputView'
 
 const MATH_WORDS = new Set([...FUNCTION_WORDS, 'pi', 'e'])
 const NAME_BEFORE = /[A-Za-z0-9'αβγδεζηθικλμνξπρστυφχψω)]$/
@@ -98,7 +99,9 @@ export function expandMathShortcut(value: string, cursor: number, key: string): 
 
 /**
  * `^` opens an exponent, `_` after a name opens a subscript, and `(` and `{` open a pair.
- * A typed `)` or `}` that is already there moves past it. Statement words such as point stay text.
+ * A typed `)` or `}` that is already there moves past it. A `)` inside an exponent or a
+ * denominator leaves it first and then closes the parenthesis the preview shows, so
+ * `Solve(sin(x) = 1/2)` types as written. Statement words such as point stay text.
  */
 export function insertMathSlot(value: string, cursor: number, end: number, key: string): { value: string; cursor: number } | null {
   const left = value.slice(0, cursor)
@@ -120,7 +123,23 @@ export function insertMathSlot(value: string, cursor: number, end: number, key: 
     const head = `${left}{}`
     return { value: `${head}${right}`, cursor: head.length - 1 }
   }
-  if (key === ')' && value[cursor] === ')') return { value, cursor: cursor + 1 }
+  if (key === ')') {
+    const exit = exitSlots(value, cursor)
+    if (exit !== cursor) return { value, cursor: value[exit] === ')' ? exit + 1 : exit }
+    if (value[cursor] === ')') return { value, cursor: cursor + 1 }
+  }
   if (key === '}' && value[cursor] === '}') return { value, cursor: cursor + 1 }
   return null
+}
+
+/** A comma or `=` typed inside an exponent, subscript, or denominator lands just after it, with any spaces typed before it. */
+export function insertSeparator(value: string, cursor: number, end: number, key: string): { value: string; cursor: number } | null {
+  if (key !== ',' && key !== '=') return null
+  const rest = `${value.slice(0, cursor)}${value.slice(Math.max(cursor, end))}`
+  const exit = exitSlots(rest, cursor)
+  if (exit === cursor) return null
+  const inside = rest.slice(0, cursor)
+  const pad = /\s*$/.exec(inside)?.[0] ?? ''
+  const left = `${inside.slice(0, inside.length - pad.length)}${rest.slice(cursor, exit)}${pad}${key}`
+  return { value: `${left}${rest.slice(exit)}`, cursor: left.length }
 }

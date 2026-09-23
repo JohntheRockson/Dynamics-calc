@@ -2,8 +2,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { Eq } from '../Eq'
 import { MathAssist } from './MathAssist'
 import { previewTex } from './math/syntax'
-import { closeOpenGroups, exitSlotsForComma, latexToSource, moveMathCursor } from './math/inputView'
-import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './math/shortcuts'
+import { closeOpenGroups, latexToSource, moveMathCursor } from './math/inputView'
+import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, insertSeparator, looksLikeMath } from './math/shortcuts'
 import { assistAt, type AssistItem } from './math/signature'
 
 export interface MathFieldHandle {
@@ -250,15 +250,11 @@ export const MathField = forwardRef<MathFieldHandle, {
             placeMathInput(input, slotted.value, slotted.cursor, onValue, setCursor)
             return
           }
-          if (event.key === ',' && liveMath) {
-            const exit = exitSlotsForComma(typed, caret)
-            if (exit !== caret) {
-              event.preventDefault()
-              const left = typed.slice(0, exit)
-              const right = typed.slice(Math.max(exit, end))
-              placeMathInput(input, `${left},${right}`, left.length + 1, onValue, setCursor)
-              return
-            }
+          const separated = liveMath ? insertSeparator(typed, caret, end, event.key) : null
+          if (separated) {
+            event.preventDefault()
+            placeMathInput(input, separated.value, separated.cursor, onValue, setCursor)
+            return
           }
           if (liveMath && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
             if (event.key === 'ArrowRight' && caret === end && caret === typed.length) {

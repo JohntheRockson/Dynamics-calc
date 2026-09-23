@@ -5,7 +5,7 @@ import { appendMath, emptyDocument } from '../document'
 import { evaluateDocument } from '../evaluate'
 import { FUNCTIONS, MATH_FORMS, PLOT_PALETTE, describeFunctions, findFunction } from './functions'
 import { latexToSource } from './inputView'
-import { expandMathShortcut, insertMathSlot, looksLikeMath } from './shortcuts'
+import { expandMathShortcut, insertMathSlot, insertSeparator, looksLikeMath } from './shortcuts'
 import { assistAt, signatureAt } from './signature'
 import { convertAngleInput, previewTex, validateMath } from './syntax'
 
@@ -232,6 +232,18 @@ export function runSyntaxChecks(): string[] {
   const closeBlock = insertMathSlot('a{}', 2, 2, '}')
   expect(closeBlock?.value === 'a{}' && closeBlock.cursor === 3, 'a typed closing brace steps over the pair')
   expect(insertMathSlot('point', 5, 5, '{') === null, 'a statement keeps its braces as typed')
+  const denominator = 'Solve(sin(x) = 1/(2))'
+  const inDenominator = denominator.indexOf('2)')
+  const commaAfterFraction = insertSeparator(denominator, inDenominator + 1, inDenominator + 1, ',')
+  expect(commaAfterFraction?.value === 'Solve(sin(x) = 1/(2),)' && commaAfterFraction.cursor === 21, `a comma leaves a denominator: ${commaAfterFraction?.value}`)
+  expect(insertMathSlot(denominator, inDenominator + 1, inDenominator + 1, ')')?.cursor === denominator.length, 'a ) leaves a denominator and closes the call the preview shows')
+  const equalsAfterPower = insertSeparator('Solve(x^(2 ))', 11, 11, '=')
+  expect(equalsAfterPower?.value === 'Solve(x^(2) =)' && equalsAfterPower.cursor === 13, `an = leaves an exponent and keeps the space: ${equalsAfterPower?.value}`)
+  const commaOverSelection = insertSeparator('Solve(x^(23))', 10, 11, ',')
+  expect(commaOverSelection?.value === 'Solve(x^(2),)' && commaOverSelection.cursor === 12, `a comma replaces the selection before it leaves the exponent: ${commaOverSelection?.value}`)
+  expect(insertMathSlot('x^(2)', 4, 4, ')')?.cursor === 5 && insertMathSlot('Solve(x^(2) = 4)', 10, 10, ')')?.cursor === 11, 'a ) only leaves an exponent when more follows it')
+  expect(insertSeparator('x^(Mod(7))', 8, 8, ',') === null && insertMathSlot('e^(-(x))', 6, 6, ')')?.cursor === 7, 'a call or a typed group inside an exponent keeps its comma and closer')
+  expect(insertSeparator('Derivative(x^3, x){Order', 24, 24, '=') === null, 'an = inside a settings block stays a separator')
   expect(looksLikeMath('so') && looksLikeMath('dif') && looksLikeMath('Deri') && !looksLikeMath('po') && !looksLikeMath('sp') && !looksLikeMath('pl'), 'two letters of a function name start math, unless a statement starts the same way')
 
   return errors

@@ -297,20 +297,41 @@ export function moveMathCursor(source: string, cursor: number, dir: 'left' | 'ri
 }
 
 /**
- * A comma always separates arguments (a function call, a vector, a domain), so it is never
- * meant for the inside of an exponent or a subscript. If the caret is sitting inside one of
- * those slots when `,` is typed, step past its closer first. A fraction or a plain `(...)`
- * group keeps the comma, since it may belong to a call nested inside that group.
+ * The editor opens `^()`, `_{}`, and `/()` as soon as `^`, `_`, or `/` is typed, and the preview
+ * hides those brackets. A comma, an `=`, or a `)` never belongs inside one: typing `1/2, x` gives
+ * `1/(2), x` and `x^2 = 4` gives `x^(2) = 4`. While the innermost open bracket at the caret is
+ * one of those slots, step past its closer. A call, a list, a block, or a plain `(...)` group
+ * stops the walk, so `x^(Mod(7, 3))` still types.
  */
-export function exitSlotsForComma(source: string, cursor: number): number {
+export function exitSlots(source: string, cursor: number): number {
+  const lineStart = source.lastIndexOf('\n', cursor - 1) + 1
+  const lineEndAt = source.indexOf('\n', cursor)
+  const lineEnd = lineEndAt < 0 ? source.length : lineEndAt
   let at = cursor
   for (;;) {
-    const enclosing = [...findExponents(source), ...findSubscripts(source)]
-      .filter((slot) => at > slot.start && at < slot.end)
-      .sort((a, b) => b.start - a.start)
-    const innermost = enclosing[0]
-    if (!innermost) return at
-    at = innermost.end
+    const stack: number[] = []
+    for (let i = lineStart; i < at; i += 1) {
+      const ch = source[i]
+      if (ch === '(' || ch === '[' || ch === '{') stack.push(i)
+      else if (ch === ')' || ch === ']' || ch === '}') stack.pop()
+    }
+    const open = stack[stack.length - 1]
+    if (open === undefined) return at
+    const before = source[open - 1]
+    const slot = before === '^' || (before === '_' && source[open] === '{') || (before === '/' && source[open] === '(')
+    if (!slot) return at
+    let depth = 0
+    let close = -1
+    for (let i = open; i < lineEnd && close < 0; i += 1) {
+      const ch = source[i]
+      if (ch === '(' || ch === '[' || ch === '{') depth += 1
+      else if (ch === ')' || ch === ']' || ch === '}') {
+        depth -= 1
+        if (depth === 0) close = i
+      }
+    }
+    if (close < 0) return at
+    at = close + 1
   }
 }
 
