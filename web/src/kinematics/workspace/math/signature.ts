@@ -5,10 +5,10 @@
 import { GRAPH_OPTIONS, PLOT_PALETTE, completeFunctionName, findFunction, findOption, optionKey, optionsFor, signatureText, type FunctionSpec, type OptionSpec } from './functions'
 
 export type SignatureHelp =
-  /** Inside the parentheses. `active` can pass the last input, which means too many inputs. */
-  | { kind: 'params'; spec: FunctionSpec; active: number }
+  /** Inside the parentheses. `active` can pass the last input, which means too many inputs. `graph` is whether Color, PlotPoints, … apply to this call. */
+  | { kind: 'params'; spec: FunctionSpec; active: number; graph: boolean }
   /** Just after the closing parenthesis of a call that takes settings. */
-  | { kind: 'after'; spec: FunctionSpec }
+  | { kind: 'after'; spec: FunctionSpec; graph: boolean }
   /** Inside { }, where a setting name goes. */
   | { kind: 'options'; owner: string | null; options: OptionSpec[]; used: string[]; prefix: string; start: number; end: number }
   /** Inside { }, after `Name:`. */
@@ -33,8 +33,8 @@ export interface AssistItem {
 
 export type Assist =
   | { kind: 'complete'; items: AssistItem[] }
-  | { kind: 'params'; spec: FunctionSpec; active: number }
-  | { kind: 'after'; spec: FunctionSpec }
+  | { kind: 'params'; spec: FunctionSpec; active: number; graph: boolean }
+  | { kind: 'after'; spec: FunctionSpec; graph: boolean }
   | { kind: 'options'; owner: string | null; prefix: string; options: OptionSpec[]; items: AssistItem[] }
   | { kind: 'value'; owner: string | null; options: OptionSpec[]; key: string; option: OptionSpec | null; items: AssistItem[] }
 
@@ -122,6 +122,11 @@ function mergeOptions(first: OptionSpec[], second: OptionSpec[]): OptionSpec[] {
   return [...first, ...second.filter((option) => !seen.has(optionKey(option.name)))]
 }
 
+/** Graph settings style what the whole line draws, so only a call that starts the line, or any call on a line with `=`, takes them. */
+function takesGraph(line: string, call: { name: string; open: number }, nested: boolean, drawsLine: boolean): boolean {
+  return !nested && (drawsLine || line.slice(0, call.open - call.name.length).trim() === '')
+}
+
 function blockOwner(line: string, open: number, closed: ClosedCall | null, nested: boolean, drawsLine: boolean): BlockOwner {
   const before = previousSolid(line, open)
   const call = closed && closed.close === before ? findFunction(closed.name) : null
@@ -130,15 +135,17 @@ function blockOwner(line: string, open: number, closed: ClosedCall | null, neste
     const variables = callVariables(call, topLevelParts(line.slice(closed.open + 1, closed.close)))
     const takesDomain = call.options.some((option) => optionKey(option.name) === 'domain')
     const ranges = variables.length > 1 || !takesDomain ? variables : []
-    options = mergeOptions([...call.options, ...ranges.map((name) => rangeOption(name, call.kernel === 'solve' ? `Search for ${name} in this range` : `Only draw ${name} in this range`))], optionsFor(call))
+    const own = [...call.options, ...ranges.map((name) => rangeOption(name, call.kernel === 'solve' ? `Search for ${name} in this range` : `Only draw ${name} in this range`))]
+    options = mergeOptions(own, takesGraph(line, closed, nested, drawsLine) ? optionsFor(call) : [])
   }
   if (!nested && drawsLine) {
     const head = /^\s*[A-Za-zα-ω][A-Za-z0-9α-ω]*\s*\(\s*([^()=]*)\)\s*=/.exec(line)
     const params = head ? topLevelParts(head[1] ?? '').filter((name) => /^[A-Za-zα-ω][A-Za-z0-9α-ω]*$/.test(name)) : []
     options = mergeOptions(options, [...params.map((name) => rangeOption(name, `Only draw ${name} in this range`)), ...GRAPH_OPTIONS])
   }
-  const takesSettings = call !== null && (call.options.length > 0 || call.draws)
-  return { label: takesSettings ? call.name : drawsLine && !nested ? 'Graph' : null, options }
+  if (call && (call.options.length > 0 || call.draws)) return { label: call.name, options }
+  if (!nested && drawsLine) return { label: 'Graph', options }
+  return { label: call?.name ?? null, options }
 }
 
 /** Setting names already written in the block that holds the caret, apart from the one being typed. */
@@ -213,7 +220,8 @@ export function signatureAt(source: string, cursor: number): SignatureHelp | nul
   const before = previousSolid(line, at)
   if (closed && closed.close === before && line[nextSolid(line, at)] !== '{') {
     const spec = findFunction(closed.name)
-    if (spec && (spec.options.length > 0 || spec.draws)) return { kind: 'after', spec }
+    const graph = Boolean(spec?.draws) && takesGraph(line, closed, stack.length > 0, drawsLine)
+    if (spec && (spec.options.length > 0 || graph)) return { kind: 'after', spec, graph }
   }
   for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
     const frame = stack[depth]
@@ -223,7 +231,7 @@ export function signatureAt(source: string, cursor: number): SignatureHelp | nul
     if (!spec) continue
     const last = spec.params.length - 1
     const active = spec.params[last]?.repeats ? Math.min(frame.commas, last) : frame.commas
-    return { kind: 'params', spec, active }
+    return { kind: 'params', spec, active, graph: spec.draws && takesGraph(line, frame, depth > 0, drawsLine) }
   }
   return null
 }

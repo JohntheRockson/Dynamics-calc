@@ -1,16 +1,16 @@
 import { Fragment, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { suggestName, type FunctionSpec, type OptionSpec } from './math/functions'
+import { findFunction, suggestName, type FunctionSpec, type OptionSpec } from './math/functions'
 import type { Assist, AssistItem } from './math/signature'
 
-function settingsList(spec: FunctionSpec): string | null {
+function settingsList(spec: FunctionSpec, graph: boolean): string | null {
   const names = spec.options.map((option) => option.name)
-  if (spec.draws) names.push(names.includes('Color') ? '…' : 'Color, …')
+  if (spec.draws && graph) names.push(names.includes('Color') ? '…' : 'Color, …')
   return names.length > 0 ? names.join(', ') : null
 }
 
-function Signature({ spec, active }: { spec: FunctionSpec; active: number | null }) {
-  const settings = settingsList(spec)
+function Signature({ spec, active, graph }: { spec: FunctionSpec; active: number | null; graph: boolean }) {
+  const settings = settingsList(spec, graph)
   return (
     <div className="math-assist-signature">
       <span className="math-assist-name">{spec.name}</span>(
@@ -104,7 +104,7 @@ function Body({ assist, active, onPick, onHover }: { assist: Assist; active: num
       const example = exampleWithSettings(assist.spec)
       return (
         <>
-          <Signature spec={assist.spec} active={assist.active} />
+          <Signature spec={assist.spec} active={assist.active} graph={assist.graph} />
           {param ? (
             <>
               <p className="math-assist-text">{param.description}</p>
@@ -124,7 +124,7 @@ function Body({ assist, active, onPick, onHover }: { assist: Assist; active: num
       const example = exampleWithSettings(assist.spec)
       return (
         <>
-          <Signature spec={assist.spec} active={null} />
+          <Signature spec={assist.spec} active={null} graph={assist.graph} />
           <p className="math-assist-text">Optional settings go in {'{ }'} right after the closing parenthesis, in any order.</p>
           {own.length > 0 && (
             <ul className="math-assist-options">
@@ -136,7 +136,7 @@ function Body({ assist, active, onPick, onHover }: { assist: Assist; active: num
               ))}
             </ul>
           )}
-          {assist.spec.draws && <p className="math-assist-text is-dim">Graph: Color, PlotPoints, MaxRecursion, Exclusions, Dashed{own.some((option) => option.name === 'Domain') ? '' : ', Domain'}</p>}
+          {assist.graph && <p className="math-assist-text is-dim">Graph: Color, PlotPoints, MaxRecursion, Exclusions, Dashed{own.some((option) => option.name === 'Domain') ? '' : ', Domain'}</p>}
           {example && <p className="math-assist-example">e.g. {example}</p>}
         </>
       )
@@ -146,7 +146,12 @@ function Body({ assist, active, onPick, onHover }: { assist: Assist; active: num
       let message: string | null = null
       if (assist.items.length === 0) {
         if (assist.owner === null) message = "Settings go right after a function's closing parenthesis, as in Plot(sin(x), x){Color: red}."
-        else if (assist.prefix && !/^[A-Za-z]/.test(assist.prefix)) message = `Start each setting with its name, as in {${assist.options[0]?.name ?? 'Domain'}: ${assist.options[0]?.example ?? '0..5'}}.`
+        else if (assist.options.length === 0) {
+          const spec = findFunction(assist.owner)
+          if (spec?.draws) message = 'Graph settings such as Color go at the end of the line, on the function the line draws.'
+          else if (spec?.section === 'basic') message = `${assist.owner} has no settings. To draw it, use Plot(${assist.owner}(x), x){Color: red}.`
+          else message = `${assist.owner} has no settings. Put each setting right after the function it belongs to, as in Expand(Derivative(x^3, x){Order: 2}).`
+        } else if (assist.prefix && !/^[A-Za-z]/.test(assist.prefix)) message = `Start each setting with its name, as in {${assist.options[0]?.name ?? 'Domain'}: ${assist.options[0]?.example ?? '0..5'}}.`
         else if (assist.prefix) {
           const guess = suggestName(assist.prefix, assist.options.map((option) => option.name))
           message = guess ? `No setting starts with ${assist.prefix}. Did you mean ${guess}?` : `No setting starts with ${assist.prefix}. It takes ${assist.options.map((option) => option.name).join(', ')}.`
