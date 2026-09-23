@@ -1,7 +1,7 @@
 // Turn pasted LaTeX into the console's ascii, and move the caret through a fraction
 // the way a structural editor does: up and down between the two sides, sideways across a side.
 
-import { MATH_FUNCTION_NAMES } from './catalog'
+import { ALL_OPTION_NAMES, FUNCTION_WORDS, optionKey } from './functions'
 
 export const MATH_CARET = '\u0001'
 
@@ -29,17 +29,28 @@ const FUNC_WORDS: Record<string, string> = {
 const SKIP_WORDS = new Set([
   'displaystyle', 'textstyle', 'scriptstyle', 'scriptscriptstyle', 'limits', 'nolimits',
   'bigl', 'bigr', 'Bigl', 'Bigr', 'biggl', 'biggr', 'Biggl', 'Biggr', 'big', 'Big', 'bigg', 'Bigg',
-  'quad', 'qquad',
+  'quad', 'qquad', 'blacksquare', 'square',
 ])
 
 const KNOWN = new Set<string>([
   ...GREEK,
   ...Object.keys(FUNC_WORDS),
-  ...MATH_FUNCTION_NAMES,
+  ...FUNCTION_WORDS,
   ...SKIP_WORDS,
   'frac', 'dfrac', 'tfrac', 'sqrt', 'cdot', 'times', 'ast', 'div', 'left', 'right',
   'dot', 'ddot', 'dddot', 'mathrm', 'mathbf', 'text', 'operatorname', 'infty',
+  'colon', 'ldots', 'dots', 'cdots', 'textcolor', 'color', 'lbrace', 'rbrace',
 ])
+
+const SETTING_FLAGS = new Set(ALL_OPTION_NAMES.map(optionKey))
+
+/** `Domain: 0..5` or a lone flag such as `Dashed`: the inside of a settings block, not a TeX group. */
+function looksLikeSettings(body: string): boolean {
+  const text = body.trim()
+  if (/^[A-Za-zα-ω][A-Za-z0-9α-ω _-]*\s*(?::|->|=)/.test(text)) return true
+  const words = text.split(',').map((part) => optionKey(part))
+  return words.length > 0 && words.every((word) => SETTING_FLAGS.has(word))
+}
 
 class IncompleteLatex extends Error {}
 
@@ -47,11 +58,16 @@ class IncompleteLatex extends Error {}
 export function latexToSource(input: string): string {
   if (!input.includes('\\')) return input
   try {
-    return convertLatex(input)
+    return tidySettings(convertLatex(input))
   } catch (error) {
     if (error instanceof IncompleteLatex) return input
     return input
   }
+}
+
+/** The preview spaces a settings block out with `\;` and `\colon`; pasted back, it should read the way it is typed. */
+function tidySettings(source: string): string {
+  return source.replace(/([)\]])\s+\{/g, '$1{').replace(/\s*\.\.\s*/g, '..').replace(/:\s+/g, ': ')
 }
 
 function convertLatex(src: string): string {
@@ -82,7 +98,8 @@ function convertLatex(src: string): string {
     if (ch === '{') {
       const body = readBrace(src, i)
       if (!body) throw new IncompleteLatex()
-      out += `(${convertLatex(body.body)})`
+      const inner = convertLatex(body.body)
+      out += looksLikeSettings(inner) ? `{${inner}}` : `(${inner})`
       i = body.next
       continue
     }
@@ -180,12 +197,49 @@ function applyCommand(name: string, src: string, i: number): { text: string; nex
     if (!arg) throw new IncompleteLatex()
     return { text: convertLatex(arg.body), next: arg.next }
   }
+  if (name === 'textcolor' || name === 'color') {
+    const color = readArg(src, i)
+    if (!color) throw new IncompleteLatex()
+    if (name === 'color') return { text: '', next: color.next }
+    const arg = readArg(src, color.next)
+    if (!arg) throw new IncompleteLatex()
+    return { text: convertLatex(arg.body), next: arg.next }
+  }
+  if (name === 'colon') return { text: ':', next: i }
+  if (name === 'ldots' || name === 'dots' || name === 'cdots') return { text: '..', next: i }
   if (SKIP_WORDS.has(name)) return { text: '', next: i }
   if (FUNC_WORDS[name]) return { text: FUNC_WORDS[name], next: i }
-  if (GREEK.includes(name) || MATH_FUNCTION_NAMES.includes(name)) return { text: name, next: i }
-  if (name === '{' || name === 'lbrace') return { text: '(', next: i }
+  if (GREEK.includes(name) || FUNCTION_WORDS.includes(name.toLowerCase())) return { text: name, next: i }
+  if (name === '{' || name === 'lbrace') {
+    const close = matchEscapedBrace(src, i)
+    if (close) {
+      const inner = convertLatex(src.slice(i, close.start))
+      if (looksLikeSettings(inner)) return { text: `{${inner}}`, next: close.next }
+    }
+    return { text: '(', next: i }
+  }
   if (name === '}' || name === 'rbrace') return { text: ')', next: i }
   return { text: name, next: i }
+}
+
+/** The `\}` that closes a `\{` whose body starts at `i`, skipping nested escaped pairs. */
+function matchEscapedBrace(src: string, i: number): { start: number; next: number } | null {
+  let depth = 0
+  let j = i
+  while (j < src.length) {
+    if (src[j] !== '\\') {
+      j += 1
+      continue
+    }
+    const cmd = readCommand(src, j)
+    if (cmd.name === '{' || cmd.name === 'lbrace') depth += 1
+    else if (cmd.name === '}' || cmd.name === 'rbrace') {
+      if (depth === 0) return { start: j, next: cmd.next }
+      depth -= 1
+    }
+    j = Math.max(cmd.next, j + 1)
+  }
+  return null
 }
 
 function readDelim(src: string, i: number): { emit: string; next: number } {
