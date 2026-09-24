@@ -1920,6 +1920,9 @@ function unbind(spec: FunctionSpec, args: Expr[]): { args: Expr[]; settings: str
       return { args: args.slice(0, 2), settings }
     }
     case 'integrate':
+      if (args.length !== 4) break
+      put('Bounds', `${text(args[2])}..${text(args[3])}`)
+      return { args: args.slice(0, 2), settings }
     case 'zeros':
     case 'fmin':
     case 'fmax':

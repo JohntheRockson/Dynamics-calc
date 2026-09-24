@@ -36,14 +36,17 @@ import { MATH_CARET, latexToSource } from './inputView'
 const IDENT = '[A-Za-zαβγδεζηθικλμνξπρστυφχψω][A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]*'
 const VARIABLE_KEY = /^(?:[A-Za-z][A-Za-z0-9]?|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|rho|sigma|tau|upsilon|phi|chi|psi|omega|[αβγδεζηθικλμνξρστυφχψω])$/
 
+/** A variable slot filled in later, once the line's other names have values. */
+export const INFER_NAME = '\u0000'
+
 export type MathInput =
-  | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string; plot: PlotOptions }
-  | { kind: 'assign'; name: string; expr: Expr; raw: string; plot: PlotOptions }
-  | { kind: 'solve'; equation: Expr; variable: string | null; domains: SearchDomain[]; raw: string; plot: PlotOptions }
-  | { kind: 'system'; equations: Expr[]; variables: string[] | null; domains: SearchDomain[]; raw: string; plot: PlotOptions }
-  | { kind: 'plot'; expr: Expr; variable: string; raw: string; plot: PlotOptions }
-  | { kind: 'plot3d'; expr: Expr; variables: [string, string]; raw: string; plot: PlotOptions }
-  | { kind: 'expr'; expr: Expr; raw: string; plot: PlotOptions }
+  | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'assign'; name: string; expr: Expr; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'solve'; equation: Expr; variable: string | null; domains: SearchDomain[]; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'system'; equations: Expr[]; variables: string[] | null; domains: SearchDomain[]; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'plot'; expr: Expr; variable: string | null; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'plot3d'; expr: Expr; variables: [string, string] | null; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'expr'; expr: Expr; raw: string; plot: PlotOptions; silent: boolean }
 
 interface LineRead {
   kind: 'fn' | 'assign' | 'expr'
@@ -59,6 +62,8 @@ interface LineRead {
   caretAfter: boolean
   legacy: PlotOptions
   raw: string
+  /** A trailing `;` runs the line and shows nothing. */
+  silent: boolean
 }
 
 export function parseMathInput(input: string): MathInput {
@@ -74,13 +79,26 @@ export function validateMath(input: string): string | null {
   }
 }
 
+/** A semicolon at the end of the line runs it and shows no result. */
+function peelSilence(input: string): { text: string; silent: boolean } {
+  const caretAt = input.indexOf(MATH_CARET)
+  const plain = caretAt < 0 ? input : input.slice(0, caretAt) + input.slice(caretAt + 1)
+  const trimmed = plain.replace(/\s+$/, '')
+  if (!trimmed.endsWith(';')) return { text: input, silent: false }
+  const kept = trimmed.replace(/;+\s*$/, '').replace(/\s+$/, '')
+  if (caretAt < 0) return { text: kept, silent: true }
+  if (caretAt <= kept.length) return { text: `${kept.slice(0, caretAt)}${MATH_CARET}${kept.slice(caretAt)}`, silent: true }
+  return { text: `${kept}${MATH_CARET}`, silent: true }
+}
+
 function readLine(input: string): LineRead {
-  const closed = closeGroups(latexToSource(input).trim())
+  const peeled = peelSilence(input)
+  const closed = closeGroups(latexToSource(peeled.text).trim())
   const split = splitTrailingBlock(closed)
-  const { source, plot } = takePlotOptions(split.source)
+  const source = rejectLegacyTails(split.source)
   const raw = source.trim()
   if (!raw.replaceAll(MATH_CARET, '').trim()) throw new MathError(split.block ? 'Write the calculation before the settings in { }.' : 'Enter a calculation.')
-  const base = { block: split.block, caretAfter: split.caretAfter, legacy: plot, raw, left: null }
+  const base = { block: split.block, caretAfter: split.caretAfter, legacy: plotDefaults(), raw, left: null, silent: peeled.silent }
   const fn2 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*,\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
   if (fn2) {
     const name = naming(fn2[1] ?? '')
@@ -168,50 +186,18 @@ function splitTrailingBlock(text: string): { source: string; block: OptionBlock 
   return { source: text.slice(0, before + 1), block, caretAfter }
 }
 
-/**
- * The older comma tails, `, plotpoints = 20` and `, t = 0..2*pi`, still work. A live caret marker
- * can land inside or right after such a tail while it is being typed; it is stripped before
- * matching and put back only if it belonged to the main expression.
- */
-function takePlotOptions(source: string): { source: string; plot: PlotOptions } {
+/** Comma tails such as `, plotpoints = 20` and `, t = 0..2*pi` are the old form. Settings belong in { }. */
+function rejectLegacyTails(source: string): string {
   const caretAt = source.indexOf(MATH_CARET)
   const plain = caretAt < 0 ? source : source.slice(0, caretAt) + source.slice(caretAt + 1)
-  let rest = plain.trim()
-  const plot = plotDefaults()
+  const rest = plain.trim()
   const pattern = /,\s*(plotpoints|maxrecursion|exclusions)\s*=\s*([^\s,]+)\s*$/i
   const domainPattern = new RegExp(`(?:,|\\n)\\s*(domain|${IDENT})\\s*=\\s*([^\\s,]+)\\s*\\.\\.\\s*([^\\s,]+)\\s*$`, 'i')
   const parenDomain = new RegExp(`(?:,|\\n)\\s*(domain|${IDENT})\\s*=\\s*\\(([^,]+),\\s*([^)]+)\\)\\s*$`, 'i')
-  for (let n = 0; n < 8; n += 1) {
-    const domain = domainPattern.exec(rest) ?? parenDomain.exec(rest)
-    const domainName = (domain?.[1] ?? '').toLowerCase()
-    if (domain && domainName !== 'plotpoints' && domainName !== 'maxrecursion' && domainName !== 'exclusions') {
-      if (!plot.domain) {
-        try {
-          plot.domain = { name: domain[1] ?? 't', min: parseExpr((domain[2] ?? '').trim()), max: parseExpr((domain[3] ?? '').trim()) }
-        } catch {
-          throw new MathError('Use a domain such as {t: 0..2*pi}.')
-        }
-      }
-      rest = rest.slice(0, domain.index).trim()
-      continue
-    }
-    const match = pattern.exec(rest)
-    if (!match) break
-    const key = (match[1] ?? '').toLowerCase()
-    const raw = match[2] ?? ''
-    if (key === 'exclusions') {
-      const flag = raw.toLowerCase()
-      plot.exclusions = flag !== 'false' && flag !== '0' && flag !== 'off' && flag !== 'none'
-    } else {
-      const value = Number(raw)
-      if (!Number.isFinite(value)) throw new MathError(key === 'plotpoints' ? 'PlotPoints needs a number of samples.' : 'MaxRecursion needs a whole number.')
-      if (key === 'plotpoints') plot.points = Math.max(12, Math.min(800, Math.round(value)))
-      else plot.recursion = Math.max(0, Math.min(8, Math.round(value)))
-    }
-    rest = rest.slice(0, match.index).trim()
+  if (pattern.test(rest) || domainPattern.test(rest) || parenDomain.test(rest)) {
+    throw new MathError('Put those settings in { } after the line, for example f(x) = sin(x){PlotPoints: 20, Domain: 0..2*pi}.')
   }
-  if (caretAt >= 0 && caretAt <= rest.length) rest = `${rest.slice(0, caretAt)}${MATH_CARET}${rest.slice(caretAt)}`
-  return { source: rest, plot }
+  return source
 }
 
 interface BindContext {
@@ -259,9 +245,9 @@ function bindLine(line: LineRead): MathInput {
   const expr = bindExpr(line.expr, context)
   for (const entry of context.graph) applyGraphSetting(plot, entry)
   for (const entry of lineEntries) applyLineSetting(plot, entry, lineOwner)
-  if (line.kind === 'fn') return { kind: 'fn', name: line.name, params: line.params, body: expr, raw: line.raw, plot }
-  if (line.kind === 'assign') return { kind: 'assign', name: line.name, expr, raw: line.raw, plot }
-  return { kind: 'expr', expr, raw: line.raw, plot }
+  if (line.kind === 'fn') return { kind: 'fn', name: line.name, params: line.params, body: expr, raw: line.raw, plot, silent: line.silent }
+  if (line.kind === 'assign') return { kind: 'assign', name: line.name, expr, raw: line.raw, plot, silent: line.silent }
+  return { kind: 'expr', expr, raw: line.raw, plot, silent: line.silent }
 }
 
 function variablesOf(spec: FunctionSpec, call: CallExpr): string[] {
@@ -435,11 +421,17 @@ function arityError(spec: FunctionSpec, count: number): MathError {
   return new MathError(`${spec.name} takes ${phrases}, for example ${spec.examples[0]}`)
 }
 
-function checkArity(spec: FunctionSpec, args: Expr[], legacy: number[] = []): void {
+function checkArity(spec: FunctionSpec, args: Expr[]): void {
   const need = spec.params.length
   const repeats = spec.params[need - 1]?.repeats === true
-  if (repeats ? args.length >= need : args.length === need || legacy.includes(args.length)) return
+  if (repeats ? args.length >= need : args.length === need) return
   throw arityError(spec, args.length)
+}
+
+/** The variable input, or a blank filled in after names above this line have values. */
+function variableArg(spec: FunctionSpec, args: Expr[], index: number): Expr {
+  if (args.length <= index) return { type: 'sym', name: INFER_NAME }
+  return { type: 'sym', name: requireVariable(spec, args, index) }
 }
 
 function isVariable(arg: Expr | undefined): arg is Extract<Expr, { type: 'sym' }> {
@@ -524,52 +516,47 @@ function kernelCall(spec: FunctionSpec, args: Expr[], settings: Settings): Expr 
     const named = settings.ranges[0]
     return named ? readRange(named.name, named.entry, '0..5') : null
   }
-  const positional = (count: number) => {
-    if (args.length > count && (settings.values.size > 0 || settings.ranges.length > 0)) throw arityError(spec, args.length)
+  const oneOrTwo = () => {
+    if (args.length < 1 || args.length > 2) throw arityError(spec, args.length)
   }
   switch (spec.kernel) {
     case 'diff': {
-      positional(2)
-      checkArity(spec, args, [3, 4])
-      requireVariable(spec, args, 1)
+      oneOrTwo()
+      const variable = variableArg(spec, args, 1)
       const order = entry('Order')
       const at = entry('At')
-      if (!order && !at) return call(args)
+      const head = [args[0] as Expr, variable]
+      if (!order && !at) return call(head)
       const count = whole(order ? readWhole(option('Order'), order) : 1)
-      return call(at ? [args[0] as Expr, args[1] as Expr, count, readValue(option('At'), at)] : [args[0] as Expr, args[1] as Expr, count])
+      return call(at ? [...head, count, readValue(option('At'), at)] : [...head, count])
     }
     case 'integrate': {
-      positional(2)
-      checkArity(spec, args, [4])
-      requireVariable(spec, args, 1)
-      const range = domain()
-      return call(range ? [args[0] as Expr, args[1] as Expr, range.min, range.max] : args)
+      oneOrTwo()
+      const variable = variableArg(spec, args, 1)
+      const given = entry('Bounds')
+      const range = given ? readRange('Bounds', given, option('Bounds').example) : null
+      return call(range ? [args[0] as Expr, variable, range.min, range.max] : [args[0] as Expr, variable])
     }
     case 'zeros': {
-      positional(2)
-      checkArity(spec, args, [1])
-      if (args.length > 1) requireVariable(spec, args, 1)
+      oneOrTwo()
+      const variable = args.length > 1 ? variableArg(spec, args, 1) : null
       const range = domain()
-      if (range && args.length < 2) throw arityError(spec, args.length)
-      return call(range ? [args[0] as Expr, args[1] as Expr, range.min, range.max] : args)
+      if (range && !variable) return call([args[0] as Expr, { type: 'sym', name: INFER_NAME }, range.min, range.max])
+      return call(range && variable ? [args[0] as Expr, variable, range.min, range.max] : variable ? [args[0] as Expr, variable] : args)
     }
     case 'fmin':
     case 'fmax': {
-      positional(2)
-      checkArity(spec, args, [4])
-      requireVariable(spec, args, 1)
-      if (args.length === 4) return call(args)
+      oneOrTwo()
+      const variable = variableArg(spec, args, 1)
       const range = domain() ?? { min: whole(-10), max: whole(10) }
-      return call([args[0] as Expr, args[1] as Expr, range.min, range.max])
+      return call([args[0] as Expr, variable, range.min, range.max])
     }
     case 'series': {
-      positional(2)
-      checkArity(spec, args, [4])
-      requireVariable(spec, args, 1)
-      if (args.length === 4) return call(args)
+      oneOrTwo()
+      const variable = variableArg(spec, args, 1)
       const at = entry('Point')
       const order = entry('Order')
-      return call([args[0] as Expr, args[1] as Expr, at ? readValue(option('Point'), at) : whole(0), whole(order ? readWhole(option('Order'), order) : 3)])
+      return call([args[0] as Expr, variable, at ? readValue(option('Point'), at) : whole(0), whole(order ? readWhole(option('Order'), order) : 3)])
     }
     case 'decimal': {
       checkArity(spec, args)
@@ -577,8 +564,7 @@ function kernelCall(spec: FunctionSpec, args: Expr[], settings: Settings): Expr 
       return call(digits ? [args[0] as Expr, whole(readWhole(option('Digits'), digits))] : args)
     }
     case 'log': {
-      positional(1)
-      checkArity(spec, args, [2])
+      checkArity(spec, args)
       const base = entry('Base')
       return call(base ? [args[0] as Expr, readValue(option('Base'), base)] : args)
     }
@@ -619,64 +605,35 @@ function bindSolve(call: CallExpr, line: LineRead, plot: PlotOptions, context: B
       if (!isVariable(item)) throw new MathError('Solve needs a list of variables as its second input, for example Solve([x + y = 3, x - y = 1], [x, y])')
       return item.name
     })
-    return { kind: 'system', equations: first.args, variables: names, domains, raw: line.raw, plot }
+    return { kind: 'system', equations: first.args, variables: names, domains, raw: line.raw, plot, silent: line.silent }
   }
   if (args.length >= 2 && first?.type === 'eq' && second?.type === 'eq') {
-    let index = 0
-    const equations: Expr[] = []
-    while (index < args.length && args[index]?.type === 'eq') {
-      equations.push(args[index] as Expr)
-      index += 1
-    }
-    return { kind: 'system', equations, variables: null, domains: [...legacyDomains(args.slice(index)), ...domains], raw: line.raw, plot }
+    throw new MathError('Solve a system as a list of equations and a list of variables: Solve([x + y = 3, x - y = 1], [x, y]).')
   }
-  if (args.length === 1 && first) return { kind: 'solve', equation: first, variable: null, domains, raw: line.raw, plot }
+  if (args.length === 1 && first) return { kind: 'solve', equation: first, variable: null, domains, raw: line.raw, plot, silent: line.silent }
   if (args.length === 2 && first) {
     if (second?.type === 'vec') throw new MathError('Solve one equation for one variable, or a list of equations for a list of variables: Solve([x + y = 3, x - y = 1], [x, y])')
-    return { kind: 'solve', equation: first, variable: requireVariable(spec, args, 1), domains, raw: line.raw, plot }
+    return { kind: 'solve', equation: first, variable: requireVariable(spec, args, 1), domains, raw: line.raw, plot, silent: line.silent }
   }
   throw arityError(spec, args.length)
-}
-
-function legacyDomains(args: Expr[]): SearchDomain[] {
-  const zero: Expr = { type: 'rat', n: 0n, d: 1n }
-  const domains: SearchDomain[] = []
-  let index = 0
-  while (index < args.length) {
-    const arg = args[index]
-    if (arg?.type === 'vec' && arg.args.length === 2) {
-      domains.push({ name: null, min: arg.args[0] ?? zero, max: arg.args[1] ?? zero })
-      index += 1
-      continue
-    }
-    if (arg?.type === 'vec' && arg.args.length === 3 && arg.args[0]?.type === 'sym') {
-      domains.push({ name: arg.args[0].name, min: arg.args[1] ?? zero, max: arg.args[2] ?? zero })
-      index += 1
-      continue
-    }
-    if (arg?.type === 'sym' && args[index + 1] && args[index + 2]) {
-      domains.push({ name: arg.name, min: args[index + 1] ?? zero, max: args[index + 2] ?? zero })
-      index += 3
-      continue
-    }
-    throw new MathError('Give the search range as a setting: Solve([eq1, eq2], [x, y]){Domain: 0..2*pi}')
-  }
-  return domains
 }
 
 function bindPlot(call: CallExpr, line: LineRead, plot: PlotOptions, context: BindContext): MathInput {
   const spec = functionByKernel(call.name) as FunctionSpec
   const args = call.args.map((arg) => bindExpr(arg, context))
   const settings = readSettings(spec, call)
-  checkArity(spec, args)
   for (const entry of settings.graph) applyGraphSetting(plot, entry)
   if (spec.kernel === 'plot') {
-    const variable = requireVariable(spec, args, 1)
+    if (args.length < 1 || args.length > 2) throw arityError(spec, args.length)
+    const variable = args.length < 2 ? null : requireVariable(spec, args, 1)
     const own = settings.values.get('Domain')
-    if (own) plot.domain = { name: variable, ...readRange('Domain', own, '0..2*pi') }
-    for (const named of settings.ranges) plot.domain = { name: variable, ...readRange(named.name, named.entry, '0..2*pi') }
-    return { kind: 'plot', expr: args[0] as Expr, variable, raw: line.raw, plot }
+    const domainName = variable ?? ''
+    if (own) plot.domain = { name: domainName, ...readRange('Domain', own, '0..2*pi') }
+    for (const named of settings.ranges) plot.domain = { name: domainName, ...readRange(named.name, named.entry, '0..2*pi') }
+    return { kind: 'plot', expr: args[0] as Expr, variable, raw: line.raw, plot, silent: line.silent }
   }
+  if (args.length === 1) return { kind: 'plot3d', expr: args[0] as Expr, variables: null, raw: line.raw, plot, silent: line.silent }
+  checkArity(spec, args)
   const x = requireVariable(spec, args, 1)
   const y = requireVariable(spec, args, 2)
   if (x === y) throw new MathError('Plot3D needs two different variables, for example Plot3D(x^2 - y^2, x, y)')
@@ -684,7 +641,7 @@ function bindPlot(call: CallExpr, line: LineRead, plot: PlotOptions, context: Bi
     if (named.name !== x && named.name !== y) throw new MathError(`Plot3D draws over ${x} and ${y}, so name one of those: {${x}: -2..2}.`)
     plot.ranges.push({ name: named.name, ...readRange(named.name, named.entry, '-2..2') })
   }
-  return { kind: 'plot3d', expr: args[0] as Expr, variables: [x, y], raw: line.raw, plot }
+  return { kind: 'plot3d', expr: args[0] as Expr, variables: [x, y], raw: line.raw, plot, silent: line.silent }
 }
 
 function applyGraphSetting(plot: PlotOptions, entry: OptionEntry): void {

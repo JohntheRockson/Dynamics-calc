@@ -5,7 +5,7 @@ import type { Statement } from '../document'
 import { containsCas, evaluateCas, rewriteAll, solveSingle, solveSystem, type CasCurve, type CasVisual } from './cas'
 import { functionByKernel } from './functions'
 import { sampleCurveNative } from './plotter'
-import { parseMathInput, previewTex } from './syntax'
+import { INFER_NAME, parseMathInput, previewTex } from './syntax'
 import {
   DEFAULT_PLOT,
   MathError,
@@ -102,6 +102,68 @@ interface Interval {
 
 const DEFAULT_RANGE: Interval = { min: -10, max: 10 }
 
+function guessNames(expr: Expr, label: string, count: number): string[] {
+  const names = freeSymbols(expr).filter((name) => name !== INFER_NAME)
+  if (count === 1 && names.length <= 1) return [names[0] ?? 'x']
+  if (names.length === count) {
+    if (count === 2 && names.includes('x') && names.includes('y')) return ['x', 'y']
+    return names
+  }
+  const sample = count === 2 ? 'Plot3D(x^2 - y^2, x, y)' : `${label}(x^2, x)`
+  throw new MathError(names.length === 0 ? `${label} needs a variable, for example ${sample}.` : `${label} needs ${count === 1 ? 'a variable' : `${count} variables`}. This one has ${names.join(' and ')}, so name ${count === 1 ? 'it' : 'them'}, as in ${sample}.`)
+}
+
+function mapExpr(e: Expr, visit: (node: Expr) => Expr): Expr {
+  switch (e.type) {
+    case 'add':
+    case 'mul':
+    case 'vec':
+      return { ...e, args: e.args.map(visit) }
+    case 'div':
+      return { ...e, num: visit(e.num), den: visit(e.den) }
+    case 'pow':
+      return { ...e, base: visit(e.base), exp: visit(e.exp) }
+    case 'call':
+      return { ...e, args: e.args.map(visit) }
+    case 'mat':
+      return { ...e, rows: e.rows.map((row) => row.map(visit)) }
+    case 'eq':
+      return { ...e, left: visit(e.left), right: visit(e.right) }
+    case 'group':
+      return { ...e, body: visit(e.body) }
+    case 'caret':
+      return { ...e, body: e.body ? visit(e.body) : null }
+    default:
+      return e
+  }
+}
+
+/** Fill a variable that was left blank when the expression uses only one. */
+function fillInferred(e: Expr, env?: MathEnv): Expr {
+  const node = mapExpr(e, (child) => fillInferred(child, env))
+  if (node.type !== 'call') return node
+  const spec = functionByKernel(node.name)
+  const args = node.args.map((arg) => {
+    if (arg.type !== 'sym' || arg.name !== INFER_NAME) return arg
+    const host = node.args[0] ?? arg
+    return { type: 'sym' as const, name: guessNames(env ? applyEnv(host, env, 0) : host, spec?.name ?? 'This', 1)[0] ?? 'x' }
+  })
+  return args.some((arg, index) => arg !== node.args[index]) ? { ...node, args } : node
+}
+
+function quietRow(row: MathConsoleRow, input: string): void {
+  const echo = previewTex(input)
+  row.text = input
+  row.tex = echo
+  row.exactTex = echo
+  row.exactText = input
+  row.approxTex = null
+  row.approxText = null
+  row.plotKind = null
+  row.warn = null
+  row.visible = true
+}
+
 export function compileMath(statements: Statement[], angles: AngleMode = 'rad'): MathCompilation {
   const env: MathEnv = new Map()
   const rows: MathConsoleRow[] = []
@@ -161,12 +223,17 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
 
   for (const statement of statements) {
     if (statement.type !== 'math') continue
+    const plotMark = plots.length
+    const rowMark = rows.length
+    let silent = false
+    let failed = false
     try {
       const parsed = parseMathInput(statement.input)
+      silent = parsed.silent
       const echo = previewTex(statement.input)
       if (parsed.kind === 'fn') {
         const label = `${parsed.name}(${parsed.params.join(', ')})`
-        const body = rewriteAll(parsed.body, angles)
+        const body = fillInferred(rewriteAll(parsed.body, angles), env)
         const computed = containsCas(parsed.body)
         const shownBody = computed ? tidy(body, angles) : parsed.body
         const formulaTex = computed || !echo ? `${labelTex(parsed.name, parsed.params)} = ${tex(shownBody)}` : echo
@@ -285,30 +352,32 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         continue
       }
       if (parsed.kind === 'plot') {
-        const local = withoutNames(env, [parsed.variable])
+        const variable = parsed.variable ?? guessNames(applyEnv(parsed.expr, env, 0), 'Plot', 1)[0] ?? 'x'
+        if (parsed.plot.domain && !parsed.plot.domain.name) parsed.plot.domain = { ...parsed.plot.domain, name: variable }
+        const local = withoutNames(env, [variable])
         const value = normalize(rewriteAll(applyEnv(parsed.expr, local, 0), angles), angles)
-        const missing = freeSymbols(value).filter((name) => name !== parsed.variable)
-        const text = `Plot(${plain(parsed.expr)}, ${parsed.variable})`
-        const formula = echo ?? `\\operatorname{Plot}\\left(${tex(parsed.expr)}, ${texName(parsed.variable)}\\right)`
+        const missing = freeSymbols(value).filter((name) => name !== variable)
+        const text = `Plot(${plain(parsed.expr)}, ${variable})`
+        const formula = echo ?? `\\operatorname{Plot}\\left(${tex(parsed.expr)}, ${texName(variable)}\\right)`
         const label = shortLabel(parsed.expr, 'Plot')
-        const range = rangeOf(parsed.plot, parsed.variable, env, angles)
+        const range = rangeOf(parsed.plot, variable, env, angles)
         if (value.type === 'vec') {
           if (value.args.length < 2 || value.args.length > 3) throw new MathError('Plot draws a list of two or three expressions as a curve, for example Plot([cos(t), sin(t)], t).')
-          const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? [] : value.args, parsed.variable, local, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
-          const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval ?? DEFAULT_RANGE)))
+          const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? [] : value.args, variable, local, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
+          const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(variable, range.interval ?? DEFAULT_RANGE)))
           plots.push(drawn)
           rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
           continue
         }
         const fill = shadeOf(parsed.plot, range.interval, env, angles)
-        const drawn = curvePlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? null : { bodies: [value], param: parsed.variable, along: 'x' }, local, angles, { plot: parsed.plot, clip: range.interval, dashed: parsed.plot.dashed, shade: fill.shade })
-        const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(parsed.variable, range.interval)))
+        const drawn = curvePlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? null : { bodies: [value], param: variable, along: 'x' }, local, angles, { plot: parsed.plot, clip: range.interval, dashed: parsed.plot.dashed, shade: fill.shade })
+        const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(variable, range.interval)))
         plots.push(drawn)
         rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
         continue
       }
       if (parsed.kind === 'plot3d') {
-        const names = parsed.variables
+        const names = parsed.variables ?? (guessNames(applyEnv(parsed.expr, env, 0), 'Plot3D', 2) as [string, string])
         const local = withoutNames(env, names)
         const value = normalize(rewriteAll(applyEnv(parsed.expr, local, 0), angles), angles)
         const missing = freeSymbols(value).filter((name) => !names.includes(name))
@@ -321,8 +390,8 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         continue
       }
       if (parsed.kind !== 'expr') continue
-      const expr = parsed.expr
-      const applied = applyEnv(expr, env, 0)
+      const expr = fillInferred(parsed.expr, env)
+      const applied = fillInferred(applyEnv(parsed.expr, env, 0))
       const cas = evaluateCas(applied, angles)
       if (cas) {
         pushVisual(statement, casLabel(applied), cas, parsed.plot)
@@ -376,6 +445,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
       const shown = described(expr, value, statement.input, angles)
       rows.push({ ...shown, statementId: statement.id, label: 'Result', plotKind: null, visible: true, warn: null })
     } catch (error) {
+      failed = true
       const message = error instanceof MathError ? error.message : 'Could not read that.'
       rows.push({
         statementId: statement.id,
@@ -392,6 +462,11 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         visible: statement.visible,
         warn: message,
       })
+    } finally {
+      if (silent && !failed) {
+        plots.splice(plotMark)
+        for (const row of rows.slice(rowMark)) quietRow(row, statement.input)
+      }
     }
   }
 
@@ -699,7 +774,7 @@ function readInterval(domain: PlotDomain, env: MathEnv, angles: AngleMode): Inte
   return min < max ? { min, max } : { min: max, max: min }
 }
 
-/** The interval a setting gives one input: {t: 0..2*pi}, {Domain: 0..2*pi}, or an older `t = 0..2*pi` tail. */
+/** The interval a setting gives one input: {t: 0..2*pi} or {Domain: 0..2*pi}. */
 function rangeOf(plot: PlotOptions, param: string, env: MathEnv, angles: AngleMode, inputs: string[] = [param]): { interval: Interval | null; warn: string | null } {
   const domain = plot.ranges.find((range) => range.name === param) ?? plot.domain
   if (!domain) {

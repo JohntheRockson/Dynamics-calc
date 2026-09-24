@@ -53,8 +53,8 @@ export function runSyntaxChecks(): string[] {
   const typingTex = previewTex('Plot(sin(x), x){Color: re', 25) ?? ''
   expect(typingTex.includes('\\mathrm{Color}') && typingTex.includes('\\rule'), `a half-typed setting still previews with the caret: ${typingTex}`)
 
-  expect(plotsOf('Integrate(x, x){Domain: 0..1}').length === 0 && plotsOf('Integrate(x^2, x)').length === 0 && plotsOf('Integrate([t, 1], t){Domain: 0..1}').length === 0, 'Integrate computes without drawing or shading')
-  expect(textOf('Integrate(x, x){Domain: 0..1}').endsWith('= 1/2') && !textOf('Integrate(x^2, x)').includes('Graph'), `Integrate keeps its value: ${textOf('Integrate(x, x){Domain: 0..1}')} | ${textOf('Integrate(x^2, x)')}`)
+  expect(plotsOf('Integrate(x, x){Bounds: 0..1}').length === 0 && plotsOf('Integrate(x^2, x)').length === 0 && plotsOf('Integrate([t, 1], t){Bounds: 0..1}').length === 0, 'Integrate computes without drawing or shading')
+  expect(textOf('Integrate(x, x){Bounds: 0..1}').endsWith('= 1/2') && !textOf('Integrate(x^2, x)').includes('Graph'), `Integrate keeps its value: ${textOf('Integrate(x, x){Bounds: 0..1}')} | ${textOf('Integrate(x^2, x)')}`)
   fails('Integrate(x^2, x){Shade: 0..2}', 'Integrate has no setting Shade. Integrate only computes. To picture an area, shade the curve instead: Plot(x^2, x){Shade: 0..2}.')
   fails('Integrate(x^2, x){Color: red}', 'Integrate has no setting Color. Integrate only computes. To picture an area, shade the curve instead: Plot(x^2, x){Shade: 0..2}.')
   const plotShade = plotsOf('Plot(x^2, x){Shade: 0..2}')[0]
@@ -82,7 +82,7 @@ export function runSyntaxChecks(): string[] {
   fails('Derivative(x^3, x){Order: 2, Order: 3}', 'Order is set twice.')
   fails('Solve(x^2 = 4, x){Domain: 5}', 'Domain needs a range such as 0..2*pi.')
   fails('Plot(sin(x), x){Color: blurple}', 'Color needs a name such as red, blue, or green, or a hex code such as #ff8800.')
-  fails('Derivative(x^2)', 'Derivative needs an expression and a variable: Derivative(x^3, x)')
+  gives('Derivative(x^2)', 'Derivative(x^2, x) = 2x')
   fails('Solve(x^2 = 4, x, 0, 5)', 'Solve takes an equation and a variable. Other settings go in { } after the ), as in Solve(sin(x) = 1/2, x){Domain: 0..2*pi}')
   fails('sin(x){Color: red}', 'sin has no settings. To draw it, use Plot(sin(x), x){Color: …}.')
   fails('Solv(x^2 = 4, x)', 'Solv is not defined. Did you mean Solve?')
@@ -207,7 +207,7 @@ export function runSyntaxChecks(): string[] {
     ['Plot([cos(t), sin(t)], t){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed]`],
     ['Plot(x^2, x){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade]`],
     ['Derivative(x^3, x){|}', `options Derivative [Order, At, ${graphSettings}, Shade]`],
-    ['Integrate(x^2, x){|}', 'options Integrate [Domain]'],
+    ['Integrate(x^2, x){|}', 'options Integrate [Bounds]'],
     ['Expand(Derivative(x^3, x){|})', 'options Derivative [Order, At]'],
     ['2*Derivative(x^3, x){|}', 'options Derivative [Order, At]'],
     ['Expand(Derivative(x^3, x)){|}', 'options Expand []'],
@@ -278,6 +278,21 @@ export function runSyntaxChecks(): string[] {
   expect(insertSeparator('x^(Mod(7))', 8, 8, ',') === null && insertMathSlot('e^(-(x))', 6, 6, ')')?.cursor === 7, 'a call or a typed group inside an exponent keeps its comma and closer')
   expect(insertSeparator('Derivative(x^3, x){Order', 24, 24, '=') === null, 'an = inside a settings block stays a separator')
   expect(looksLikeMath('so') && looksLikeMath('dif') && looksLikeMath('Deri') && !looksLikeMath('po') && !looksLikeMath('sp') && !looksLikeMath('pl'), 'two letters of a function name start math, unless a statement starts the same way')
+
+  gives('Derivative(x^3)', 'Derivative(x^3, x) = 3x^2')
+  gives('Integrate(t^2){Bounds: 0..1}', 'Integrate(t^2, t){Bounds: 0..1} = 1/3')
+  const guessed = finite(plotsOf('Plot(sin(t))')[0]?.path ?? [])
+  expect(guessed.length > 5 && textOf('Plot(sin(t))').includes(', t'), `Plot guesses the only variable: ${textOf('Plot(sin(t))')}`)
+  fails('Plot(x + y)', 'Plot needs a variable. This one has x and y, so name it, as in Plot(x^2, x).')
+  const named = appendMath(appendMath(emptyDocument(), 'a = 3'), 'Plot(a*sin(t))')
+  const namedView = evaluateDocument(named)
+  const namedText = namedView.blocks.flatMap((block) => block.rows)[1]?.text ?? ''
+  expect(namedView.bodies.filter((body) => body.role === 'plot').length === 1 && namedText.includes(', t'), `Plot guesses t after a is given a value: ${namedText}`)
+  let quiet = appendMath(emptyDocument(), 'a = 4;')
+  quiet = appendMath(quiet, 'a + 1')
+  const quietRows = evaluateDocument(quiet).blocks.flatMap((block) => block.rows)
+  expect(quietRows[0]?.source !== 'error' && quietRows[0]?.text === 'a = 4;', `a trailing semicolon shows no result: ${quietRows[0]?.source} ${quietRows[0]?.text}`)
+  expect(quietRows[1]?.text.includes('5') && plotsOf('Plot(sin(x));').length === 0, `a silenced line still runs, and a silenced plot draws nothing: ${quietRows[1]?.text}`)
 
   return errors
 }
