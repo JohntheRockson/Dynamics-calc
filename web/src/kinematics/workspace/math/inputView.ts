@@ -1,7 +1,7 @@
 // Turn pasted LaTeX into the console's ascii, and move the caret through a fraction
 // the way a structural editor does: up and down between the two sides, sideways across a side.
 
-import { MATH_FUNCTION_NAMES } from './catalog'
+import { ALL_OPTION_NAMES, FUNCTION_WORDS, optionKey } from './functions'
 
 export const MATH_CARET = '\u0001'
 
@@ -29,17 +29,28 @@ const FUNC_WORDS: Record<string, string> = {
 const SKIP_WORDS = new Set([
   'displaystyle', 'textstyle', 'scriptstyle', 'scriptscriptstyle', 'limits', 'nolimits',
   'bigl', 'bigr', 'Bigl', 'Bigr', 'biggl', 'biggr', 'Biggl', 'Biggr', 'big', 'Big', 'bigg', 'Bigg',
-  'quad', 'qquad',
+  'quad', 'qquad', 'blacksquare', 'square', 'allowbreak', 'nobreak',
 ])
 
 const KNOWN = new Set<string>([
   ...GREEK,
   ...Object.keys(FUNC_WORDS),
-  ...MATH_FUNCTION_NAMES,
+  ...FUNCTION_WORDS,
   ...SKIP_WORDS,
   'frac', 'dfrac', 'tfrac', 'sqrt', 'cdot', 'times', 'ast', 'div', 'left', 'right',
-  'dot', 'ddot', 'dddot', 'mathrm', 'mathbf', 'text', 'operatorname', 'infty',
+  'dot', 'ddot', 'dddot', 'mathrm', 'mathbf', 'text', 'operatorname', 'mathord', 'infty',
+  'colon', 'ldots', 'dots', 'cdots', 'textcolor', 'color', 'lbrace', 'rbrace',
 ])
+
+const SETTING_FLAGS = new Set(ALL_OPTION_NAMES.map(optionKey))
+
+/** `Domain: 0..5` or a lone flag such as `Dashed`: the inside of a settings block, not a TeX group. */
+function looksLikeSettings(body: string): boolean {
+  const text = body.trim()
+  if (/^[A-Za-zα-ω][A-Za-z0-9α-ω _-]*\s*(?::|->|=)/.test(text)) return true
+  const words = text.split(',').map((part) => optionKey(part))
+  return words.length > 0 && words.every((word) => SETTING_FLAGS.has(word))
+}
 
 class IncompleteLatex extends Error {}
 
@@ -47,11 +58,16 @@ class IncompleteLatex extends Error {}
 export function latexToSource(input: string): string {
   if (!input.includes('\\')) return input
   try {
-    return convertLatex(input)
+    return tidySettings(convertLatex(input))
   } catch (error) {
     if (error instanceof IncompleteLatex) return input
     return input
   }
+}
+
+/** The preview spaces a settings block out with `\;` and `\colon`; pasted back, it should read the way it is typed. */
+function tidySettings(source: string): string {
+  return source.replace(/([)\]])\s+\{/g, '$1{').replace(/\s*\.\.\s*/g, '..').replace(/:\s+/g, ': ')
 }
 
 function convertLatex(src: string): string {
@@ -82,7 +98,8 @@ function convertLatex(src: string): string {
     if (ch === '{') {
       const body = readBrace(src, i)
       if (!body) throw new IncompleteLatex()
-      out += `(${convertLatex(body.body)})`
+      const inner = convertLatex(body.body)
+      out += looksLikeSettings(inner) ? `{${inner}}` : `(${inner})`
       i = body.next
       continue
     }
@@ -175,17 +192,54 @@ function applyCommand(name: string, src: string, i: number): { text: string; nex
     const text = /^[A-Za-z][A-Za-z0-9]*$/.test(inner) ? `${inner}${primes}` : `(${inner})${primes}`
     return { text, next: arg.next }
   }
-  if (name === 'mathrm' || name === 'mathbf' || name === 'text' || name === 'operatorname') {
+  if (name === 'mathrm' || name === 'mathbf' || name === 'text' || name === 'operatorname' || name === 'mathord') {
     const arg = readArg(src, i)
     if (!arg) throw new IncompleteLatex()
     return { text: convertLatex(arg.body), next: arg.next }
   }
+  if (name === 'textcolor' || name === 'color') {
+    const color = readArg(src, i)
+    if (!color) throw new IncompleteLatex()
+    if (name === 'color') return { text: '', next: color.next }
+    const arg = readArg(src, color.next)
+    if (!arg) throw new IncompleteLatex()
+    return { text: convertLatex(arg.body), next: arg.next }
+  }
+  if (name === 'colon') return { text: ':', next: i }
+  if (name === 'ldots' || name === 'dots' || name === 'cdots') return { text: '..', next: i }
   if (SKIP_WORDS.has(name)) return { text: '', next: i }
   if (FUNC_WORDS[name]) return { text: FUNC_WORDS[name], next: i }
-  if (GREEK.includes(name) || MATH_FUNCTION_NAMES.includes(name)) return { text: name, next: i }
-  if (name === '{' || name === 'lbrace') return { text: '(', next: i }
+  if (GREEK.includes(name) || FUNCTION_WORDS.includes(name.toLowerCase())) return { text: name, next: i }
+  if (name === '{' || name === 'lbrace') {
+    const close = matchEscapedBrace(src, i)
+    if (close) {
+      const inner = convertLatex(src.slice(i, close.start))
+      if (looksLikeSettings(inner)) return { text: `{${inner}}`, next: close.next }
+    }
+    return { text: '(', next: i }
+  }
   if (name === '}' || name === 'rbrace') return { text: ')', next: i }
   return { text: name, next: i }
+}
+
+/** The `\}` that closes a `\{` whose body starts at `i`, skipping nested escaped pairs. */
+function matchEscapedBrace(src: string, i: number): { start: number; next: number } | null {
+  let depth = 0
+  let j = i
+  while (j < src.length) {
+    if (src[j] !== '\\') {
+      j += 1
+      continue
+    }
+    const cmd = readCommand(src, j)
+    if (cmd.name === '{' || cmd.name === 'lbrace') depth += 1
+    else if (cmd.name === '}' || cmd.name === 'rbrace') {
+      if (depth === 0) return { start: j, next: cmd.next }
+      depth -= 1
+    }
+    j = Math.max(cmd.next, j + 1)
+  }
+  return null
 }
 
 function readDelim(src: string, i: number): { emit: string; next: number } {
@@ -243,20 +297,41 @@ export function moveMathCursor(source: string, cursor: number, dir: 'left' | 'ri
 }
 
 /**
- * A comma always separates arguments (a function call, a vector, a domain), so it is never
- * meant for the inside of an exponent or a subscript. If the caret is sitting inside one of
- * those slots when `,` is typed, step past its closer first. A fraction or a plain `(...)`
- * group keeps the comma, since it may belong to a call nested inside that group.
+ * The editor opens `^()`, `_{}`, and `/()` as soon as `^`, `_`, or `/` is typed, and the preview
+ * hides those brackets. A comma, an `=`, or a `)` never belongs inside one: typing `1/2, x` gives
+ * `1/(2), x` and `x^2 = 4` gives `x^(2) = 4`. While the innermost open bracket at the caret is
+ * one of those slots, step past its closer. A call, a list, a block, or a plain `(...)` group
+ * stops the walk, so `x^(Mod(7, 3))` still types.
  */
-export function exitSlotsForComma(source: string, cursor: number): number {
+export function exitSlots(source: string, cursor: number): number {
+  const lineStart = source.lastIndexOf('\n', cursor - 1) + 1
+  const lineEndAt = source.indexOf('\n', cursor)
+  const lineEnd = lineEndAt < 0 ? source.length : lineEndAt
   let at = cursor
   for (;;) {
-    const enclosing = [...findExponents(source), ...findSubscripts(source)]
-      .filter((slot) => at > slot.start && at < slot.end)
-      .sort((a, b) => b.start - a.start)
-    const innermost = enclosing[0]
-    if (!innermost) return at
-    at = innermost.end
+    const stack: number[] = []
+    for (let i = lineStart; i < at; i += 1) {
+      const ch = source[i]
+      if (ch === '(' || ch === '[' || ch === '{') stack.push(i)
+      else if (ch === ')' || ch === ']' || ch === '}') stack.pop()
+    }
+    const open = stack[stack.length - 1]
+    if (open === undefined) return at
+    const before = source[open - 1]
+    const slot = before === '^' || (before === '_' && source[open] === '{') || (before === '/' && source[open] === '(')
+    if (!slot) return at
+    let depth = 0
+    let close = -1
+    for (let i = open; i < lineEnd && close < 0; i += 1) {
+      const ch = source[i]
+      if (ch === '(' || ch === '[' || ch === '{') depth += 1
+      else if (ch === ')' || ch === ']' || ch === '}') {
+        depth -= 1
+        if (depth === 0) close = i
+      }
+    }
+    if (close < 0) return at
+    at = close + 1
   }
 }
 

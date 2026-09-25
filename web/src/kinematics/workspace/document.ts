@@ -3,7 +3,8 @@
 // can call. Units are SI; angles on the document are radians.
 
 import { commandById } from './commands'
-import { convertAngleInput, type AngleMode } from './math/expr'
+import type { AngleMode } from './math/expr'
+import { convertAngleInput } from './math/syntax'
 
 export const PROPERTY_KEYS = [
   'x',

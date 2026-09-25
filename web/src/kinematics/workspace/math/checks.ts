@@ -1,12 +1,13 @@
 import { chooseProbe } from '../../probe'
 import { appendMath, convertDocumentAngles, emptyDocument, exampleDocument, setMathVisible } from '../document'
 import { evaluateDocument } from '../evaluate'
-import { convertAngleInput, previewTex, validateMath } from './expr'
+import { convertAngleInput, previewTex, validateMath } from './syntax'
 import { clipToDomain, sheetsFromCurve } from './extrude'
 import { formatTick, tickMarks } from '../../ticks'
-import { closeOpenGroups, exitSlotsForComma, moveMathCursor } from './inputView'
+import { closeOpenGroups, exitSlots, moveMathCursor } from './inputView'
 import { axisThrough, expandPlotBox, fromWorld, originBox, toWorld, type PlotFrame } from './plotFrame'
 import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './shortcuts'
+import { runSyntaxChecks } from './syntaxChecks'
 
 export function runMathChecks(): string[] {
   const errors: string[] = []
@@ -15,7 +16,7 @@ export function runMathChecks(): string[] {
   }
 
   let doc = emptyDocument()
-  for (const input of ['2+2', 'sqrt(4)', '1/2', 'ln(e)', 'log(100)', 'sin(pi/2)', 'f(x) = x^2', 'f(3)', 'solve(x^2 - 4 = 0)', 'solve(2*x + 1 = 5)', 'solve(x + y = 3, x)', 'solve(x^2 - 2 = 0)']) {
+  for (const input of ['2+2', 'sqrt(4)', '1/2', 'ln(e)', 'log(100)', 'sin(pi/2)', 'f(x) = x^2', 'f(3)', 'Solve(x^2 - 4 = 0, x)', 'Solve(2*x + 1 = 5, x)', 'Solve(x + y = 3, x)', 'Solve(x^2 - 2 = 0, x)']) {
     doc = appendMath(doc, input)
   }
   const view = evaluateDocument(doc)
@@ -35,14 +36,14 @@ export function runMathChecks(): string[] {
   expect(texts.some((text) => text.includes('sqrt(2)') && text.includes('-sqrt(2)')), `radical: ${texts.join(' | ')}`)
 
   let more = emptyDocument()
-  for (const input of ['1/2+1/3', 'pi/2', 'a = 1/2', 'a+a', 'sqrt 4', 'log(8, 2)', '2sin(pi/2)']) more = appendMath(more, input)
+  for (const input of ['1/2+1/3', 'pi/2', 'a = 1/2', 'a+a', 'sqrt 4', 'log(8){Base: 2}', '2sin(pi/2)']) more = appendMath(more, input)
   const moreText = evaluateDocument(more).blocks.flatMap((block) => block.rows.map((row) => row.text))
   expect(moreText.some((text) => text.includes('5/6')), `sum of fractions: ${moreText.join(' | ')}`)
   expect(moreText.some((text) => text === 'pi/2' || text.includes('pi/2') && !text.includes('1/2pi')), `pi/2: ${moreText.join(' | ')}`)
   expect(moreText.some((text) => text === 'a = 1/2'), `assignment: ${moreText.join(' | ')}`)
   expect(moreText.some((text) => text.includes('a + a') && text.includes('1')), `a+a: ${moreText.join(' | ')}`)
   expect(moreText.some((text) => text.includes('sqrt(4)') && text.includes('2')), `sqrt space: ${moreText.join(' | ')}`)
-  expect(moreText.some((text) => text.includes('log(8, 2)') && text.includes('3')), `log base: ${moreText.join(' | ')}`)
+  expect(moreText.some((text) => text.includes('log(8){Base: 2}') && text.includes('3')), `log base: ${moreText.join(' | ')}`)
   expect(moreText.some((text) => text.includes('2') && text.endsWith('2') && text.includes('sin')), `2sin: ${moreText.join(' | ')}`)
 
   const curve = view.bodies.find((body) => body.label === 'f(x)')
@@ -206,99 +207,120 @@ export function runMathChecks(): string[] {
 
   let algebra = emptyDocument()
   for (const input of [
-    'decimal(1/2)',
-    'fraction(0.333)',
-    'factor(12)',
-    'gcd(12, 18)',
-    'lcm(4, 6)',
-    'mod(7, 3)',
-    'expand((x+1)*(x+2))',
-    'zeros(x^2 - 1)',
-    'solve(x + y = 3, x - y = 1)',
-    'diff(x^2, x)',
-    'diff(x^3, x, 2)',
-    'diff(x^2, x, 1, 3)',
-    'integrate(x^2, x)',
-    'integrate(x, x, 0, 1)',
-    'limit(sin(x)/x, x, 0)',
-    'sum(i, i, 1, 5)',
-    'prod(i, i, 1, 4)',
-    'fmin(x^2, x, -2, 2)',
-    'fmax(-x^2, x, -2, 2)',
-    'tangent(x^2, x, 1)',
-    'normal(x^2, x, 1)',
-    'series(exp(x), x, 0, 3)',
-    'dsolve(diff(y, x) = y, y, x)',
-    'idiff(x^2 + y^2 = 1, y, x)',
+    'Decimal(1/2)',
+    'Fraction(0.333)',
+    'Factor(12)',
+    'GCD(12, 18)',
+    'LCM(4, 6)',
+    'Mod(7, 3)',
+    'Expand((x+1)*(x+2))',
+    'Zeros(x^2 - 1, x)',
+    'Solve([x + y = 3, x - y = 1], [x, y])',
+    'Derivative(x^2, x)',
+    'Derivative(x^3, x){Order: 2}',
+    'Derivative(x^2, x){At: 3}',
+    'Integrate(x^2, x)',
+    'Integrate(x, x){Bounds: 0..1}',
+    'Limit(sin(x)/x, x, 0)',
+    'Sum(i, i, 1, 5)',
+    'Product(i, i, 1, 4)',
+    'Minimize(x^2, x){Domain: -2..2}',
+    'Maximize(-x^2, x){Domain: -2..2}',
+    'Tangent(x^2, x, 1)',
+    'Normal(x^2, x, 1)',
+    'Series(exp(x), x)',
+    'DSolve(Derivative(y, x) = y, y, x)',
+    'ImplicitDerivative(x^2 + y^2 = 1, y, x)',
   ]) algebra = appendMath(algebra, input)
   const algebraText = evaluateDocument(algebra).blocks.flatMap((block) => block.rows.map((row) => row.text))
   const algebraPlots = evaluateDocument(algebra).bodies.filter((body) => body.role === 'plot')
   const has = (part: string) => algebraText.some((text) => text.includes(part))
-  expect(has('0.5'), `decimal: ${algebraText.join(' | ')}`)
+  expect(has('Decimal(1/2) = 0.5'), `decimal: ${algebraText.join(' | ')}`)
   expect(has('1/3'), `fraction: ${algebraText.join(' | ')}`)
   expect(has('2^2') && has('3'), `factor: ${algebraText.join(' | ')}`)
-  expect(has('6'), `gcd: ${algebraText.join(' | ')}`)
-  expect(has('12'), `lcm: ${algebraText.join(' | ')}`)
-  expect(has('1'), `mod: ${algebraText.join(' | ')}`)
+  expect(has('GCD(12, 18) = 6'), `gcd: ${algebraText.join(' | ')}`)
+  expect(has('LCM(4, 6) = 12'), `lcm: ${algebraText.join(' | ')}`)
+  expect(has('Mod(7, 3) = 1'), `mod: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('x^2') && text.includes('3')), `expand: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('x = 1') && text.includes('x = -1')), `zeros: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('x = 2') && text.includes('y = 1')), `system: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('2x') && text.includes('diff(x^2, x)')), `derivative: ${algebraText.join(' | ')}`)
-  expect(has('6x'), `second derivative: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('diff(x^2, x, 1, 3)') && text.includes('6')), `derivative at a point: ${algebraText.join(' | ')}`)
+  expect(has('Derivative(x^2, x) = 2x'), `derivative: ${algebraText.join(' | ')}`)
+  expect(has('Derivative(x^3, x){Order: 2} = 6x'), `second derivative: ${algebraText.join(' | ')}`)
+  expect(has('Derivative(x^2, x){At: 3} = 6'), `derivative at a point: ${algebraText.join(' | ')}`)
   expect(has('x^3/3') && has('C'), `integral: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('integrate(x, x, 0, 1)') && text.includes('1/2')), `definite integral: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('limit') && text.includes('1')), `limit: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('sum') && text.includes('15')), `sum: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('prod') && text.includes('24')), `product: ${algebraText.join(' | ')}`)
+  expect(has('Integrate(x, x){Bounds: 0..1} = 1/2'), `definite integral: ${algebraText.join(' | ')}`)
+  expect(has('Limit(sin(x)/x, x, 0) = 1'), `limit: ${algebraText.join(' | ')}`)
+  expect(has('Sum(i, i, 1, 5) = 15'), `sum: ${algebraText.join(' | ')}`)
+  expect(has('Product(i, i, 1, 4) = 24'), `product: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('minimum') && text.includes('0')), `minimum: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('maximum') && text.includes('0')), `maximum: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('tangent') && text.includes('2x')), `tangent: ${algebraText.join(' | ')}`)
-  expect(has('normal'), `normal: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('series') && text.includes('x^2')), `series: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('exp') && text.includes('C')), `differential equation: ${algebraText.join(' | ')}`)
-  expect(algebraText.some((text) => text.includes('idiff') && text.includes('x') && text.includes('y')), `implicit: ${algebraText.join(' | ')}`)
-  expect(algebraPlots.some((body) => body.label === 'diff' || body.label === 'Derivative' || body.path.length > 2), `derivative is drawn: ${algebraPlots.map((body) => body.label).join(',')}`)
+  expect(has('Tangent(x^2, x, 1) = 2x - 1'), `tangent: ${algebraText.join(' | ')}`)
+  expect(has('Normal(x^2, x, 1)'), `normal: ${algebraText.join(' | ')}`)
+  expect(algebraText.some((text) => text.includes('Series(exp(x), x)') && text.includes('x^2')), `series: ${algebraText.join(' | ')}`)
+  expect(has('exp(x)*C'), `differential equation: ${algebraText.join(' | ')}`)
+  expect(has('ImplicitDerivative(x^2 + y^2 = 1, y, x) = -x/y'), `implicit: ${algebraText.join(' | ')}`)
+  expect(algebraPlots.some((body) => body.label === 'derivative'), `derivative is drawn: ${algebraPlots.map((body) => body.label).join(',')}`)
 
-  const degreeDerivative = evaluateDocument(appendMath(emptyDocument(), 'diff(sin(x), x)'), 0, 'deg').blocks.flatMap((block) => block.rows.map((row) => row.text))
+  let legacy = emptyDocument()
+  for (const input of [
+    'decimal(1/2)',
+    'zeros(x^2 - 1)',
+    'diff(x^3, x){Order: 2}',
+    'integrate(x, x){Bounds: 0..1}',
+    'log(8){Base: 2}',
+    'fmin(x^2, x){Domain: -2..2}',
+    'series(exp(x), x){Point: 0, Order: 3}',
+    'prod(i, i, 1, 4)',
+    'dot([1, 2], [3, 4])',
+  ]) legacy = appendMath(legacy, input)
+  const legacyRows = evaluateDocument(legacy).blocks.flatMap((block) => block.rows)
+  const legacyText = legacyRows.map((row) => row.text)
+  const hasLegacy = (part: string) => legacyText.some((text) => text.includes(part))
+  expect(legacyRows.every((row) => row.source !== 'error'), `older names still run in the new form: ${legacyText.join(' | ')}`)
+  expect(hasLegacy('0.5') && hasLegacy('x = 1 or x = -1'), `older decimal and zeros: ${legacyText.join(' | ')}`)
+  expect(hasLegacy('Derivative(x^3, x){Order: 2} = 6x'), `an older name takes the new settings: ${legacyText.join(' | ')}`)
+  expect(hasLegacy('Integrate(x, x){Bounds: 0..1} = 1/2') && hasLegacy('log(8){Base: 2} = 3'), `older integrate and log names: ${legacyText.join(' | ')}`)
+  expect(hasLegacy('minimum 0 at x = 0') && hasLegacy('Series(exp(x), x) = ') && hasLegacy('Product(i, i, 1, 4) = 24') && hasLegacy('Dot([1, 2], [3, 4]) = 11'), `older names still resolve: ${legacyText.join(' | ')}`)
+  for (const retired of ['diff(x^3, x, 2)', 'integrate(x, x, 0, 1)', 'log(8, 2)', 'solve(x + y = 3, x - y = 1)', 'fmin(x^2, x, -2, 2)']) {
+    const retiredRow = evaluateDocument(appendMath(emptyDocument(), retired)).blocks.flatMap((block) => block.rows)[0]
+    expect(retiredRow?.source === 'error', `an older positional form is retired: ${retired} -> ${retiredRow?.text}`)
+  }
+
+  const degreeDerivative = evaluateDocument(appendMath(emptyDocument(), 'Derivative(sin(x), x)'), 0, 'deg').blocks.flatMap((block) => block.rows.map((row) => row.text))
   expect(degreeDerivative.some((text) => text.includes('pi') && text.includes('180')), `degree derivative follows the angle mode: ${degreeDerivative.join(' | ')}`)
 
-  const constantDerivative = evaluateDocument(appendMath(emptyDocument(), 'diff(x^3, x, 3)'))
+  const constantDerivative = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^3, x){Order: 3}'))
   const constantText = constantDerivative.blocks.flatMap((block) => block.rows.map((row) => row.text))
   const constantPath = constantDerivative.bodies.filter((body) => body.role === 'plot').flatMap((body) => body.path)
   const constantYs = constantPath.filter((point) => Number.isFinite(point.y)).map((point) => point.y)
   expect(constantText.some((text) => text.includes('6')), `third derivative: ${constantText.join(' | ')}`)
   expect(constantYs.length > 2 && constantYs.every((y) => Math.abs(y - 6) < 1e-6), 'a constant derivative is a horizontal line')
-  const atPoint = evaluateDocument(appendMath(emptyDocument(), 'diff(x^3, x, 3, 1)'))
+  const atPoint = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^3, x){Order: 3, At: 1}'))
   expect(atPoint.bodies.filter((body) => body.role === 'plot').length === 0, 'a derivative at a point stays a number')
 
-  const integral = evaluateDocument(appendMath(emptyDocument(), 'integrate(x, x, 0, 1)'))
-  const integralBody = integral.bodies.find((body) => body.role === 'plot')
-  expect(Boolean(integralBody?.shade && integralBody.shade.from === 0 && integralBody.shade.to === 1 && !integralBody.hideStroke && integralBody.path.length > 2), 'a definite integral shades the integrand')
-  let shaded = emptyDocument()
-  shaded = appendMath(shaded, 'y = x')
-  shaded = appendMath(shaded, 'integrate(x, x, 0, 1)')
-  const shadedBodies = evaluateDocument(shaded).bodies.filter((body) => body.role === 'plot')
-  const shadedIntegral = shadedBodies.find((body) => body.shade)
-  expect(Boolean(shadedIntegral?.hideStroke) && shadedBodies.filter((body) => !body.hideStroke).length === 1, 'the integrand is not drawn twice')
+  let area = emptyDocument()
+  area = appendMath(area, 'Integrate(x, x){Bounds: 0..1}')
+  area = appendMath(area, 'y = x{Shade: 0..1}')
+  const areaBodies = evaluateDocument(area).bodies.filter((body) => body.role === 'plot')
+  expect(areaBodies.length === 1 && areaBodies[0]?.shade?.from === 0 && areaBodies[0].shade.to === 1 && areaBodies[0].path.length > 2, 'an area shows only when the curve asks for Shade')
 
   let linear = emptyDocument()
   for (const input of [
-    'dot([1, 2], [3, 4])',
-    'cross([1, 0, 0], [0, 1, 0])',
-    'unit([3, 4])',
-    'norm([3, 4])',
-    'det([[1, 2], [3, 4]])',
+    'Dot([1, 2], [3, 4])',
+    'Cross([1, 0, 0], [0, 1, 0])',
+    'Unit([3, 4])',
+    'Norm([3, 4])',
+    'Det([[1, 2], [3, 4]])',
     '[[1, 2], [3, 4]]*[1, 0]',
     'r(t) = [cos(t), sin(t)]',
     's(t) = [cos(t), sin(t), t]',
   ]) linear = appendMath(linear, input)
   const linearView = evaluateDocument(linear)
   const linearText = linearView.blocks.flatMap((block) => block.rows.map((row) => row.text))
-  expect(linearText.some((text) => text.includes('dot') && text.includes('11')), `dot product: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('Dot([1, 2], [3, 4]) = 11')), `dot product: ${linearText.join(' | ')}`)
   expect(linearText.some((text) => text.includes('[0, 0, 1]')), `cross product: ${linearText.join(' | ')}`)
   expect(linearText.some((text) => text.includes('3/5') && text.includes('4/5')), `unit vector: ${linearText.join(' | ')}`)
-  expect(linearText.some((text) => text.includes('norm') && text.includes('= 5')), `norm: ${linearText.join(' | ')}`)
+  expect(linearText.some((text) => text.includes('Norm([3, 4]) = 5')), `norm: ${linearText.join(' | ')}`)
   expect(linearText.some((text) => text.includes('-2')), `determinant: ${linearText.join(' | ')}`)
   expect(linearText.some((text) => text.includes('[1, 3]')), `matrix times vector: ${linearText.join(' | ')}`)
   const circle = linearView.bodies.find((body) => body.label.includes('r(t)'))
@@ -342,15 +364,15 @@ export function runMathChecks(): string[] {
   expect(Boolean(openSubscript?.includes('\\square')), `a trailing _ keeps a subscript hole: ${openSubscript}`)
   expect(Boolean(dottedPower?.includes('\\dot') && dottedPower.includes('^')), `a prime binds before a power: ${dottedPower}`)
 
-  const timeDerivative = evaluateDocument(appendMath(emptyDocument(), "diff(r*theta'*e_theta, t)"))
+  const timeDerivative = evaluateDocument(appendMath(emptyDocument(), "Derivative(r*theta'*e_theta, t)"))
   const motionRow = timeDerivative.blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(motionRow?.text.includes("r'") && motionRow.text.includes("theta''") && motionRow.text.includes("e_theta'")), `time derivative: ${motionRow?.text}`)
   expect(Boolean(motionRow?.tex?.includes('\\dot') && motionRow.tex.includes('\\ddot') && motionRow.tex.includes('\\mathbf{e}') && motionRow.tex.includes('\\theta')), `time derivative tex: ${motionRow?.tex}`)
-  const partial = evaluateDocument(appendMath(emptyDocument(), 'diff(x^2, x)')).blocks.flatMap((block) => block.rows)[0]
+  const partial = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^2, x)')).blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(partial?.text.includes('2x') && !partial.text.includes("x'")), `partial derivative stays partial: ${partial?.text}`)
-  const chain = evaluateDocument(appendMath(emptyDocument(), 'diff(sin(theta), t)')).blocks.flatMap((block) => block.rows)[0]
+  const chain = evaluateDocument(appendMath(emptyDocument(), 'Derivative(sin(theta), t)')).blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(chain?.text.includes('cos') && chain.text.includes("theta'")), `theta depends on time: ${chain?.text}`)
-  const undone = evaluateDocument(appendMath(emptyDocument(), "integrate(theta', t)")).blocks.flatMap((block) => block.rows)[0]
+  const undone = evaluateDocument(appendMath(emptyDocument(), "Integrate(theta', t)")).blocks.flatMap((block) => block.rows)[0]
   expect(Boolean(undone?.tex?.includes('\\theta') && undone.tex.includes('C') && !undone.tex.includes('\\dot')), `a dot integrates back: ${undone?.tex}`)
 
   const decimalPreview = previewTex('32.2')
@@ -412,16 +434,22 @@ export function runMathChecks(): string[] {
   }
   expect(beforePole && !connectedAcross, `singular curves break at a pole: before ${beforePole}, connected ${connectedAcross}`)
 
-  const coarse = evaluateDocument(appendMath(emptyDocument(), 'g(x) = sin(x), plotpoints = 20, maxrecursion = 0, exclusions = false'))
+  const coarse = evaluateDocument(appendMath(emptyDocument(), 'g(x) = sin(x){PlotPoints: 20, MaxRecursion: 0, Exclusions: false}'))
   const coarsePath = coarse.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.y)) ?? []
-  expect(coarsePath.length === 20, `plotpoints sets the sample count: ${coarsePath.length}`)
+  expect(coarsePath.length === 20, `PlotPoints sets the sample count: ${coarsePath.length}`)
+  const coarseTail = evaluateDocument(appendMath(emptyDocument(), 'g(x) = sin(x), plotpoints = 20, maxrecursion = 0, exclusions = false'))
+  const coarseTailRow = coarseTail.blocks.flatMap((block) => block.rows)[0]
+  expect(coarseTailRow?.source === 'error' && coarseTail.bodies.length === 0, `a comma settings tail is retired: ${coarseTailRow?.text}`)
 
-  const nonlinear = evaluateDocument(appendMath(emptyDocument(), 'solve(10 = sigma*(cos(theta))^2, 5 = sigma*(sin(theta))^2, (0, 2*pi))'))
+  const nonlinear = evaluateDocument(appendMath(emptyDocument(), 'Solve([10 = sigma*cos(theta)^2, 5 = sigma*sin(theta)^2], [sigma, theta]){theta: 0..2*pi, sigma: 0..20}'))
   const nonlinearRow = nonlinear.blocks.flatMap((block) => block.rows)[0]
-  expect(Boolean(nonlinearRow?.text.includes('15') && nonlinearRow.text.includes('theta') && !nonlinearRow.text.includes('not linear')), `a domain searches a nonlinear system: ${nonlinearRow?.text}`)
-  const missingDomain = evaluateDocument(appendMath(emptyDocument(), 'solve(10 = sigma*(cos(theta))^2, 5 = sigma*(sin(theta))^2)'))
+  expect(Boolean(nonlinearRow?.text.includes('sigma = 15') && nonlinearRow.text.includes('theta') && !nonlinearRow.text.includes('not linear')), `named ranges search a nonlinear system: ${nonlinearRow?.text}`)
+  const legacyNonlinear = evaluateDocument(appendMath(emptyDocument(), 'solve(10 = sigma*(cos(theta))^2, 5 = sigma*(sin(theta))^2, (0, 2*pi))'))
+  const legacyNonlinearRow = legacyNonlinear.blocks.flatMap((block) => block.rows)[0]
+  expect(legacyNonlinearRow?.source === 'error', `a comma-separated system is retired: ${legacyNonlinearRow?.text}`)
+  const missingDomain = evaluateDocument(appendMath(emptyDocument(), 'Solve([10 = sigma*cos(theta)^2, 5 = sigma*sin(theta)^2], [sigma, theta])'))
   const missingRow = missingDomain.blocks.flatMap((block) => block.rows)[0]
-  expect(Boolean(missingRow?.text.includes('domain')), `a nonlinear system asks for a domain: ${missingRow?.text}`)
+  expect(Boolean(missingRow?.source === 'error' && missingRow.text.includes('{Domain: 0..2*pi}')), `a nonlinear system asks for a Domain setting: ${missingRow?.text}`)
 
   expect(moveMathCursor('sigma', 3, 'right') === 5 && moveMathCursor('sigma', 3, 'left') === 0, 'arrows jump a whole name')
   expect(moveMathCursor('sigma', 0, 'right') === 5 && moveMathCursor('sigma', 5, 'left') === 0, 'arrows cross a name in one step')
@@ -467,14 +495,14 @@ export function runMathChecks(): string[] {
   // `...theta))^2` leaves the caret right after "2" with the closing paren still unconsumed.
   const exponentComma = 'solve(10=sigma*(cos(theta))^(2)'
   const exponentCaret = exponentComma.length - 1
-  expect(exitSlotsForComma(exponentComma, exponentCaret) === exponentComma.length, `a comma steps out of an open exponent: ${exitSlotsForComma(exponentComma, exponentCaret)}`)
+  expect(exitSlots(exponentComma, exponentCaret) === exponentComma.length, `a comma steps out of an open exponent: ${exitSlots(exponentComma, exponentCaret)}`)
   const openCall = 'f(1)'
-  expect(exitSlotsForComma(openCall, openCall.length - 1) === openCall.length - 1, 'a comma stays inside an explicit call')
+  expect(exitSlots(openCall, openCall.length - 1) === openCall.length - 1, 'a comma stays inside an explicit call')
   const nestedExponent = 'a^(2^(3))'
-  expect(exitSlotsForComma(nestedExponent, nestedExponent.length - 2) === nestedExponent.length, `a comma steps out of every nested exponent: ${exitSlotsForComma(nestedExponent, nestedExponent.length - 2)}`)
-  const optionsWithCaret = previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6', 20)
-  expect(Boolean(optionsWithCaret?.includes('\\sin')), `a caret inside the plot options tail still previews: ${optionsWithCaret}`)
-  expect(Boolean(previewTex('f(x)=sin(x),plotpoints=160,maxrecursion=6')?.includes('\\sin')), 'the plot options tail still previews without a caret')
+  expect(exitSlots(nestedExponent, nestedExponent.length - 2) === nestedExponent.length, `a comma steps out of every nested exponent: ${exitSlots(nestedExponent, nestedExponent.length - 2)}`)
+  const optionsWithCaret = previewTex('f(x)=sin(x){PlotPoints: 160, MaxRecursion: 6}', 12)
+  expect(Boolean(optionsWithCaret?.includes('\\sin')), `a caret inside a settings block still previews: ${optionsWithCaret}`)
+  expect(Boolean(previewTex('f(x)=sin(x){PlotPoints: 160, MaxRecursion: 6}')?.includes('\\sin')), 'a settings block still previews without a caret')
 
   expect(convertAngleInput('sin(pi)', 'rad', 'deg') === 'sin(180)', `radians pi becomes 180 degrees: ${convertAngleInput('sin(pi)', 'rad', 'deg')}`)
   expect(convertAngleInput('sin(180)', 'deg', 'rad') === 'sin(pi)', `180 degrees becomes pi: ${convertAngleInput('sin(180)', 'deg', 'rad')}`)
@@ -488,9 +516,9 @@ export function runMathChecks(): string[] {
   expect(convertAngleInput('asin(1)', 'rad', 'deg') === 'asin(1)', 'inverse trig input is not an angle')
   expect(convertAngleInput('diff(sin(x), x)', 'rad', 'deg') === 'diff(sin(x), x)', 'a derivative in x stays written in x')
   expect(convertAngleInput('sin(x + pi)', 'rad', 'deg') === 'sin(x + 180)', `a constant offset converts: ${convertAngleInput('sin(x + pi)', 'rad', 'deg')}`)
-  expect(convertAngleInput('f(x) = sin(x), plotpoints = 160', 'rad', 'deg') === 'f(x) = sin(x), plotpoints = 160', 'an unchanged curve keeps its plot options')
-  const withPoints = convertAngleInput('f(x) = sin(pi), plotpoints = 160', 'rad', 'deg')
-  expect(withPoints === 'f(x) = sin(180), plotpoints = 160', `a converted curve keeps its plot options: ${withPoints}`)
+  expect(convertAngleInput('f(x) = sin(x){PlotPoints: 160}', 'rad', 'deg') === 'f(x) = sin(x){PlotPoints: 160}', 'an unchanged curve keeps its settings')
+  const withPoints = convertAngleInput('f(x) = sin(pi){PlotPoints: 160}', 'rad', 'deg')
+  expect(withPoints === 'f(x) = sin(180){PlotPoints: 160}', `a converted curve keeps its settings: ${withPoints}`)
   let angleDoc = appendMath(emptyDocument(), 'sin(pi)')
   const radAngle = evaluateDocument(angleDoc).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
   expect(radAngle.includes('sin(pi)') && radAngle.includes('0') && !radAngle.includes('0.05'), `sin(pi) radians: ${radAngle}`)
@@ -508,25 +536,25 @@ export function runMathChecks(): string[] {
   const axisShifted = axisThrough({ xMin: 2, xMax: 8, yMin: 2, yMax: 8, zMin: 4, zMax: 10 })
   expect(axisShifted.x === 5 && axisShifted.y === 5 && axisShifted.z === 7, `axes cross the middle of a shifted cube: ${axisShifted.x},${axisShifted.y},${axisShifted.z}`)
 
-  const ranged = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, 0, 0], t = 0..2'))
+  const ranged = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, 0, 0]{t: 0..2}'))
   const rangedXs = ranged.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
   expect(rangedXs.length > 5 && Math.min(...rangedXs) >= -1e-6 && Math.max(...rangedXs) <= 2 + 1e-6 && Math.max(...rangedXs) > 1, `t = 0..2 stays inside that domain: ${Math.min(...rangedXs)}..${Math.max(...rangedXs)}`)
   const open = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, 0, 0]'))
   const openXs = open.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
   expect(openXs.length > 5 && Math.min(...openXs) < -5 && Math.max(...openXs) > 5, `a parametric curve still defaults to t from -10 to 10: ${Math.min(...openXs)}..${Math.max(...openXs)}`)
-  const parenDomain = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, t^2, 0], t = (0, 1)'))
+  const parenDomain = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [t, t^2, 0]{t: 0..1}'))
   const parenXs = parenDomain.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
   expect(parenXs.length > 5 && Math.min(...parenXs) >= -1e-6 && Math.max(...parenXs) <= 1 + 1e-6, `t = (0, 1) is a domain: ${Math.min(...parenXs)}..${Math.max(...parenXs)}`)
   const broken = 'r(t) = [t, 0, 0]\nt = 0..2*pi'
   const brokenView = evaluateDocument(appendMath(emptyDocument(), broken))
-  const brokenXs = brokenView.bodies.find((body) => body.role === 'plot')?.path.filter((point) => Number.isFinite(point.x)).map((point) => point.x) ?? []
-  expect(brokenXs.length > 5 && Math.min(...brokenXs) >= -1e-6 && Math.max(...brokenXs) <= 2 * Math.PI + 1e-6, `a domain on the next line is kept: ${Math.min(...brokenXs)}..${Math.max(...brokenXs)}`)
-  const domainPreview = previewTex('r(t) = [cos(t), sin(t)], t = 0..2*pi') ?? ''
+  const brokenRow = brokenView.blocks.flatMap((block) => block.rows)[0]
+  expect(brokenRow?.source === 'error' && brokenView.bodies.length === 0, `a range written as a comma tail is retired: ${brokenRow?.text}`)
+  const domainPreview = previewTex('r(t) = [cos(t), sin(t)]{t: 0..2*pi}') ?? ''
   expect(domainPreview.includes('\\cos') && domainPreview.includes('\\ldots') && domainPreview.includes('\\pi'), `the domain shows with the curve: ${domainPreview}`)
   const domainLine = previewTex('t = 0..2') ?? ''
   expect(domainLine.includes('0') && domainLine.includes('\\ldots') && domainLine.includes('2'), `a domain line previews: ${domainLine}`)
-  const convertedDomain = convertAngleInput('r(t) = [cos(pi), sin(t)], t = 0..2', 'rad', 'deg')
-  expect(convertedDomain.includes('180') && convertedDomain.includes('t = 0..2'), `a domain survives an angle switch: ${convertedDomain}`)
+  const convertedDomain = convertAngleInput('r(t) = [cos(pi), sin(t)]{t: 0..2}', 'rad', 'deg')
+  expect(convertedDomain.includes('180') && convertedDomain.includes('{t: 0..2}'), `a domain survives an angle switch: ${convertedDomain}`)
 
-  return errors
+  return [...errors, ...runSyntaxChecks()]
 }

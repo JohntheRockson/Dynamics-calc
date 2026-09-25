@@ -4,7 +4,8 @@ import { usePlayback } from '../../hooks/usePlayback'
 import { Composer } from './Composer'
 import { appendMath, commitCommand, convertDocumentAngles, emptyDocument, exampleDocument, removeStatement, replaceMath, setMathVisible, type ExampleId, type WorkspaceDocument } from './document'
 import { MathField } from './MathField'
-import { previewTex, validateMath, type AngleMode } from './math/expr'
+import type { AngleMode } from './math/expr'
+import { previewTex, validateMath } from './math/syntax'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
 import { FigurePane } from './FigurePane'
 
@@ -85,6 +86,7 @@ function MathRowEditor({ input, onCommit }: { input: string; onCommit: (value: s
       <MathField
         value={draft}
         label="Edit statement"
+        math
         onValue={setDraft}
         onSubmit={(value) => {
           if (value.trim() === input.trim()) return

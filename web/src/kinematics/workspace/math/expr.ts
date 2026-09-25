@@ -1,8 +1,8 @@
 // Small exact-rational kernel: parse, draw as TeX, evaluate, and solve
 // linear or quadratic equations. Trig angles follow the active unit.
 
-import { MATH_FUNCTION_NAMES } from './catalog'
-import { MATH_CARET, latexToSource } from './inputView'
+import { FUNCTIONS, GRAPH_OPTIONS, canonicalOptionName, findFunction, findOption, functionByKernel, parseColor, suggestName, type FunctionSpec, type OptionSpec } from './functions'
+import { MATH_CARET } from './inputView'
 import { containsAggregate, reduceAlgebra } from './linear'
 
 export type AngleMode = 'rad' | 'deg'
@@ -22,12 +22,30 @@ export type Expr =
   | { type: 'mul'; args: Expr[] }
   | { type: 'div'; num: Expr; den: Expr }
   | { type: 'pow'; base: Expr; exp: Expr }
-  | { type: 'call'; name: string; args: Expr[] }
+  | { type: 'call'; name: string; args: Expr[]; options?: OptionBlock }
   | { type: 'vec'; args: Expr[] }
   | { type: 'mat'; rows: Expr[][] }
   | { type: 'eq'; left: Expr; right: Expr }
   | { type: 'group'; body: Expr }
   | { type: 'caret'; place: 'pre' | 'post' | 'sub'; body: Expr | null; split?: number }
+
+export type CallExpr = Extract<Expr, { type: 'call' }>
+
+/** One `Name: value` inside a settings block. A bare flag such as `Dashed` has no value. */
+export interface OptionEntry {
+  key: string
+  value: string | null
+  /** The entry as typed, including a live caret marker. */
+  raw: string
+}
+
+/** The `{…}` after a call or at the end of a line, read but not yet checked. */
+export interface OptionBlock {
+  raw: string
+  entries: OptionEntry[]
+  /** A live caret sits just before the opening brace. */
+  caretBefore?: boolean
+}
 
 export type Binding =
   | { kind: 'expr'; expr: Expr }
@@ -49,9 +67,22 @@ interface Rat {
   d: bigint
 }
 
-const BUILTIN_CALLS = new Set(['sqrt', 'ln', 'log', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan'])
-const CAS_CALLS = new Set(MATH_FUNCTION_NAMES)
-const RESERVED = new Set([...BUILTIN_CALLS, ...CAS_CALLS, 'pi', 'e'])
+/** Built-in names ignore case and have aliases: Derivative, derivative, and diff are one function. */
+export function resolveCallName(name: string): string {
+  return findFunction(name)?.kernel ?? name
+}
+
+function isElementary(name: string): boolean {
+  return functionByKernel(name)?.section === 'basic'
+}
+
+export function isKnownCall(name: string): boolean {
+  return name === 'Dt' || functionByKernel(name) !== null
+}
+
+export function isReservedName(name: string): boolean {
+  return name === 'pi' || name === 'e' || name === 'Dt' || findFunction(name) !== null
+}
 
 const ONE: Rat = { n: 1n, d: 1n }
 const ZERO_EXPR: Expr = { type: 'rat', n: 0n, d: 1n }
@@ -103,8 +134,6 @@ function divRat(a: Rat, b: Rat): Rat {
   return out ?? ONE
 }
 
-const IDENT = '[A-Za-zαβγδεζηθικλμνξπρστυφχψω][A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]*'
-
 export interface PlotDomain {
   name: string
   min: Expr
@@ -116,6 +145,12 @@ export interface PlotOptions {
   recursion: number
   exclusions: boolean
   domain: PlotDomain | null
+  /** Ranges named after an input, as in {t: 0..2*pi} or Plot3D(…){x: -2..2}. */
+  ranges: PlotDomain[]
+  color: string | null
+  dashed: boolean
+  /** Fill between the curve and the axis: an interval, or 'all' for the whole curve. */
+  shade: { min: Expr; max: Expr } | 'all' | null
 }
 
 export interface SearchDomain {
@@ -124,46 +159,13 @@ export interface SearchDomain {
   max: Expr
 }
 
-export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null }
+export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null, ranges: [], color: null, dashed: false, shade: null }
 
-export function parseMathInput(input: string): MathInput {
-  const turned = latexToSource(input).trim()
-  const { source, plot } = takePlotOptions(turned)
-  const raw = autoClose(source)
-  if (!raw) throw new MathError('Enter a calculation.')
-  const fn2 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*,\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
-  if (fn2) {
-    const name = naming(fn2[1] ?? '')
-    const params = [naming(fn2[2] ?? ''), naming(fn2[3] ?? '')]
-    assertDefinable(name)
-    if (params[0] === params[1]) throw new MathError('Use two different inputs.')
-    return { kind: 'fn', name, params, body: parseExpr(fn2[4] ?? ''), raw, plot }
-  }
-  const fn1 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
-  if (fn1) {
-    const name = naming(fn1[1] ?? '')
-    assertDefinable(name)
-    return { kind: 'fn', name, params: [naming(fn1[2] ?? '')], body: parseExpr(fn1[3] ?? ''), raw, plot }
-  }
-  const expr = parseExpr(raw)
-  if (expr.type === 'eq' && expr.left.type === 'call') {
-    throw new MathError('Define a curve as f(x) = … or a surface as f(x, y) = ….')
-  }
-  if (expr.type === 'eq' && expr.left.type === 'sym' && !RESERVED.has(expr.left.name)) {
-    return { kind: 'assign', name: expr.left.name, expr: expr.right, raw, plot }
-  }
-  if (expr.type === 'call' && expr.name === 'solve') return parseSolve(expr, raw, plot)
-  return { kind: 'expr', expr, raw, plot }
+export function plotDefaults(): PlotOptions {
+  return { ...DEFAULT_PLOT, ranges: [] }
 }
 
-export type MathInput =
-  | { kind: 'fn'; name: string; params: string[]; body: Expr; raw: string; plot: PlotOptions }
-  | { kind: 'assign'; name: string; expr: Expr; raw: string; plot: PlotOptions }
-  | { kind: 'solve'; equation: Expr; variable: string | null; raw: string; plot: PlotOptions }
-  | { kind: 'system'; equations: Expr[]; domains: SearchDomain[]; raw: string; plot: PlotOptions }
-  | { kind: 'expr'; expr: Expr; raw: string; plot: PlotOptions }
-
-function naming(raw: string): string {
+export function naming(raw: string): string {
   const chars = [...raw]
   if (chars.length === 1) {
     const greek = greekCharName(chars[0] ?? '')
@@ -172,124 +174,43 @@ function naming(raw: string): string {
   return canonicalGreek(raw)
 }
 
-/**
- * A live caret marker can land inside or right after this tail while it is being typed
- * (e.g. `,plotpoints=16[caret]0`). Strip it before matching options, then put it back only if
- * it belonged to the main expression; a caret inside the options tail itself is not shown in
- * the KaTeX preview, so it is simply dropped.
- */
-function takePlotOptions(source: string): { source: string; plot: PlotOptions } {
-  const caretAt = source.indexOf(MATH_CARET)
-  const plain = caretAt < 0 ? source : source.slice(0, caretAt) + source.slice(caretAt + 1)
-  let rest = plain.trim()
-  const plot: PlotOptions = { ...DEFAULT_PLOT, domain: null }
-  const pattern = /,\s*(plotpoints|maxrecursion|exclusions)\s*=\s*([^\s,]+)\s*$/i
-  const domainPattern = new RegExp(`(?:,|\\n)\\s*(domain|${IDENT})\\s*=\\s*([^\\s,]+)\\s*\\.\\.\\s*([^\\s,]+)\\s*$`, 'i')
-  const parenDomain = new RegExp(`(?:,|\\n)\\s*(domain|${IDENT})\\s*=\\s*\\(([^,]+),\\s*([^)]+)\\)\\s*$`, 'i')
-  for (let n = 0; n < 8; n += 1) {
-    const domain = domainPattern.exec(rest) ?? parenDomain.exec(rest)
-    const domainName = (domain?.[1] ?? '').toLowerCase()
-    if (domain && domainName !== 'plotpoints' && domainName !== 'maxrecursion' && domainName !== 'exclusions') {
-      if (!plot.domain) {
-        try {
-          plot.domain = { name: domain[1] ?? 't', min: parseExpr((domain[2] ?? '').trim()), max: parseExpr((domain[3] ?? '').trim()) }
-        } catch {
-          throw new MathError('Use a domain such as t = 0..2*pi.')
-        }
-      }
-      rest = rest.slice(0, domain.index).trim()
-      continue
-    }
-    const match = pattern.exec(rest)
-    if (!match) break
-    const key = (match[1] ?? '').toLowerCase()
-    const raw = match[2] ?? ''
-    if (key === 'exclusions') {
-      const flag = raw.toLowerCase()
-      plot.exclusions = flag !== 'false' && flag !== '0' && flag !== 'off' && flag !== 'none'
-    } else {
-      const value = Number(raw)
-      if (!Number.isFinite(value)) throw new MathError(key === 'plotpoints' ? 'plotpoints needs a number of samples.' : 'maxrecursion needs a whole number.')
-      if (key === 'plotpoints') plot.points = Math.max(12, Math.min(800, Math.round(value)))
-      else plot.recursion = Math.max(0, Math.min(8, Math.round(value)))
-    }
-    rest = rest.slice(0, match.index).trim()
-  }
-  if (caretAt >= 0 && caretAt <= rest.length) rest = `${rest.slice(0, caretAt)}${MATH_CARET}${rest.slice(caretAt)}`
-  return { source: rest, plot }
-}
-
-function assertDefinable(name: string): void {
-  if (RESERVED.has(name)) throw new MathError(`${name} is built in.`)
-}
-
-function parseSolve(expr: Expr, raw: string, plot: PlotOptions): MathInput {
-  if (expr.type !== 'call') throw new MathError('Use solve(equation) or solve(equation, x).')
-  if (expr.args.length >= 2 && expr.args[0]?.type === 'eq' && expr.args[1]?.type === 'eq') {
-    const equations: Expr[] = []
-    let index = 0
-    while (index < expr.args.length && expr.args[index]?.type === 'eq') {
-      const equation = expr.args[index]
-      if (equation) equations.push(equation)
-      index += 1
-    }
-    return { kind: 'system', equations, domains: parseDomains(expr.args.slice(index)), raw, plot }
-  }
-  if (expr.args.length === 1) return { kind: 'solve', equation: expr.args[0], variable: null, raw, plot }
-  if (expr.args.length === 2 && expr.args[1].type === 'sym') {
-    if (bareConstant(expr.args[1])) throw new MathError(`${expr.args[1].name} is a constant.`)
-    return { kind: 'solve', equation: expr.args[0], variable: expr.args[1].name, raw, plot }
-  }
-  throw new MathError('Use solve(equation), solve(equation, x), solve(eq1, eq2), or solve(eq1, eq2, (0, 2*pi)).')
-}
-
-function parseDomains(args: Expr[]): SearchDomain[] {
-  const domains: SearchDomain[] = []
-  let index = 0
-  while (index < args.length) {
-    const arg = args[index]
-    if (arg?.type === 'vec' && arg.args.length === 2) {
-      domains.push({ name: null, min: arg.args[0] ?? ZERO_EXPR, max: arg.args[1] ?? ZERO_EXPR })
-      index += 1
-      continue
-    }
-    if (arg?.type === 'vec' && arg.args.length === 3 && arg.args[0]?.type === 'sym') {
-      domains.push({ name: arg.args[0].name, min: arg.args[1] ?? ZERO_EXPR, max: arg.args[2] ?? ZERO_EXPR })
-      index += 1
-      continue
-    }
-    if (arg?.type === 'sym' && args[index + 1] && args[index + 2]) {
-      domains.push({ name: arg.name, min: args[index + 1] ?? ZERO_EXPR, max: args[index + 2] ?? ZERO_EXPR })
-      index += 3
-      continue
-    }
-    throw new MathError('Use solve(eq1, eq2) or solve(eq1, eq2, (0, 2*pi)).')
-  }
-  return domains
-}
-
-function autoClose(input: string): string {
-  let balance = 0
-  for (const ch of input) {
-    if (ch === '(') balance += 1
-    else if (ch === ')') balance -= 1
-    if (balance < 0) return input
-  }
-  if (balance > 0) return input + ')'.repeat(balance)
-  return input
-}
+const UNREADABLE = 'Could not read that. Check the operators and parentheses.'
+const RANGE_HINT = 'Put a range such as 0..2*pi in { } after the closing parenthesis, for example Plot(sin(x), x){Domain: 0..2*pi}.'
 
 export function parseExpr(input: string): Expr {
-  const parser = new Parser(input.trim())
-  const expr = parser.parseEquation()
-  parser.skip()
-  if (parser.i < parser.src.length) throw new MathError('Could not read that. Check the operators and parentheses.')
-  return expr
+  return parseTracked(input).expr
+}
+
+/**
+ * Parse an expression and report the call it ends with, if any. In `2*Derivative(x^3, x)` that
+ * is the Derivative, which is where a settings block typed at the end of the line belongs.
+ */
+export function parseTracked(input: string): { expr: Expr; tail: CallExpr | null } {
+  const text = input.trim()
+  const parser = new Parser(text)
+  let expr: Expr
+  try {
+    expr = parser.parseEquation()
+    parser.skip()
+  } catch (error) {
+    if (error instanceof MathError && error.message === UNREADABLE && text.includes('..')) throw new MathError(RANGE_HINT)
+    throw error
+  }
+  if (parser.i < text.length) {
+    if (text[parser.i] === '{') throw new MathError('Settings in { } go right after a function’s closing parenthesis, or at the end of the line.')
+    throw new MathError(text.includes('..') ? RANGE_HINT : UNREADABLE)
+  }
+  let end = text.length
+  while (end > 0 && (/\s/.test(text[end - 1] ?? '') || text[end - 1] === MATH_CARET)) end -= 1
+  const tail = parser.calls.find((call) => call.end === end)?.node ?? null
+  return { expr, tail }
 }
 
 class Parser {
   src: string
   i = 0
+  /** Every call read so far and where it ends, settings included. */
+  calls: { node: CallExpr; end: number }[] = []
 
   constructor(src: string) {
     this.src = src
@@ -374,6 +295,11 @@ class Parser {
   parsePower(): Expr {
     const base = this.parsePostfix(this.parsePrimary())
     if (!this.eat('^')) return base
+    if (this.eat('{')) {
+      const exp = this.parseSum()
+      if (!this.eat('}')) throw new MathError('Close the exponent with }.')
+      return { type: 'pow', base, exp: { type: 'group', body: exp } }
+    }
     return { type: 'pow', base, exp: this.parseUnary() }
   }
 
@@ -469,7 +395,7 @@ class Parser {
       if (!this.canStartPrimary()) return { type: 'caret', place: 'pre', body: null }
       return { type: 'caret', place: 'pre', body: this.parsePostfix(this.parsePrimary()) }
     }
-    if (!c) throw new MathError('Could not read that. Check the operators and parentheses.')
+    if (!c) throw new MathError(UNREADABLE)
     if (/[0-9.]/.test(c)) return this.parseNumber()
     if (greekCharName(c) || /[A-Za-z]/.test(c)) {
       const ident = this.parseIdent()
@@ -480,11 +406,15 @@ class Parser {
           args.push(this.parseEquation())
           while (this.eat(',')) args.push(this.parseEquation())
         }
-        if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
-        checkCall(ident.name, args)
-        return { type: 'call', name: ident.name, args }
+        if (!this.eat(')')) throw new MathError(UNREADABLE)
+        const node: CallExpr = { type: 'call', name: resolveCallName(ident.name), args }
+        const options = this.parseCallOptions()
+        if (options) node.options = options
+        this.calls.push({ node, end: this.i })
+        return node
       }
-      if (BUILTIN_CALLS.has(ident.name) && this.canStartPrimary()) return { type: 'call', name: ident.name, args: [this.parseProduct()] }
+      const name = resolveCallName(ident.name)
+      if (isElementary(name) && this.canStartPrimary()) return { type: 'call', name, args: [this.parseProduct()] }
       return { type: 'sym', name: ident.name }
     }
     if (c === '?') {
@@ -498,13 +428,34 @@ class Parser {
       if (this.peek() === ',') {
         const args = [inner]
         while (this.eat(',')) args.push(this.parseSum())
-        if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
+        if (!this.eat(')')) throw new MathError(UNREADABLE)
         return { type: 'vec', args }
       }
-      if (!this.eat(')')) throw new MathError('Could not read that. Check the operators and parentheses.')
+      if (!this.eat(')')) throw new MathError(UNREADABLE)
       return { type: 'group', body: inner }
     }
-    throw new MathError('Could not read that. Check the operators and parentheses.')
+    throw new MathError(UNREADABLE)
+  }
+
+  /** A settings block right after a call's closing parenthesis. */
+  parseCallOptions(): OptionBlock | null {
+    let at = this.i
+    while (at < this.src.length && /\s/.test(this.src[at] ?? '')) at += 1
+    let caretBefore = false
+    if (this.src[at] === MATH_CARET) {
+      let next = at + 1
+      while (next < this.src.length && /\s/.test(this.src[next] ?? '')) next += 1
+      if (this.src[next] !== '{') return null
+      caretBefore = true
+      at = next
+    }
+    if (this.src[at] !== '{') return null
+    const close = matchBrace(this.src, at)
+    if (close < 0) throw new MathError('Close the settings with }.')
+    const block = readOptionBlock(this.src.slice(at + 1, close))
+    if (caretBefore) block.caretBefore = true
+    this.i = close + 1
+    return block
   }
 
   parseBracket(): Expr {
@@ -521,8 +472,8 @@ class Parser {
       return { type: 'mat', rows }
     }
     if (this.eat(']')) return { type: 'vec', args: [] }
-    const args = [this.parseSum()]
-    while (this.eat(',')) args.push(this.parseSum())
+    const args = [this.parseEquation()]
+    while (this.eat(',')) args.push(this.parseEquation())
     if (!this.eat(']')) throw new MathError('Close the vector with ].')
     return { type: 'vec', args }
   }
@@ -609,112 +560,61 @@ function literalNumber(literal: string): Expr {
   return rat(BigInt(digits), 1n)
 }
 
-/** Turn a half-typed line into something the preview can draw: `x^` and `sqrt(` become placeholders. */
-function cookPreview(input: string): string {
-  let source = input.trim()
-  const stack: string[] = []
-  const closer: Record<string, string> = { '(': ')', '[': ']', '{': '}' }
-  const opener: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
-  for (const ch of source) {
-    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch)
-    else if (ch === ')' || ch === ']' || ch === '}') {
-      const open = stack.pop()
-      if (open !== opener[ch]) return source
+function matchBrace(text: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < text.length; i += 1) {
+    if (text[i] === '{') depth += 1
+    else if (text[i] === '}') {
+      depth -= 1
+      if (depth === 0) return i
     }
   }
-  while (stack.length > 0) {
-    const open = stack.pop()
-    if (open) source += closer[open]
-  }
-  source = source.replace(/\(\s*\)/g, '(?)')
-  source = source.replace(/\[\s*\]/g, '[?]')
-  source = source.replace(/\{\s*\}/g, '{?}')
-  const held = source.endsWith(MATH_CARET)
-  if (!held && /[+\-*/^,]$/.test(source)) source += '?'
-  else if (!held && /_$/.test(source)) source += '?'
-  else if (!held && /=\s*$/.test(source)) source += '?'
-  return source
+  return -1
 }
 
-const IDENT_PART = /[A-Za-z0-9αβγδεζηθικλμνξπρστυφχψω]/
-const IDENT_START = /[A-Za-zαβγδεζηθικλμνξπρστυφχψω]/
-
-/** A caret sitting inside sigma still draws one symbol, with the bar after it. */
-function snapIdentCaret(input: string, cursor: number): number {
-  if (cursor <= 0 || cursor >= input.length) return cursor
-  const prev = input[cursor - 1] ?? ''
-  const next = input[cursor] ?? ''
-  if (!IDENT_PART.test(prev) || !IDENT_PART.test(next)) return cursor
-  let start = cursor
-  while (start > 0 && IDENT_PART.test(input[start - 1] ?? '')) start -= 1
-  if (!IDENT_START.test(input[start] ?? '')) return cursor
-  let end = cursor
-  while (end < input.length && IDENT_PART.test(input[end] ?? '')) end += 1
-  return end
+function splitTopLevel(text: string): string[] {
+  const pieces: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1
+    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1)
+    else if (ch === ',' && depth === 0) {
+      pieces.push(text.slice(start, i))
+      start = i + 1
+    }
+  }
+  pieces.push(text.slice(start))
+  return pieces
 }
 
-function domainClauseTex(input: string, cursor?: number): string | null {
-  const match = new RegExp(`^\\s*(domain|${IDENT})\\s*=\\s*([^\\s,]+)\\s*\\.\\.\\s*([^\\s,]+)\\s*$`, 'i').exec(input)
-  if (!match) return null
-  try {
-    const min = parseExpr((match[2] ?? '').trim())
-    const max = parseExpr((match[3] ?? '').trim())
-    const name = (match[1] ?? '').toLowerCase() === 'domain' ? '' : `${texSymbol(match[1] ?? 't')} = `
-    const body = `${name}${tex(min)} \\ldots ${tex(max)}`
-    return cursor === undefined ? body : `${body}${CARET_TEX}`
-  } catch {
-    return null
-  }
+const OPTION_PARTS = /^(\s*)([A-Za-zα-ω][A-Za-z0-9α-ω_\s-]*?)(\s*(?:->|:|=)\s*)([\s\S]*)$/
+const OPTION_FLAG = /^\s*[A-Za-zα-ω][A-Za-z0-9α-ω_\s-]*$/
+
+/** Split a settings block into entries. Nothing is checked here, so a half-typed block still previews. */
+export function readOptionBlock(raw: string): OptionBlock {
+  const entries = splitTopLevel(raw).map((piece): OptionEntry => {
+    const clean = piece.replaceAll(MATH_CARET, '')
+    if (!clean.trim()) return { key: '', value: null, raw: piece }
+    const pair = OPTION_PARTS.exec(clean)
+    if (pair) return { key: (pair[2] ?? '').trim(), value: (pair[4] ?? '').trim(), raw: piece }
+    if (OPTION_FLAG.test(clean)) return { key: clean.trim(), value: null, raw: piece }
+    return { key: '', value: clean.trim(), raw: piece }
+  })
+  return { raw, entries }
 }
 
-export function previewTex(input: string, cursor?: number): string | null {
-  const clause = domainClauseTex(input, cursor)
-  if (clause) return clause
-  try {
-    const at = cursor === undefined ? null : snapIdentCaret(input, Math.max(0, Math.min(cursor, input.length)))
-    const marked = at === null ? input : `${input.slice(0, at)}${MATH_CARET}${input.slice(at)}`
-    const parsed = parseMathInput(cookPreview(marked))
-    const body = previewBody(parsed)
-    const showCaret = cursor !== undefined && !body.includes('\\rule')
-    return attachDomain(body, parsed.plot, showCaret)
-  } catch {
-    return null
+/** `0..2*pi` as its two ends, split at the `..` that is not inside brackets. */
+export function splitRange(text: string): { min: string; max: string } | null {
+  let depth = 0
+  for (let i = 0; i < text.length - 1; i += 1) {
+    const ch = text[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1
+    else if (depth === 0 && ch === '.' && text[i + 1] === '.') return { min: text.slice(0, i).trim(), max: text.slice(i + 2).trim() }
   }
-}
-
-function previewBody(parsed: MathInput): string {
-  if (parsed.kind === 'fn') {
-    const params = parsed.params.map((name) => texSymbol(name)).join(', ')
-    return `${texSymbol(parsed.name)}\\left(${params}\\right) = ${tex(parsed.body)}`
-  }
-  if (parsed.kind === 'assign') return `${texSymbol(parsed.name)} = ${tex(parsed.expr)}`
-  if (parsed.kind === 'solve') {
-    const eq = parsed.equation.type === 'eq' ? parsed.equation : { type: 'eq' as const, left: parsed.equation, right: ZERO_EXPR }
-    return `${tex(eq.left)} = ${tex(eq.right)}`
-  }
-  if (parsed.kind === 'system') {
-    return parsed.equations.map((eq) => (eq.type === 'eq' ? `${tex(eq.left)} = ${tex(eq.right)}` : tex(eq))).join(', ')
-  }
-  return tex(parsed.expr)
-}
-
-function attachDomain(body: string, plot: PlotOptions, showCaret: boolean): string {
-  let out = body
-  if (plot.domain) {
-    const label = plot.domain.name.toLowerCase() === 'domain' ? '' : `${texSymbol(plot.domain.name)} = `
-    out = `${out},\\ ${label}${tex(plot.domain.min)} \\ldots ${tex(plot.domain.max)}`
-  }
-  if (showCaret && !out.includes('\\rule')) out = `${out}${CARET_TEX}`
-  return out
-}
-
-export function validateMath(input: string): string | null {
-  try {
-    parseMathInput(input)
-    return null
-  } catch (error) {
-    return error instanceof MathError ? error.message : 'Could not read that.'
-  }
+  return null
 }
 
 export function normalize(e: Expr, angles: AngleMode = 'rad'): Expr {
@@ -727,7 +627,10 @@ export function normalize(e: Expr, angles: AngleMode = 'rad'): Expr {
 
 export function present(e: Expr, angles: AngleMode = 'rad'): { tex: string; text: string } {
   const unknown = firstUnknown(e)
-  if (unknown) throw new MathError(`${unknown} is not defined.`)
+  if (unknown) {
+    const guess = suggestName(unknown, FUNCTIONS.map((spec) => spec.name))
+    throw new MathError(guess ? `${unknown} is not defined. Did you mean ${guess}?` : `${unknown} is not defined.`)
+  }
   if (e.type === 'dec') return { tex: texDecimal(e.text), text: e.text }
   if (e.type === 'sym' && (e.name === 'e' || e.name === 'pi')) {
     const n = evalConst(e, angles)
@@ -850,7 +753,7 @@ export function solveEquation(equation: Expr, variable: string | null): { tex: s
       if (isZeroExpr(zero)) return { tex: '\\text{true}', text: 'true' }
       return { tex: '\\text{no solution}', text: 'no solution' }
     } else {
-      throw new MathError('Say which variable to solve for, for example solve(x + y = 3, x).')
+      throw new MathError('Say which variable to solve for, for example Solve(x + y = 3, x).')
     }
   }
   const poly = toPoly(zero, name)
@@ -1128,12 +1031,18 @@ function log10Rat(r: Expr): Expr | null {
   return null
 }
 
+/** Exact powers past this many bits would stall the page, so they turn into decimals instead. */
+const EXACT_POWER_BITS = 3000n
+
 function powRat(base: Expr, exp: bigint): Expr {
   if (base.type !== 'rat') return base
-  if (exp < 0n) {
-    if (base.n === 0n) return { type: 'div', num: rat(1n), den: ZERO_EXPR }
-    return rat(base.d ** -exp, base.n ** -exp)
+  if (exp < 0n && base.n === 0n) return { type: 'div', num: rat(1n), den: ZERO_EXPR }
+  const size = BigInt(Math.max((base.n < 0n ? -base.n : base.n).toString(2).length, base.d.toString(2).length) - 1)
+  if (size * (exp < 0n ? -exp : exp) > EXACT_POWER_BITS) {
+    const value = Math.pow(Number(base.n) / Number(base.d), Number(exp))
+    return Number.isFinite(value) ? { type: 'dec', text: trimNum(value), value } : { type: 'pow', base, exp: rat(exp) }
   }
+  if (exp < 0n) return rat(base.d ** -exp, base.n ** -exp)
   return rat(base.n ** exp, base.d ** exp)
 }
 
@@ -1311,10 +1220,6 @@ function atomListKey(term: Term): string {
   return term.atoms.map(atomKey).join('*')
 }
 
-function requireSymbol(arg: Expr | undefined, example: string): void {
-  if (!arg || arg.type !== 'sym' || arg.sub || (arg.dots ?? 0) > 0 || arg.name === 'pi' || arg.name === 'e' || arg.name === '?') throw new MathError(example)
-}
-
 function bareConstant(e: { name: string; sub?: string; dots?: number }): boolean {
   return !e.sub && !(e.dots && e.dots > 0) && (e.name === 'pi' || e.name === 'e')
 }
@@ -1322,44 +1227,6 @@ function bareConstant(e: { name: string; sub?: string; dots?: number }): boolean
 function symbolKey(e: { name: string; sub?: string; dots?: number }): string {
   const base = e.sub ? `${e.name}_${e.sub}` : e.name
   return base + "'".repeat(e.dots ?? 0)
-}
-
-function checkCall(name: string, args: Expr[]): void {
-  const needsOne = new Set(['sqrt', 'ln', 'sin', 'cos', 'tan', 'abs', 'exp', 'asin', 'acos', 'atan', 'decimal', 'fraction', 'factor', 'expand'])
-  if (needsOne.has(name) && args.length !== 1) throw new MathError(`${name} needs one value.`)
-  if (name === 'log' && args.length !== 1 && args.length !== 2) throw new MathError('log takes a value, or a value and a base.')
-  if (name === 'solve' && (args.length < 1 || args.length > 8)) throw new MathError('Use solve(equation), solve(equation, x), solve(eq1, eq2), or solve(eq1, eq2, (0, 2*pi)).')
-  if ((name === 'gcd' || name === 'lcm') && args.length < 2) throw new MathError(`${name} needs at least two whole numbers.`)
-  if ((name === 'mod' || name === 'rem') && args.length !== 2) throw new MathError('Use mod(a, b) for the remainder.')
-  if (name === 'zeros' && args.length !== 1 && args.length !== 2) throw new MathError('Use zeros(expr) or zeros(expr, x).')
-  if (name === 'zeros' && args.length === 2) requireSymbol(args[1], 'Use zeros(expr, x).')
-  if (name === 'diff') {
-    if (args.length < 2 || args.length > 4) throw new MathError('Use diff(expr, x), diff(expr, x, 2), or diff(expr, x, 1, a).')
-    requireSymbol(args[1], 'Say which variable to differentiate, for example diff(x^2, x).')
-  }
-  if (name === 'integrate' && args.length !== 2 && args.length !== 4) throw new MathError('Use integrate(expr, x) or integrate(expr, x, a, b).')
-  if (name === 'integrate') requireSymbol(args[1], 'Say which variable to integrate, for example integrate(x^2, x).')
-  if (name === 'limit' && args.length !== 3) throw new MathError('Use limit(expr, x, a).')
-  if (name === 'limit') requireSymbol(args[1], 'Use limit(expr, x, a).')
-  if ((name === 'sum' || name === 'prod') && args.length !== 4) throw new MathError(`Use ${name}(expr, i, start, end).`)
-  if (name === 'sum' || name === 'prod') requireSymbol(args[1], `Use ${name}(expr, i, start, end).`)
-  if ((name === 'tangent' || name === 'normal') && args.length !== 3) throw new MathError(`Use ${name}(expr, x, a).`)
-  if (name === 'tangent' || name === 'normal') requireSymbol(args[1], `Use ${name}(expr, x, a).`)
-  if (name === 'fmin' || name === 'fmax') {
-    if (args.length !== 4) throw new MathError(`Use ${name}(expr, x, a, b).`)
-    requireSymbol(args[1], `Use ${name}(expr, x, a, b).`)
-  }
-  if (name === 'series' && args.length !== 4) throw new MathError('Use series(expr, x, a, order).')
-  if (name === 'series') requireSymbol(args[1], 'Use series(expr, x, a, order).')
-  if ((name === 'dsolve' || name === 'idiff') && args.length !== 3) throw new MathError(name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
-  if (name === 'dsolve' || name === 'idiff') {
-    requireSymbol(args[1], name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
-    requireSymbol(args[2], name === 'dsolve' ? 'Use dsolve(equation, y, x).' : 'Use idiff(equation, y, x).')
-  }
-  if ((name === 'dot' || name === 'cross') && args.length !== 2) throw new MathError(`Use ${name}(u, v).`)
-  if ((name === 'unit' || name === 'norm' || name === 'mag') && args.length !== 1) throw new MathError(`Use ${name}(v) on a vector.`)
-  if ((name === 'det' || name === 'transpose' || name === 'inv' || name === 'trace') && args.length !== 1) throw new MathError(`Use ${name}(matrix).`)
-  if (name === 'Dt' && args.length !== 1) throw new MathError('Use Dt(expr) for a time derivative.')
 }
 
 function termToExpr(term: Term): Expr {
@@ -1487,7 +1354,7 @@ function isPerfectSquare(r: Expr): boolean {
 function firstUnknown(e: Expr): string | null {
   let name: string | null = null
   walk(e, (node) => {
-    if (!name && node.type === 'call' && !BUILTIN_CALLS.has(node.name) && !CAS_CALLS.has(node.name)) name = node.name
+    if (!name && node.type === 'call' && !isKnownCall(node.name)) name = node.name
   })
   return name
 }
@@ -1660,7 +1527,7 @@ function texPrec(e: Expr): [string, number] {
       return [`${texAt(e.base, P_POW + 1)}^{${texAt(exp, 0)}}`, P_POW]
     }
     case 'call':
-      return [texCall(e.name, e.args), P_ATOM]
+      return [texCall(e), P_ATOM]
     case 'vec':
       return [`\\left[${e.args.map((arg) => texAt(arg, 0)).join(', ')}\\right]`, P_ATOM]
     case 'mat':
@@ -1694,7 +1561,7 @@ export function texDecimal(text: string): string {
 // shrinks inside a nested fraction instead of staying the size of the outer formula (em would
 // hold it to the *text*-style size no matter how deep the nesting goes; mu tracks the style KaTeX
 // is actually drawing right now). The width stays a fixed physical size, like a real text caret.
-const CARET_TEX = '\\textcolor{#d6dee8}{\\smash{\\rule{1.4px}{16.2mu}}}'
+export const CARET_TEX = '\\textcolor{#d6dee8}{\\smash{\\rule{1.4px}{16.2mu}}}'
 
 function isBareCaret(e: Expr): boolean {
   return e.type === 'caret' && e.body === null
@@ -1880,15 +1747,104 @@ function texTimeDerivative(arg: Expr, order: number): string {
   return `\\frac{d^{${count}}}{dt^{${count}}}\\left(${inner}\\right)`
 }
 
-function texCall(name: string, args: Expr[]): string {
+const ELEMENTARY_TEX: Record<string, string> = { sin: '\\sin', cos: '\\cos', tan: '\\tan', ln: '\\ln', log: '\\log', exp: '\\exp', asin: '\\arcsin', acos: '\\arccos', atan: '\\arctan' }
+
+function texCall(e: CallExpr): string {
+  return `${texCallBody(e.name, e.args)}${e.options ? blockTex(e.options) : ''}`
+}
+
+function texCallBody(name: string, args: Expr[]): string {
   if (name === 'Dt' && args.length === 1) return texTimeDerivative(args[0], 1)
   if (name === 'sqrt' && args.length === 1) return `\\sqrt{${texAt(args[0], 0)}}`
   if (name === 'abs' && args.length === 1) return `\\left|${texAt(args[0], 0)}\\right|`
-  const macro: Record<string, string> = { sin: '\\sin', cos: '\\cos', tan: '\\tan', ln: '\\ln', log: '\\log', exp: '\\exp', asin: '\\arcsin', acos: '\\arccos', atan: '\\arctan' }
   if (name === 'log' && args.length === 2) return `\\log_{${texAt(args[1], 0)}}\\left(${texAt(args[0], 0)}\\right)`
-  const head = macro[name] ?? name
+  const spec = functionByKernel(name)
+  const head = ELEMENTARY_TEX[name] ?? (spec ? `\\operatorname{${spec.name}}` : texSymbol(name))
   if (args.length === 1 && isBareCaret(args[0])) return `${head}(${CARET_TEX}\\vphantom{0})`
   return `${head}\\left(${args.map((arg) => texAt(arg, 0)).join(', ')}\\right)`
+}
+
+const SETTINGS_COLOR = '#8d9db3'
+const ALL_OPTIONS: OptionSpec[] = [...GRAPH_OPTIONS, ...FUNCTIONS.flatMap((spec) => spec.options)]
+
+/** A settings block as KaTeX, muted so the calculation stays in front: `{Domain: 0 … 5}`. A narrow row wraps it under the call. */
+export function blockTex(block: OptionBlock, caretAfter = false): string {
+  const parts = block.entries.map(entryTex).filter((part) => part !== '')
+  const body = parts.length > 0 ? parts.join(',\\allowbreak\\ ') : '\\,'
+  return `\\;\\allowbreak${block.caretBefore ? CARET_TEX : ''}\\textcolor{${SETTINGS_COLOR}}{\\{${body}\\}}${caretAfter ? CARET_TEX : ''}`
+}
+
+function entryTex(entry: OptionEntry): string {
+  const clean = entry.raw.replaceAll(MATH_CARET, '')
+  const found = entry.raw.indexOf(MATH_CARET)
+  const caret = found < 0 ? null : found
+  if (!clean.trim()) return caret === null ? '' : CARET_TEX
+  const pair = OPTION_PARTS.exec(clean)
+  if (pair) {
+    const keyStart = (pair[1] ?? '').length
+    const key = pair[2] ?? ''
+    const valueStart = keyStart + key.length + (pair[3] ?? '').length
+    const keyCaret = caret !== null && caret <= keyStart + key.length ? Math.max(0, caret - keyStart) : null
+    const valueCaret = caret !== null && keyCaret === null ? Math.max(0, caret - valueStart) : null
+    return `${keyTex(key, keyCaret)}\\colon \\mathord{${valueTex(key, pair[4] ?? '', valueCaret)}}`
+  }
+  const lead = clean.length - clean.trimStart().length
+  if (OPTION_FLAG.test(clean)) return keyTex(clean.trim(), caret === null ? null : Math.max(0, caret - lead))
+  return valueTex('', clean, caret)
+}
+
+function keyTex(key: string, caret: number | null): string {
+  if (caret !== null) return withCaret(key, caret, (part) => `\\text{${escapeText(part)}}`)
+  const known = canonicalOptionName(key)
+  if (known) return `\\mathrm{${known}}`
+  if (/^[A-Za-z][A-Za-z0-9]?$/.test(key) || isGreekName(key) || greekCharName(key)) return texSymbol(naming(key))
+  return `\\text{${escapeText(key)}}`
+}
+
+function valueTex(key: string, value: string, caret: number | null): string {
+  const text = (caret === null ? value : `${value.slice(0, caret)}${MATH_CARET}${value.slice(caret)}`).trim()
+  const bare = text.replaceAll(MATH_CARET, '')
+  if (!bare) return caret === null ? '\\square' : CARET_TEX
+  const kind = findOption(ALL_OPTIONS, key)?.kind ?? null
+  if (kind === 'color') {
+    const color = parseColor(bare)
+    return color ? `\\textcolor{${color}}{\\blacksquare}\\,${textWithCaret(text)}` : textWithCaret(text)
+  }
+  if (kind === 'boolean') return textWithCaret(text)
+  const range = splitRange(text)
+  if (range) return `${rangeSideTex(range.min)} \\ldots ${rangeSideTex(range.max)}`
+  return exprOrText(text)
+}
+
+function rangeSideTex(text: string): string {
+  if (!text.replaceAll(MATH_CARET, '').trim()) return text.includes(MATH_CARET) ? CARET_TEX : '\\square'
+  return exprOrText(text)
+}
+
+function exprOrText(text: string): string {
+  try {
+    return tex(parseExpr(text))
+  } catch {
+    return textWithCaret(text)
+  }
+}
+
+function textWithCaret(text: string): string {
+  const at = text.indexOf(MATH_CARET)
+  const bare = text.replaceAll(MATH_CARET, '')
+  if (at < 0) return `\\text{${escapeText(bare)}}`
+  return withCaret(bare, at, (part) => `\\text{${escapeText(part)}}`)
+}
+
+function withCaret(text: string, caret: number, wrap: (part: string) => string): string {
+  const at = Math.max(0, Math.min(caret, text.length))
+  const before = text.slice(0, at)
+  const after = text.slice(at)
+  return `${before ? wrap(before) : ''}${CARET_TEX}${after ? wrap(after) : ''}`
+}
+
+function escapeText(text: string): string {
+  return text.replace(/[\\{}$&#^_%~]/g, (ch) => (ch === '\\' ? '\\textbackslash{}' : ch === '~' ? '\\textasciitilde{}' : ch === '^' ? '\\textasciicircum{}' : `\\${ch}`))
 }
 
 export function plain(e: Expr): string {
@@ -1919,8 +1875,7 @@ function plainPrec(e: Expr): [string, number] {
       if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`sqrt(${plainAt(e.base, 0)})`, P_ATOM]
       return [`${plainAt(e.base, P_POW + 1)}^${plainAt(e.exp, P_POW)}`, P_POW]
     case 'call':
-      if (e.name === 'sqrt' && e.args.length === 1) return [`sqrt(${plainAt(e.args[0], 0)})`, P_ATOM]
-      return [`${e.name}(${e.args.map((arg) => plainAt(arg, 0)).join(', ')})`, P_ATOM]
+      return [plainCall(e), P_ATOM]
     case 'vec':
       return [`[${e.args.map((arg) => plainAt(arg, 0)).join(', ')}]`, P_ATOM]
     case 'mat':
@@ -1932,6 +1887,63 @@ function plainPrec(e: Expr): [string, number] {
     case 'caret':
       return [e.body ? plainAt(e.body, 0) : '', P_ATOM]
   }
+}
+
+function plainCall(e: CallExpr): string {
+  if (e.name === 'sqrt' && e.args.length === 1 && !e.options) return `sqrt(${plainAt(e.args[0], 0)})`
+  const spec = functionByKernel(e.name)
+  const shown = spec && !e.options ? unbind(spec, e.args) : { args: e.args, settings: [] }
+  const block = e.options ? `{${e.options.raw}}` : shown.settings.length > 0 ? `{${shown.settings.join(', ')}}` : ''
+  return `${spec?.name ?? e.name}(${shown.args.map((arg) => plainAt(arg, 0)).join(', ')})${block}`
+}
+
+/** A bound call written the way it is typed: diff(x^3, x, 2) is Derivative(x^3, x){Order: 2}. */
+function unbind(spec: FunctionSpec, args: Expr[]): { args: Expr[]; settings: string[] } {
+  const settings: string[] = []
+  const put = (name: string, value: string) => {
+    const option = spec.options.find((item) => item.name === name)
+    if (option && String(option.default) === value) return
+    settings.push(`${name}: ${value}`)
+  }
+  const text = (e: Expr | undefined) => (e ? plainAt(e, 0) : '')
+  switch (spec.kernel) {
+    case 'diff': {
+      if (args.length === 3) {
+        const order = args[2]?.type === 'rat' && args[2].d === 1n ? Number(args[2].n) : null
+        if (order !== null && order >= 1 && order <= 6) put('Order', String(order))
+        else put('At', text(args[2]))
+        return { args: args.slice(0, 2), settings }
+      }
+      if (args.length !== 4) break
+      put('Order', text(args[2]))
+      put('At', text(args[3]))
+      return { args: args.slice(0, 2), settings }
+    }
+    case 'integrate':
+      if (args.length !== 4) break
+      put('Bounds', `${text(args[2])}..${text(args[3])}`)
+      return { args: args.slice(0, 2), settings }
+    case 'zeros':
+    case 'fmin':
+    case 'fmax':
+      if (args.length !== 4) break
+      put('Domain', `${text(args[2])}..${text(args[3])}`)
+      return { args: args.slice(0, 2), settings }
+    case 'series':
+      if (args.length !== 4) break
+      put('Point', text(args[2]))
+      put('Order', text(args[3]))
+      return { args: args.slice(0, 2), settings }
+    case 'decimal':
+      if (args.length !== 2) break
+      put('Digits', text(args[1]))
+      return { args: args.slice(0, 1), settings }
+    case 'log':
+      if (args.length !== 2) break
+      put('Base', text(args[1]))
+      return { args: args.slice(0, 1), settings }
+  }
+  return { args, settings: [] }
 }
 
 function plainAdd(args: Expr[]): string {
@@ -1962,7 +1974,7 @@ function plainMul(args: Expr[]): string {
     .join('')
 }
 
-function exprKey(e: Expr): string {
+export function exprKey(e: Expr): string {
   switch (e.type) {
     case 'rat':
       return `r${e.n}/${e.d}`
@@ -1996,48 +2008,17 @@ function exprKey(e: Expr): string {
 const DIRECT_TRIG = new Set(['sin', 'cos', 'tan'])
 const ANGLE_LITERAL_CALLS = new Set(['sqrt', 'abs', 'ln', 'log', 'exp'])
 
-/**
- * Switching radians and degrees rewrites constant trig inputs so the values stay put.
- * `sin(pi)` becomes `sin(180)`, and `sin(180)` becomes `sin(pi)`. A free variable such as
- * `sin(x)` is left alone, because that variable is read in the unit you just picked.
- */
-export function convertAngleInput(input: string, from: AngleMode, to: AngleMode): string {
-  if (from === to) return input
-  try {
-    const turned = latexToSource(input).trim()
-    const { source, plot } = takePlotOptions(turned)
-    const raw = autoClose(source)
-    if (!raw) return input
-    const root = parseExpr(raw)
-    const converted = convertExpr(root, from, to)
-    if (exprKey(converted) === exprKey(root)) return input
-    const next = `${plain(converted)}${plotSuffix(plot)}`
-    parseMathInput(next)
-    return next
-  } catch {
-    return input
-  }
-}
-
-function plotSuffix(plot: PlotOptions): string {
-  const parts: string[] = []
-  if (plot.points !== DEFAULT_PLOT.points) parts.push(`plotpoints = ${plot.points}`)
-  if (plot.recursion !== DEFAULT_PLOT.recursion) parts.push(`maxrecursion = ${plot.recursion}`)
-  if (!plot.exclusions) parts.push('exclusions = false')
-  if (plot.domain) parts.push(`${plot.domain.name} = ${plain(plot.domain.min)}..${plain(plot.domain.max)}`)
-  return parts.length ? `, ${parts.join(', ')}` : ''
-}
-
-function convertExpr(e: Expr, from: AngleMode, to: AngleMode): Expr {
+/** Rewrite constant trig inputs from one angle unit to the other, so `sin(pi)` becomes `sin(180)`. */
+export function convertAngles(e: Expr, from: AngleMode, to: AngleMode): Expr {
   const walked = convertChildren(e, from, to)
   if (walked.type !== 'call' || walked.args.length !== 1 || !DIRECT_TRIG.has(walked.name)) return walked
   const arg = walked.args[0]
   if (!arg) return walked
-  return { type: 'call', name: walked.name, args: [rescaleAngle(arg, from, to)] }
+  return { ...walked, args: [rescaleAngle(arg, from, to)] }
 }
 
 function convertChildren(e: Expr, from: AngleMode, to: AngleMode): Expr {
-  const visit = (child: Expr) => convertExpr(child, from, to)
+  const visit = (child: Expr) => convertAngles(child, from, to)
   switch (e.type) {
     case 'rat':
     case 'dec':
@@ -2051,7 +2032,7 @@ function convertChildren(e: Expr, from: AngleMode, to: AngleMode): Expr {
     case 'pow':
       return { type: 'pow', base: visit(e.base), exp: visit(e.exp) }
     case 'call':
-      return { type: 'call', name: e.name, args: e.args.map(visit) }
+      return { ...e, args: e.args.map(visit) }
     case 'vec':
       return { type: 'vec', args: e.args.map(visit) }
     case 'mat':

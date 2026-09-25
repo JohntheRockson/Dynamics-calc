@@ -1,11 +1,15 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Eq } from '../Eq'
-import { previewTex } from './math/expr'
-import { closeOpenGroups, exitSlotsForComma, latexToSource, moveMathCursor } from './math/inputView'
-import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, looksLikeMath } from './math/shortcuts'
+import { MathAssist } from './MathAssist'
+import { previewTex } from './math/syntax'
+import { closeOpenGroups, latexToSource, moveMathCursor } from './math/inputView'
+import { emptyFunctionShortcut, expandMathShortcut, insertMathSlot, insertSeparator, looksLikeMath } from './math/shortcuts'
+import { assistAt, type AssistItem } from './math/signature'
 
 export interface MathFieldHandle {
   place: (value: string, cursor: number) => void
+  /** Put text in place of the selection, with the caret `caret` characters into it. */
+  insert: (text: string, caret: number) => void
   focus: () => void
   read: () => string
 }
@@ -67,17 +71,42 @@ export const MathField = forwardRef<MathFieldHandle, {
   value: string
   label: string
   placeholder?: string
+  /** Always read the field as math, as a saved math row is. */
+  math?: boolean
+  /** Show the hint card while typing. */
+  assist?: boolean
   onValue: (value: string) => void
   onSubmit: (value: string) => void
   onFocus?: () => void
   onBlur?: () => void
   onCommandKey?: (key: 'ArrowUp' | 'ArrowDown' | 'Escape') => void
   onEscape?: () => void
-}>(function MathField({ value, label, placeholder, onValue, onSubmit, onFocus, onBlur, onCommandKey, onEscape }, handle) {
+}>(function MathField({ value, label, placeholder, math = false, assist: assistOn = true, onValue, onSubmit, onFocus, onBlur, onCommandKey, onEscape }, handle) {
   const fieldRef = useRef<HTMLTextAreaElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
   const [cursor, setCursor] = useState(0)
-  const lines = lineViews(value, cursor)
+  const [focused, setFocused] = useState(false)
+  const [dismissed, setDismissed] = useState<string | null>(null)
+  const [pick, setPick] = useState({ key: '', index: 0, moved: false })
+  const lines = lineViews(value, focused ? cursor : -1)
   const overlay = lines.some((line) => line.tex)
+  const liveMath = math || looksLikeMath(value)
+  const assist = assistOn && focused && liveMath && dismissed !== value ? assistAt(value, cursor) : null
+  const items = assist && 'items' in assist ? assist.items : []
+  const listKey = assist ? `${assist.kind}:${items.map((item) => item.id).join('|')}` : ''
+  const current = pick.key === listKey ? pick : { key: listKey, index: 0, moved: false }
+  const active = Math.min(current.index, Math.max(0, items.length - 1))
+
+  const apply = (item: AssistItem) => {
+    const field = fieldRef.current
+    const { start, end, text, caret } = item.edit
+    const next = `${value.slice(0, start)}${text}${value.slice(end)}`
+    if (field) placeMathInput(field, next, start + caret, onValue, setCursor)
+    else {
+      onValue(next)
+      setCursor(start + caret)
+    }
+  }
 
   useEffect(() => {
     const field = fieldRef.current
@@ -85,6 +114,17 @@ export const MathField = forwardRef<MathFieldHandle, {
     field.style.height = 'auto'
     field.style.height = `${field.scrollHeight}px`
   }, [value, overlay])
+
+  useEffect(() => {
+    // The caret is the only \rule (.katex-rule) in the preview. A row too narrow for its line scrolls sideways to keep it in sight.
+    const caret = focused ? wrapRef.current?.querySelector('.composer-math .katex-rule') : null
+    const line = caret?.closest('.eq-inline')
+    if (!caret || !line || line.scrollWidth <= line.clientWidth) return
+    const at = caret.getBoundingClientRect()
+    const box = line.getBoundingClientRect()
+    if (at.left < box.left) line.scrollLeft -= box.left - at.left + 12
+    else if (at.right > box.right) line.scrollLeft += at.right - box.right + 12
+  }, [focused, value, cursor])
 
   useImperativeHandle(handle, () => ({
     place(next, at) {
@@ -97,6 +137,20 @@ export const MathField = forwardRef<MathFieldHandle, {
       field.focus()
       placeMathInput(field, next, at, onValue, setCursor)
     },
+    insert(text, caret) {
+      const field = fieldRef.current
+      const current = field?.value ?? value
+      const start = field?.selectionStart ?? current.length
+      const end = field?.selectionEnd ?? start
+      const next = `${current.slice(0, start)}${text}${current.slice(end)}`
+      if (!field) {
+        onValue(next)
+        setCursor(start + caret)
+        return
+      }
+      field.focus()
+      placeMathInput(field, next, start + caret, onValue, setCursor)
+    },
     focus() {
       fieldRef.current?.focus()
     },
@@ -106,7 +160,7 @@ export const MathField = forwardRef<MathFieldHandle, {
   }))
 
   return (
-    <div className={overlay ? 'composer-field is-math' : 'composer-field'}>
+    <div ref={wrapRef} className={overlay ? 'composer-field is-math' : 'composer-field'}>
       {overlay && (
         <div className="composer-math" aria-hidden="true">
           <div className="math-lines">
@@ -132,8 +186,14 @@ export const MathField = forwardRef<MathFieldHandle, {
         rows={1}
         spellCheck={false}
         autoCapitalize="off"
-        onFocus={onFocus}
-        onBlur={onBlur}
+        onFocus={() => {
+          setFocused(true)
+          onFocus?.()
+        }}
+        onBlur={() => {
+          setFocused(false)
+          onBlur?.()
+        }}
         onChange={(event) => {
           const raw = event.target.value
           const ascii = latexToSource(raw)
@@ -151,6 +211,23 @@ export const MathField = forwardRef<MathFieldHandle, {
           const typed = input.value
           const caret = input.selectionStart ?? typed.length
           const end = input.selectionEnd ?? caret
+          if (items.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault()
+            const step = event.key === 'ArrowDown' ? 1 : -1
+            setPick({ key: listKey, index: (active + step + items.length) % items.length, moved: true })
+            return
+          }
+          const chosen = items[active]
+          if (chosen && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && current.moved))) {
+            event.preventDefault()
+            apply(chosen)
+            return
+          }
+          if (assist && event.key === 'Escape') {
+            event.preventDefault()
+            setDismissed(typed)
+            return
+          }
           if (event.key === 'Enter' && event.shiftKey) {
             event.preventDefault()
             const left = typed.slice(0, caret)
@@ -163,7 +240,7 @@ export const MathField = forwardRef<MathFieldHandle, {
             onSubmit(typed)
             return
           }
-          const liveMath = looksLikeMath(typed)
+          const liveMath = math || looksLikeMath(typed)
           const expanded = emptyFunctionShortcut(typed, caret, event.key) ?? expandMathShortcut(typed, caret, event.key)
           if (expanded) {
             event.preventDefault()
@@ -184,15 +261,11 @@ export const MathField = forwardRef<MathFieldHandle, {
             placeMathInput(input, slotted.value, slotted.cursor, onValue, setCursor)
             return
           }
-          if (event.key === ',' && liveMath) {
-            const exit = exitSlotsForComma(typed, caret)
-            if (exit !== caret) {
-              event.preventDefault()
-              const left = typed.slice(0, exit)
-              const right = typed.slice(Math.max(exit, end))
-              placeMathInput(input, `${left},${right}`, left.length + 1, onValue, setCursor)
-              return
-            }
+          const separated = liveMath ? insertSeparator(typed, caret, end, event.key) : null
+          if (separated) {
+            event.preventDefault()
+            placeMathInput(input, separated.value, separated.cursor, onValue, setCursor)
+            return
           }
           if (liveMath && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
             if (event.key === 'ArrowRight' && caret === end && caret === typed.length) {
@@ -221,6 +294,7 @@ export const MathField = forwardRef<MathFieldHandle, {
           }
         }}
       />
+      {assist && <MathAssist assist={assist} anchor={wrapRef} active={active} onPick={apply} onHover={(index) => setPick({ key: listKey, index, moved: current.moved })} />}
     </div>
   )
 })

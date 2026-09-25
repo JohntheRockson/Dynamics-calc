@@ -9,6 +9,7 @@ import {
   plain,
   polynomialCoefficients,
   present,
+  solveEquation,
   substitute,
   tex,
   texDecimal,
@@ -16,16 +17,13 @@ import {
   type Expr,
   type SearchDomain,
 } from './expr'
+import { functionByKernel } from './functions'
 
 export interface CasCurve {
   expr: Expr
   along: 'x' | 'y'
   dashed?: boolean
   label: string
-  /** Fill between this curve and the axis on the parameter interval. */
-  shade?: { from: number; to: number }
-  /** Plain integrand, so a second copy is not stroked when the curve is already drawn. */
-  exprKey?: string
 }
 
 export interface CasPoint {
@@ -174,12 +172,16 @@ function symbolOf(e: Expr, fallback: string): string {
   return e.name
 }
 
-function decimalText(n: number): string {
+function decimalText(n: number, digits?: number): string {
   if (!Number.isFinite(n)) throw new MathError('Not a real number.')
   if (n === 0) return '0'
   const abs = Math.abs(n)
-  const text = abs >= 1e6 || abs < 1e-4 ? n.toExponential(4) : n.toPrecision(8)
+  const text = abs >= 1e6 || abs < 1e-4 ? n.toExponential(digits === undefined ? 4 : digits - 1) : n.toPrecision(digits ?? 8)
   return text.replace(/(\.\d*?)0+(e|$)/, '$1$2').replace(/\.(e|$)/, '$1')
+}
+
+function displayName(kernel: string): string {
+  return functionByKernel(kernel)?.name ?? kernel
 }
 
 function shown(value: Expr, angles: AngleMode, source: Expr | null): { text: string; tex: string; value: Expr } {
@@ -252,7 +254,7 @@ function derivative(e: Expr, variable: string, angles: AngleMode, dependent?: { 
       if (total && e.name === 'Dt' && e.args.length === 1) return derivative(derivative(e.args[0], 't', angles, undefined, true), variable, angles, dependent, true)
       return diffCall(e, variable, angles, dependent, total)
     case 'eq':
-      throw new MathError('Differentiate an expression, or use idiff for an equation.')
+      throw new MathError('Differentiate an expression, or use ImplicitDerivative for an equation.')
     case 'group':
       return derivative(e.body, variable, angles, dependent, total)
     case 'caret':
@@ -285,7 +287,7 @@ function diffPow(e: Extract<Expr, { type: 'pow' }>, variable: string, angles: An
 }
 
 function diffCall(e: Extract<Expr, { type: 'call' }>, variable: string, angles: AngleMode, dependent: { name: string; symbol: string } | undefined, total: boolean): Expr {
-  if (e.args.length === 0) throw new MathError(`Cannot differentiate ${e.name} yet.`)
+  if (e.args.length === 0) throw new MathError(`Cannot differentiate ${displayName(e.name)} yet.`)
   const arg = e.args[0]
   const inner = derivative(arg, variable, angles, dependent, total)
   const scale = angleIn(angles)
@@ -316,12 +318,12 @@ function diffCall(e: Extract<Expr, { type: 'call' }>, variable: string, angles: 
     case 'abs':
       return mul([div(arg, e), inner])
     default:
-      throw new MathError(`Cannot differentiate ${e.name} yet.`)
+      throw new MathError(`Cannot differentiate ${displayName(e.name)} yet.`)
   }
 }
 
 function diffValue(args: Expr[], angles: AngleMode): { value: Expr; variable: string; at: Expr | null } {
-  if (args.length < 2 || args[1].type !== 'sym') throw new MathError('Use diff(expr, x).')
+  if (args.length < 2 || args[1].type !== 'sym') throw new MathError('Use Derivative(expression, variable), for example Derivative(x^2, x).')
   const variable = args[1].name
   let order = 1
   let at: Expr | null = null
@@ -537,29 +539,34 @@ function quadraticRoots(a: Expr, b: Expr, c: Expr, angles: AngleMode): Expr[] {
   return plain(plus) === plain(minus) ? [plus] : [plus, minus]
 }
 
-function rationalRoots(expr: Expr, variable: string, angles: AngleMode): Expr[] {
+/** Exact roots of a polynomial, or null when the kernel cannot find all of them exactly. */
+function polynomialRoots(expr: Expr, variable: string, angles: AngleMode): Expr[] | null {
   const normalized = normalize(expr, angles)
   const coeffs = polynomialCoefficients(normalized, variable)
-  if (!coeffs) return numericRoots(normalized, variable, angles, -10, 10)
+  if (!coeffs) return null
   let degree = coeffs.length - 1
   while (degree > 0 && isZero(coeffs[degree] ?? ZERO, angles)) degree -= 1
   if (degree <= 0) return []
   if (degree === 1) return [normalize(div(neg(coeffs[0] ?? ZERO), coeffs[1] ?? ONE), angles)]
   if (degree === 2) return quadraticRoots(coeffs[2] ?? ONE, coeffs[1] ?? ZERO, coeffs[0] ?? ZERO, angles)
   const integer = coeffs.slice(0, degree + 1).map((coeff) => (coeff.type === 'rat' && coeff.d === 1n ? coeff.n : null))
-  if (integer.some((coeff) => coeff === null)) return numericRoots(normalized, variable, angles, -10, 10)
-  const values = integer as bigint[]
+  if (integer.some((coeff) => coeff === null)) return null
   const found: Expr[] = []
-  let rest = values
+  let rest = integer as bigint[]
   for (let guard = 0; guard < 6 && rest.length > 3; guard += 1) {
     const root = integerRoot(rest)
     if (root === null) break
     found.push(R(root))
     rest = deflate(rest, root)
   }
+  if (rest.length > 3) return null
   if (rest.length === 3) found.push(...quadraticRoots(R(rest[2] ?? 1n), R(rest[1] ?? 0n), R(rest[0] ?? 0n), angles))
   else if (rest.length === 2) found.push(normalize(div(neg(R(rest[0] ?? 0n)), R(rest[1] ?? 1n)), angles))
   return found
+}
+
+function rationalRoots(expr: Expr, variable: string, angles: AngleMode, min = -10, max = 10): Expr[] {
+  return polynomialRoots(expr, variable, angles) ?? numericRoots(normalize(expr, angles), variable, angles, min, max)
 }
 
 function integerRoot(coeffs: bigint[]): bigint | null {
@@ -603,40 +610,100 @@ function deflate(coeffs: bigint[], root: bigint): bigint[] {
 }
 
 function numericRoots(expr: Expr, variable: string, angles: AngleMode, min: number, max: number): Expr[] {
-  const at = (t: number) => numericConstant(substitute(expr, new Map([[variable, { type: 'dec', text: String(t), value: t }]])), angles)
-  const roots: number[] = []
-  let previousT = min
-  let previous = at(min)
-  const steps = 64
-  for (let i = 1; i <= steps; i += 1) {
-    const t = min + ((max - min) * i) / steps
-    const value = at(t)
-    if (previous !== null && value !== null && Number.isFinite(previous) && Number.isFinite(value) && previous === 0) roots.push(previousT)
-    if (previous !== null && value !== null && Number.isFinite(previous) && Number.isFinite(value) && previous * value < 0) {
-      let lo = previousT
-      let hi = t
-      let flo = previous
-      for (let step = 0; step < 24; step += 1) {
-        const mid = (lo + hi) / 2
-        const fmid = at(mid)
-        if (fmid === null || !Number.isFinite(fmid) || flo === null) break
-        if (flo * fmid <= 0) hi = mid
-        else {
-          lo = mid
-          flo = fmid
-        }
-      }
-      roots.push((lo + hi) / 2)
-    }
-    previousT = t
-    previous = value
+  const trig = angles === 'rad' && usesTrig(expr, variable)
+  return searchRoots(expr, variable, angles, min, max).map((root) => snapRoot(root, trig))
+}
+
+/**
+ * Every place on [min, max] where the expression is zero: sign changes are bisected, and a
+ * touch without a sign change, as sin(x) = 1 has at pi/2, is found as a local minimum of |f|.
+ */
+function searchRoots(expr: Expr, variable: string, angles: AngleMode, min: number, max: number): number[] {
+  const at = (t: number) => {
+    const value = numericConstant(substitute(expr, new Map([[variable, { type: 'dec', text: String(t), value: t }]])), angles)
+    return value !== null && Number.isFinite(value) ? value : null
   }
-  const unique = roots.filter((root, index) => roots.findIndex((other) => Math.abs(other - root) < 1e-3) === index)
-  return unique.map((root) => {
-    const nearest = Math.round(root)
-    if (Math.abs(root - nearest) < 1e-4) return R(BigInt(nearest))
-    return { type: 'dec', text: decimalText(root), value: root }
-  })
+  const steps = 400
+  const ts: number[] = []
+  const fs: (number | null)[] = []
+  for (let i = 0; i <= steps; i += 1) {
+    const t = min + ((max - min) * i) / steps
+    ts.push(t)
+    fs.push(at(t))
+  }
+  const roots: number[] = []
+  for (let i = 0; i <= steps; i += 1) {
+    const a = fs[i] ?? null
+    const b = fs[i + 1] ?? null
+    if (a === 0) {
+      roots.push(ts[i] ?? min)
+      continue
+    }
+    if (a === null || b === null || a * b >= 0) continue
+    let lo = ts[i] ?? min
+    let hi = ts[i + 1] ?? max
+    let flo = a
+    for (let step = 0; step < 64; step += 1) {
+      const mid = (lo + hi) / 2
+      const fmid = at(mid)
+      if (fmid === null) break
+      if (fmid === 0) {
+        lo = mid
+        hi = mid
+        break
+      }
+      if (flo * fmid < 0) hi = mid
+      else {
+        lo = mid
+        flo = fmid
+      }
+    }
+    const root = (lo + hi) / 2
+    const check = at(root)
+    if (check !== null && Math.abs(check) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b))) roots.push(root)
+  }
+  for (let i = 1; i < steps; i += 1) {
+    const a = fs[i - 1] ?? null
+    const b = fs[i] ?? null
+    const c = fs[i + 1] ?? null
+    if (a === null || b === null || c === null || b === 0) continue
+    if (a * b <= 0 || b * c <= 0 || Math.abs(b) > Math.abs(a) || Math.abs(b) > Math.abs(c)) continue
+    let lo = ts[i - 1] ?? min
+    let hi = ts[i + 1] ?? max
+    for (let step = 0; step < 90; step += 1) {
+      const left = lo + (hi - lo) / 3
+      const right = hi - (hi - lo) / 3
+      const fl = at(left)
+      const fr = at(right)
+      if (fl === null || fr === null) break
+      if (Math.abs(fl) < Math.abs(fr)) hi = right
+      else lo = left
+    }
+    const t = (lo + hi) / 2
+    const value = at(t)
+    if (value !== null && Math.abs(value) < 1e-9) roots.push(t)
+  }
+  roots.sort((left, right) => left - right)
+  return roots.filter((root, index) => index === 0 || Math.abs(root - (roots[index - 1] ?? root)) > 1e-7 * Math.max(1, Math.abs(root)))
+}
+
+/** A searched root shown the way it would be written: 2, 1/3, or pi/6 when the equation uses trig. */
+function snapRoot(value: number, trig: boolean): Expr {
+  const nearest = Math.round(value)
+  if (Math.abs(value - nearest) < 1e-7 && Math.abs(nearest) < 1e9) return R(BigInt(nearest))
+  if (trig) {
+    for (const d of [1, 2, 3, 4, 6, 8, 12]) {
+      const k = (value / Math.PI) * d
+      const count = Math.round(k)
+      if (count !== 0 && Math.abs(k - count) < 1e-7 * Math.max(1, Math.abs(k))) return normalize(mul([div(R(BigInt(count)), R(BigInt(d))), S('pi')]))
+    }
+  }
+  for (const d of [2, 3, 4, 5, 6, 8, 10, 12]) {
+    const k = value * d
+    const count = Math.round(k)
+    if (Math.abs(k - count) < 1e-9 * Math.max(1, Math.abs(k))) return normalize(div(R(BigInt(count)), R(BigInt(d))))
+  }
+  return { type: 'dec', text: decimalText(value), value }
 }
 
 function factorInteger(n: bigint): Expr {
@@ -670,7 +737,7 @@ function factorPolynomial(expr: Expr, variable: string, angles: AngleMode): Expr
     if (value === null) throw new MathError('Factor a whole number or a polynomial in one variable.')
     return factorInteger(value)
   }
-    const roots = rationalRoots(normalized, variable, angles)
+    const roots = polynomialRoots(normalized, variable, angles) ?? []
     if (roots.length === 0) throw new MathError('No rational factors.')
     const grouped = new Map<string, { root: Expr; count: number }>()
     for (const root of roots) {
@@ -739,7 +806,7 @@ function extremum(args: Expr[], angles: AngleMode, kind: 'min' | 'max'): { value
   const candidates = [start, end]
   try {
     const slope = derivative(body, variable, angles)
-    for (const root of rationalRoots(slope, variable, angles)) {
+    for (const root of rationalRoots(slope, variable, angles, start, end)) {
       const at = numericConstant(root, angles)
       if (at !== null && at >= start && at <= end) candidates.push(at)
     }
@@ -783,9 +850,12 @@ function taylor(args: Expr[], angles: AngleMode): Expr {
 }
 
 function replaceDerivative(e: Expr, dependent: string, independent: string): Expr {
-  if (e.type === 'call' && e.name === 'diff' && e.args.length >= 2 && isSym(e.args[1], independent)) {
-    if (isSym(e.args[0], dependent)) return S('__d')
-    if (e.args[0].type === 'call') {
+  if (e.type === 'call' && e.name === 'diff' && e.args.length >= 2 && e.args.length <= 3 && isSym(e.args[1], independent)) {
+    const third = e.args[2]
+    const order = third === undefined ? 1 : third.type === 'rat' && third.d === 1n ? Number(third.n) : null
+    if (isSym(e.args[0], dependent) && order === 1) return S('__d')
+    if (isSym(e.args[0], dependent) && order === 2) return S('__d2')
+    if (order === 1 && e.args[0].type === 'call') {
       const inner = replaceDerivative(e.args[0], dependent, independent)
       if (isSym(inner, '__d')) return S('__d2')
     }
@@ -801,10 +871,10 @@ function equationZero(eq: Expr): Expr {
 function solveDe(args: Expr[], angles: AngleMode): Expr {
   const dependent = symbolOf(args[1], 'y')
   const independent = symbolOf(args[2], 'x')
-  if (dependent === independent) throw new MathError('Use two different names, for example dsolve(diff(y, x) = y, y, x).')
+  if (dependent === independent) throw new MathError('Use two different names, for example DSolve(Derivative(y, x) = y, y, x).')
   const zero = normalize(replaceDerivative(equationZero(args[0]), dependent, independent), angles)
   if (freeSymbols(zero).includes('__d2')) return solveSecondOrder(zero, dependent, independent, angles)
-  if (!freeSymbols(zero).includes('__d')) throw new MathError("The equation needs y', for example dsolve(diff(y, x) = y, y, x).")
+  if (!freeSymbols(zero).includes('__d')) throw new MathError(`The equation needs the derivative of ${dependent}, for example DSolve(Derivative(y, x) = y, y, x).`)
   const poly = polynomialCoefficients(zero, '__d')
   if (!poly || poly.length > 2 || isZero(poly[1] ?? ZERO, angles)) throw new MathError('Cannot solve that differential equation yet.')
   const rhs = normalize(div(neg(poly[0] ?? ZERO), poly[1] ?? ONE), angles)
@@ -813,7 +883,7 @@ function solveDe(args: Expr[], angles: AngleMode): Expr {
   if (freeSymbols(growth).includes(dependent) || freeSymbols(growth).includes(independent)) {
     throw new MathError("Cannot solve that differential equation yet. It can be y' = f(x) or y' = ky.")
   }
-  return mul([S('C'), call('exp', [mul([growth, S(independent)])])])
+  return mul([S('C'), call('exp', [normalize(mul([growth, S(independent)]), angles)])])
 }
 
 function solveSecondOrder(zero: Expr, dependent: string, independent: string, angles: AngleMode): Expr {
@@ -833,16 +903,17 @@ function solveSecondOrder(zero: Expr, dependent: string, independent: string, an
   const x = S(independent)
   if (discValue < -1e-8) {
     const alpha = normalize(div(neg(A), R(2n)), angles)
-    const beta = normalize(call('sqrt', [neg(disc)]), angles)
-    const osc = add([mul([S('C1'), call('cos', [mul([beta, x])])]), mul([S('C2'), call('sin', [mul([beta, x])])])])
-    return isZero(alpha, angles) ? osc : mul([call('exp', [mul([alpha, x])]), osc])
+    const beta = normalize(div(call('sqrt', [neg(disc)]), R(2n)), angles)
+    const wave = normalize(mul([beta, x]), angles)
+    const osc = add([mul([S('C1'), call('cos', [wave])]), mul([S('C2'), call('sin', [wave])])])
+    return isZero(alpha, angles) ? osc : mul([call('exp', [normalize(mul([alpha, x]), angles)]), osc])
   }
   const radical = normalize(call('sqrt', [disc]), angles)
   const half = div(ONE, R(2n))
   const r1 = normalize(mul([half, add([neg(A), radical])]), angles)
   const r2 = normalize(mul([half, sub(neg(A), radical)]), angles)
-  if (plain(r1) === plain(r2)) return mul([add([S('C1'), mul([S('C2'), x])]), call('exp', [mul([r1, x])])])
-  return add([mul([S('C1'), call('exp', [mul([r1, x])])]), mul([S('C2'), call('exp', [mul([r2, x])])])])
+  if (plain(r1) === plain(r2)) return mul([add([S('C1'), mul([S('C2'), x])]), call('exp', [normalize(mul([r1, x]), angles)])])
+  return add([mul([S('C1'), call('exp', [normalize(mul([r1, x]), angles)])]), mul([S('C2'), call('exp', [normalize(mul([r2, x]), angles)])])])
 }
 
 function implicitDerivative(args: Expr[], angles: AngleMode): Expr {
@@ -854,11 +925,13 @@ function implicitDerivative(args: Expr[], angles: AngleMode): Expr {
   return div(neg(poly[0] ?? ZERO), poly[1] ?? ONE)
 }
 
-function solveLinear(equations: Expr[], angles: AngleMode): { names: string[]; values: Expr[]; curves: CasCurve[] } {
-  if (equations.length !== 2) throw new MathError('Use two equations, for example solve(x + y = 3, x - y = 1).')
+const TWO_BY_TWO = 'Solve takes two equations in two unknowns, for example Solve([x + y = 3, x - y = 1], [x, y])'
+
+function solveLinear(equations: Expr[], angles: AngleMode, variables: string[] | null): { names: string[]; values: Expr[]; curves: CasCurve[] } {
+  if (equations.length !== 2) throw new MathError(TWO_BY_TWO)
   const zeros = equations.map((equation) => normalize(equationZero(equation), angles))
-  const names = [...new Set(zeros.flatMap((zero) => freeSymbols(zero)))]
-  if (names.length !== 2) throw new MathError('A system of two equations needs two unknowns.')
+  const names = variables ?? [...new Set(zeros.flatMap((zero) => freeSymbols(zero)))]
+  if (names.length !== 2) throw new MathError(variables ? TWO_BY_TWO : 'A system of two equations needs two unknowns. Name them: Solve([x + y = a, x - y = 1], [x, y])')
   const rows = zeros.map((zero) => affine(zero, names, angles))
   const a1 = rows[0]?.a[0] ?? ZERO
   const b1 = rows[0]?.a[1] ?? ZERO
@@ -955,7 +1028,7 @@ function reduceNamed(name: string, args: Expr[], angles: AngleMode): Expr {
     case 'series':
       return valueNamed(name, args, angles)
     default:
-      throw new MathError(`Cannot do ${name} yet.`)
+      throw new MathError(`Cannot do ${displayName(name)} yet.`)
   }
 }
 
@@ -965,13 +1038,14 @@ function valueNamed(name: string, args: Expr[], angles: AngleMode): Expr {
       return args[0]
     case 'decimal': {
       const value = numericConstant(normalize(args[0], angles), angles)
-      if (value === null) throw new MathError('decimal needs a number.')
-      return { type: 'dec', text: decimalText(value), value }
+      if (value === null) throw new MathError('Decimal needs a number.')
+      const digits = args[1] ? whole(args[1], angles) : null
+      return { type: 'dec', text: decimalText(value, digits === null ? undefined : Number(digits)), value }
     }
     case 'fraction': {
       if (args[0].type === 'rat' && args[0].d <= 20n) return args[0]
       const value = numericConstant(normalize(args[0], angles), angles)
-      if (value === null) throw new MathError('fraction needs a number.')
+      if (value === null) throw new MathError('Fraction needs a number.')
       const approx = approximateFraction(value)
       return R(approx.n, approx.d)
     }
@@ -1006,13 +1080,67 @@ function valueNamed(name: string, args: Expr[], angles: AngleMode): Expr {
       return add([height, mul([grade, sub(S(variable), point)])])
     }
     default:
-      throw new MathError(`Cannot do ${name} yet.`)
+      throw new MathError(`Cannot do ${displayName(name)} yet.`)
   }
 }
 
-export function solveSystem(equations: Expr[], domains: SearchDomain[], angles: AngleMode): CasVisual {
+function textVisual(text: string, formula: string, warn: string | null = null): CasVisual {
+  return { text, tex: formula, curves: [], points: [], parametrics: [], arrows: [], warn }
+}
+
+function guessVariable(zero: Expr): string {
+  const symbols = freeSymbols(zero).filter((name) => name !== 'pi' && name !== 'e')
+  if (symbols.length === 1) return symbols[0] ?? 'x'
+  if (symbols.includes('x')) return 'x'
+  throw new MathError('Say which variable to solve for, for example Solve(x + y = 3, x).')
+}
+
+const MAX_SHOWN_ROOTS = 12
+
+/**
+ * One equation in one variable. Without a Domain it is solved exactly. With one, exact roots
+ * outside the interval are dropped, and an equation with no exact answer is searched numerically.
+ */
+export function solveSingle(equation: Expr, variable: string | null, domains: SearchDomain[], angles: AngleMode): CasVisual {
+  if (domains.length === 0) {
+    try {
+      const solved = solveEquation(equation, variable)
+      return textVisual(solved.text, solved.tex)
+    } catch (error) {
+      if (!(error instanceof MathError) || !error.message.startsWith('Cannot solve that algebraically')) throw error
+      const zero = equation.type === 'eq' ? sub(equation.left, equation.right) : equation
+      const name = variable ?? guessVariable(normalize(zero, angles))
+      throw new MathError(`Cannot solve that exactly. Add a Domain to search for numbers: Solve(${plain(equation)}, ${name}){Domain: -10..10}`)
+    }
+  }
+  const zero = normalize(equation.type === 'eq' ? sub(equation.left, equation.right) : equation, angles)
+  const name = variable ?? guessVariable(zero)
+  const domain = domains.find((item) => item.name === name) ?? domains.find((item) => item.name === null)
+  if (!domain) throw new MathError(`This solves for ${name}, so name its range: {${name}: 0..5}.`)
+  const others = freeSymbols(zero).filter((symbol) => symbol !== name && symbol !== 'pi' && symbol !== 'e')
+  if (others.length > 0) throw new MathError(`A Domain search needs a number for ${others.join(', ')}. Give ${others.length === 1 ? 'it' : 'them'} a value above this line.`)
+  const { min, max } = domainEnds(domain, angles)
+  const exact = polynomialRoots(zero, name, angles)
+  const found = (exact ?? numericRoots(zero, name, angles, min, max)).filter((root, index, all) => all.findIndex((other) => plain(other) === plain(root)) === index)
+  const roots = found.filter((root) => {
+    const value = numericConstant(root, angles)
+    return value !== null && value >= min - 1e-9 * Math.max(1, Math.abs(min)) && value <= max + 1e-9 * Math.max(1, Math.abs(max))
+  })
+  const range = `${name} from ${plain(domain.min)} to ${plain(domain.max)}`
+  const rangeTex = `${tex(S(name))}\text{ from }${tex(domain.min)}\text{ to }${tex(domain.max)}`
+  if (roots.length === 0) return textVisual(`no solution for ${range}`, `\text{no solution for }${rangeTex}`)
+  const shown = roots.slice(0, MAX_SHOWN_ROOTS)
+  const text = shown.map((root) => `${name} = ${plain(root)}`).join(' or ')
+  const formula = shown.map((root) => `${tex(S(name))} = ${tex(root)}`).join(' \\;\\text{or}\\; ')
+  const warn = roots.length > MAX_SHOWN_ROOTS ? `Showing ${MAX_SHOWN_ROOTS} of ${roots.length} solutions. Narrow the Domain to see the rest.` : exact ? null : `Searched ${range}.`
+  return textVisual(text, formula, warn)
+}
+
+export function solveSystem(equations: Expr[], domains: SearchDomain[], angles: AngleMode, variables: string[] | null = null): CasVisual {
+  if (equations.length === 1 && equations[0]) return solveSingle(equations[0], variables?.[0] ?? null, domains, angles)
+  if (variables && variables.length !== equations.length) throw new MathError(`Give one variable for each equation: ${equations.length} equations need ${equations.length} variables.`)
   try {
-    const solved = solveLinear(equations, angles)
+    const solved = solveLinear(equations, angles, variables)
     if (domains.length === 0) return presentLinear(solved)
     const numbers = solved.values.map((value) => numericConstant(normalize(value, angles), angles))
     if (numbers.every((value) => value !== null) && fitsDomains(solved.names, numbers as number[], domains, equations, angles)) return presentLinear(solved)
@@ -1020,8 +1148,8 @@ export function solveSystem(equations: Expr[], domains: SearchDomain[], angles: 
   } catch (error) {
     const nonlinear = error instanceof MathError && error.message === 'That system is not linear.'
     if (!nonlinear) throw error
-    if (domains.length === 0) throw new MathError('That system is not linear. Add a domain to search, for example solve(eq1, eq2, (0, 2*pi)).')
-    return solveNumeric(equations, domains, angles)
+    if (domains.length === 0) throw new MathError('That system is not linear. Add a domain to search: Solve([eq1, eq2], [x, y]){Domain: 0..2*pi}')
+    return solveNumeric(equations, domains, angles, variables)
   }
 }
 
@@ -1048,14 +1176,14 @@ function usesTrig(expr: Expr, name: string): boolean {
 function domainEnds(domain: SearchDomain, angles: AngleMode): { min: number; max: number } {
   const min = numericConstant(normalize(domain.min, angles), angles)
   const max = numericConstant(normalize(domain.max, angles), angles)
-  if (min === null || max === null || !(max > min)) throw new MathError('Use a domain such as (0, 2*pi), with the right end greater than the left.')
+  if (min === null || max === null || !(max > min)) throw new MathError('Use a Domain such as 0..2*pi, with the right end greater than the left.')
   return { min, max }
 }
 
 function boxesFor(names: string[], equations: Expr[], domains: SearchDomain[], angles: AngleMode): { name: string; min: number; max: number }[] {
   const trig = names.filter((name) => equations.some((equation) => usesTrig(equation, name)))
   const unnamed = domains.filter((domain) => domain.name === null)
-  if (unnamed.length > 1) throw new MathError('Name each domain, for example solve(eq1, eq2, (theta, 0, 2*pi)).')
+  if (unnamed.length > 1) throw new MathError('Name each range after its variable, for example {theta: 0..2*pi, sigma: 0..20}.')
   return names.map((name) => {
     const named = domains.find((domain) => domain.name === name)
     if (named) return { name, ...domainEnds(named, angles) }
@@ -1073,11 +1201,13 @@ function fitsDomains(names: string[], values: number[], domains: SearchDomain[],
   })
 }
 
-function solveNumeric(equations: Expr[], domains: SearchDomain[], angles: AngleMode): CasVisual {
-  if (equations.length !== 2) throw new MathError('Use two equations, for example solve(eq1, eq2, (0, 2*pi)).')
+function solveNumeric(equations: Expr[], domains: SearchDomain[], angles: AngleMode, variables: string[] | null): CasVisual {
+  if (equations.length !== 2) throw new MathError('A numeric search takes two equations in two unknowns, for example Solve([eq1, eq2], [x, y]){Domain: 0..2*pi}')
   const zeros = equations.map((equation) => normalize(equationZero(equation), angles))
-  const names = [...new Set(zeros.flatMap((zero) => freeSymbols(zero)))].filter((name) => name !== 'pi' && name !== 'e')
+  const names = variables ?? [...new Set(zeros.flatMap((zero) => freeSymbols(zero)))].filter((name) => name !== 'pi' && name !== 'e')
   if (names.length !== 2) throw new MathError('A system of two equations needs two unknowns.')
+  const extra = [...new Set(zeros.flatMap((zero) => freeSymbols(zero)))].filter((name) => !names.includes(name) && name !== 'pi' && name !== 'e')
+  if (extra.length > 0) throw new MathError(`A Domain search needs a number for ${extra.join(', ')}. Give ${extra.length === 1 ? 'it' : 'them'} a value above this line.`)
   const boxes = boxesFor(names, equations, domains, angles)
   const evaluate = (xs: number[]) => {
     const map = new Map(names.map((name, index) => [name, { type: 'dec' as const, text: String(xs[index] ?? 0), value: xs[index] ?? 0 }]))
@@ -1200,8 +1330,14 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   }
   if (call.name === 'zeros') {
     const variable = args[1] ? symbolOf(args[1], 'x') : (freeSymbols(args[0]).find((name) => name !== 'pi' && name !== 'e') ?? 'x')
-    const roots = rationalRoots(args[0], variable, angles).filter((root, index, all) => all.findIndex((other) => plain(other) === plain(root)) === index)
-    if (roots.length === 0) throw new MathError('No real roots on [-10, 10].')
+    const bounded = args.length === 4
+    const range = bounded ? domainEnds({ name: null, min: args[2] ?? ZERO, max: args[3] ?? ZERO }, angles) : { min: -10, max: 10 }
+    const inside = (root: Expr) => {
+      const value = numericConstant(root, angles)
+      return !bounded || (value !== null && value >= range.min - 1e-9 && value <= range.max + 1e-9)
+    }
+    const roots = rationalRoots(args[0], variable, angles, range.min, range.max).filter((root, index, all) => inside(root) && all.findIndex((other) => plain(other) === plain(root)) === index)
+    if (roots.length === 0) throw new MathError(bounded ? `No real roots on [${plain(args[2] ?? ZERO)}, ${plain(args[3] ?? ZERO)}].` : 'No real roots on [-10, 10].')
     const pieces = roots.map((root) => `${variable} = ${plain(root)}`)
     const formula = roots.map((root) => `${tex(S(variable))} = ${tex(root)}`).join(' \\;\\text{or}\\; ')
     const points = roots.flatMap((root) => {
@@ -1241,38 +1377,35 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   if (call.name === 'integrate' && args[0].type === 'vec') return vectorIntegral(args, angles, call)
   if (call.name === 'integrate' && args.length === 4) {
     const variable = symbolOf(args[1], 'x')
-    const integrand = normalize(args[0], angles)
     const start = numericConstant(normalize(args[2], angles), angles)
     const end = numericConstant(normalize(args[3], angles), angles)
-    const curves = shadedIntegrand(integrand, variable, start, end)
     try {
-      return presentValue(reduceNamed('integrate', args, angles), angles, call, curves)
+      return presentValue(reduceNamed('integrate', args, angles), angles, call)
     } catch (error) {
       if (start === null || end === null) throw error
       const value = simpson(args[0], variable, start, end, angles)
       const text = decimalText(value)
-      return { text: `${plain(call)} ≈ ${text}`, tex: texDecimal(text), curves, points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
+      return { text: `${plain(call)} ≈ ${text}`, tex: texDecimal(text), curves: [], points: [], parametrics: [], arrows: [], warn: 'Decimal approximation.' }
     }
   }
   if (call.name === 'integrate') {
     const variable = symbolOf(args[1], 'x')
-    const value = add([antiderivative(args[0], variable, angles), S('C')])
-    const plotted = curveFor(normalize(antiderivative(args[0], variable, angles), angles), variable, 'integral')
-    return { ...presentValue(value, angles, call, plotted ? [plotted] : []), warn: plotted ? 'Graph uses C = 0.' : null }
+    return presentValue(add([antiderivative(args[0], variable, angles), S('C')]), angles, call)
   }
   if (call.name === 'tangent' || call.name === 'normal') {
     const variable = symbolOf(args[1], 'x')
     const value = valueNamed(call.name, args, angles)
     const height = numericConstant(substitute(args[0], new Map([[variable, args[2]]])), angles)
     const at = numericConstant(normalize(args[2], angles), angles)
-    const marker = at === null || height === null ? null : variable === 'y' ? pointAt(height, at, call.name) : pointAt(at, height, call.name)
+    const label = displayName(call.name).toLowerCase()
+    const marker = at === null || height === null ? null : variable === 'y' ? pointAt(height, at, label) : pointAt(at, height, label)
     const curves = withOriginal(args[0], variable, [])
     if (value.type === 'eq') {
       const place = normalize(value.right, angles)
-      if (variable === 'x') curves.unshift({ expr: place, along: 'y', label: call.name })
-      else if (variable === 'y') curves.unshift({ expr: place, along: 'x', label: call.name })
+      if (variable === 'x') curves.unshift({ expr: place, along: 'y', label })
+      else if (variable === 'y') curves.unshift({ expr: place, along: 'x', label })
     } else {
-      const line = curveFor(normalize(value, angles), variable, call.name)
+      const line = curveFor(normalize(value, angles), variable, label)
       if (line) curves.unshift(line)
     }
     return { ...presentValue(value, angles, call, curves, marker ? [marker] : []), warn: null }
@@ -1282,21 +1415,13 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   if (call.name === 'diff' || call.name === 'series') {
     const variable = symbolOf(args[1], 'x')
     const atPoint = call.name === 'diff' && diffValue(args, angles).at !== null
-    const curve = atPoint ? null : curveFor(simplified, variable, call.name)
+    const label = displayName(call.name).toLowerCase()
+    const curve = atPoint ? null : curveFor(simplified, variable, label)
     const curves = call.name === 'series' ? withOriginal(args[0], variable, curve ? [curve] : []) : curve ? [curve] : []
-    const graphics = atPoint ? { parametrics: [], arrows: [] } : vectorGraphics(simplified, variable, call.name)
+    const graphics = atPoint ? { parametrics: [], arrows: [] } : vectorGraphics(simplified, variable, label)
     return { ...presentValue(simplified, angles, call, curves), ...graphics }
   }
   return presentValue(simplified, angles, call)
-}
-
-function shadedIntegrand(integrand: Expr, variable: string, start: number | null, end: number | null): CasCurve[] {
-  const label = plain(integrand).length > 24 ? 'integrand' : plain(integrand)
-  const curve = curveFor(integrand, variable, label)
-  if (!curve) return []
-  curve.exprKey = plain(integrand)
-  if (start !== null && end !== null) curve.shade = { from: start, to: end }
-  return [curve]
 }
 
 function vectorIntegral(args: Expr[], angles: AngleMode, source: Expr): CasVisual {
@@ -1305,14 +1430,8 @@ function vectorIntegral(args: Expr[], angles: AngleMode, source: Expr): CasVisua
   if (body.type !== 'vec') throw new MathError('Integrate a vector one component at a time.')
   if (args.length === 4) {
     const parts = body.args.map((component) => reduceNamed('integrate', [component, args[1], args[2], args[3]], angles))
-    const value = normalize({ type: 'vec', args: parts }, angles)
-    const field = vectorGraphics(normalize(body, angles), variable, 'integrand')
-    const result = vectorGraphics(value, variable, 'integral')
-    return { ...presentValue(value, angles, source), parametrics: field.parametrics, arrows: result.arrows }
+    return presentValue(normalize({ type: 'vec', args: parts }, angles), angles, source)
   }
-  const antiderivatives = body.args.map((component) => antiderivative(component, variable, angles))
-  const value = normalize({ type: 'vec', args: antiderivatives.map((component, index) => add([component, S(`C${index + 1}`)])) }, angles)
-  const graphics = vectorGraphics(normalize({ type: 'vec', args: antiderivatives }, angles), variable, 'integral')
-  const drawn = graphics.parametrics.length > 0 || graphics.arrows.length > 0
-  return { ...presentValue(value, angles, source), ...graphics, warn: drawn ? 'Graph uses C = 0.' : null }
+  const antiderivatives = body.args.map((component, index) => add([antiderivative(component, variable, angles), S(`C${index + 1}`)]))
+  return presentValue(normalize({ type: 'vec', args: antiderivatives }, angles), angles, source)
 }

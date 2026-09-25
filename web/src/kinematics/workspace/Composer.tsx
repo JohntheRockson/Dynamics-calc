@@ -2,9 +2,16 @@ import { useId, useRef, useState } from 'react'
 import { filterCommands, type CommandDef } from './commands'
 import { nextPointName, pointNames, type WorkspaceDocument } from './document'
 import { MathField, type MathFieldHandle } from './MathField'
-import { MATH_SECTIONS } from './math/catalog'
+import { FUNCTIONS, MATH_FORMS, MATH_SECTIONS, signatureText, type FunctionSpec, type SectionId } from './math/functions'
 import { latexToSource } from './math/inputView'
 import { looksLikeMath } from './math/shortcuts'
+
+function settingsText(spec: FunctionSpec): string | null {
+  const names = spec.options.map((option) => option.name)
+  if (spec.draws && !names.includes('Color')) names.push('Color')
+  if (spec.draws) names.push('…')
+  return names.length > 0 ? `{${names.join(', ')}}` : null
+}
 
 function defaultArgs(command: CommandDef, doc: WorkspaceDocument): Record<string, string> {
   const names = pointNames(doc)
@@ -30,7 +37,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
   const [args, setArgs] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
-  const [section, setSection] = useState(MATH_SECTIONS[0].id)
+  const [section, setSection] = useState<SectionId>('algebra')
   const mathMode = !command && looksLikeMath(query)
   const matches = mathMode ? [] : filterCommands(query)
   const names = pointNames(doc)
@@ -66,13 +73,18 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
     fieldRef.current?.focus()
   }
 
-  const insertTemplate = (template: string) => {
+  const insertCall = (spec: FunctionSpec) => {
     setMenu(false)
     setOpen(false)
     setError(null)
-    const caret = template.indexOf('(')
-    const next = caret >= 0 ? caret + 1 : template.length
-    fieldRef.current?.place(template, next)
+    fieldRef.current?.insert(`${spec.name}()`, spec.name.length + 1)
+  }
+
+  const insertExample = (example: string) => {
+    setMenu(false)
+    setOpen(false)
+    setError(null)
+    fieldRef.current?.place(example, example.length)
   }
 
   const submit = () => {
@@ -146,6 +158,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
             value={query}
             label="Type a statement"
             placeholder="Type a statement"
+            assist={!menu}
             onFocus={() => setOpen(true)}
             onBlur={() => setOpen(false)}
             onValue={(next) => {
@@ -173,19 +186,42 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
           />
           {menu && (
             <div className="math-menu" role="dialog" aria-label="Functions">
-              <div className="math-menu-tabs">
+              <p className="math-menu-rule">
+                Required inputs go in <code>( )</code>, in order. Optional settings go in <code>{'{ }'}</code> right after the closing parenthesis, in any order: <code>{'Solve(x^2 = 4, x){Domain: 0..5}'}</code>
+              </p>
+              <div className="math-menu-tabs" role="tablist">
                 {MATH_SECTIONS.map((item) => (
-                  <button key={item.id} type="button" className={item.id === section ? 'is-on' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setSection(item.id)}>
+                  <button key={item.id} type="button" role="tab" aria-selected={item.id === section} className={item.id === section ? 'is-on' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setSection(item.id)}>
                     {item.title}
                   </button>
                 ))}
               </div>
               <ul>
-                {(MATH_SECTIONS.find((item) => item.id === section) ?? MATH_SECTIONS[0]).items.map((item) => (
-                  <li key={item.template}>
-                    <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => insertTemplate(item.template)}>
-                      <span>{item.name}</span>
-                      <span>{item.blurb}</span>
+                {FUNCTIONS.filter((spec) => spec.section === section).map((spec) => {
+                  const settings = settingsText(spec)
+                  return (
+                    <li key={spec.name}>
+                      <button type="button" className="math-menu-item" onMouseDown={(event) => event.preventDefault()} onClick={() => insertCall(spec)}>
+                        <span className="math-menu-signature">
+                          {signatureText(spec)}
+                          {settings && <span className="math-menu-settings">{settings}</span>}
+                        </span>
+                        <span className="math-menu-summary">{spec.summary}</span>
+                      </button>
+                      <button type="button" className="math-menu-example" title="Use this example" onMouseDown={(event) => event.preventDefault()} onClick={() => insertExample(spec.examples[0] ?? `${spec.name}()`)}>
+                        {spec.examples[0]}
+                      </button>
+                    </li>
+                  )
+                })}
+                {MATH_FORMS.filter((form) => form.section === section).map((form) => (
+                  <li key={form.title}>
+                    <button type="button" className="math-menu-item" onMouseDown={(event) => event.preventDefault()} onClick={() => insertExample(form.example)}>
+                      <span className="math-menu-signature">{form.title}</span>
+                      <span className="math-menu-summary">{form.summary}</span>
+                    </button>
+                    <button type="button" className="math-menu-example" title="Use this example" onMouseDown={(event) => event.preventDefault()} onClick={() => insertExample(form.example)}>
+                      {form.example}
                     </button>
                   </li>
                 ))}
@@ -219,7 +255,7 @@ export function Composer({ doc, onCommit, onMath }: { doc: WorkspaceDocument; on
         <button type="button" className="btn btn-ghost workspace-clear" aria-expanded={menu} onClick={() => setMenu((current) => !current)}>
           Functions
         </button>
-        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter runs this line. Shift+Enter starts a new line. Click a previous line to edit it, then Enter runs it again. / starts f(x), and // starts f(x, y). A parametric curve takes a domain such as t = 0..2*pi.' : 'Type math, or a statement such as point or circle. Enter runs it. Shift+Enter starts a new line.')}</p>
+        <p className="hint composer-hint">{error ?? command?.blurb ?? (mathMode ? 'Enter runs this line, Shift+Enter starts a new one. Inputs go in ( ), settings in { } after the ): Solve(x^2 = 4, x){Domain: 0..5}. / starts f(x), // starts f(x, y).' : 'Type math, or a statement such as point or circle. Enter runs it. Functions lists every math function.')}</p>
       </div>
     </form>
   )

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Eq } from './Eq'
 import { chooseProbe, type ProbePoint } from './probe'
 import { formatTick, niceStep, tickMarks } from './ticks'
-import { containsGreekLetter, isGreekName, previewTex } from './workspace/math/expr'
+import { containsGreekLetter, isGreekName } from './workspace/math/expr'
+import { previewTex } from './workspace/math/syntax'
 
 function LegendLabel({ label }: { label: string }) {
   if (/\s/.test(label)) return label

@@ -612,7 +612,7 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
 
   for (const plot of compiled.plots) {
     if (!plot.visible || plot.kind !== 'curve') continue
-    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, dashed: plot.dashed, hideMarker: !plot.marker, hideStroke: plot.hideStroke, arrow: plot.arrow, shade: plot.shade, along: plot.along, role: 'plot', sample: plot.sample, statementId: plot.statementId })
+    bodies.push({ label: plot.label, color: plot.color, path: plot.path, index: 0, dashed: plot.dashed, hideMarker: !plot.marker, arrow: plot.arrow, shade: plot.shade, along: plot.along, role: 'plot', sample: plot.sample, statementId: plot.statementId })
   }
 
   const surfaces: FigureSurface[] = []
