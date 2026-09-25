@@ -11,8 +11,9 @@
 
 use attitude_engine::sim::{run_sim, scenario_catalog, SimError, SimRequest};
 use axum::{
+    body::Bytes,
     extract::Json,
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -50,6 +51,76 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "service": "attitude-server" }))
 }
 
+fn agent_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": "The math agent is not running. From web/, run npm run agent with XAI_API_KEY set." })),
+    )
+        .into_response()
+}
+
+/// The built app is served by this process, so /api/agent has to be forwarded
+/// to the Node agent (`npm run agent` in web/). Dev Vite proxies that path
+/// itself and never hits this handler.
+async fn forward_agent(method: &str, path: &str, body: Bytes) -> Response {
+    let port = std::env::var("MATH_AGENT_PORT").unwrap_or_else(|_| "8788".to_string());
+    let head = if method == "POST" {
+        format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+    } else {
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+    };
+    let connect = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")),
+    )
+    .await;
+    let mut stream = match connect {
+        Ok(Ok(stream)) => stream,
+        _ => return agent_unavailable(),
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if stream.write_all(head.as_bytes()).await.is_err() {
+        return agent_unavailable();
+    }
+    if method == "POST" && stream.write_all(&body).await.is_err() {
+        return agent_unavailable();
+    }
+    let mut raw = Vec::new();
+    if stream.read_to_end(&mut raw).await.is_err() {
+        return agent_unavailable();
+    }
+    let Some(split) = raw.windows(4).position(|mark| mark == b"\r\n\r\n") else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "The math agent sent an incomplete response." })),
+        )
+            .into_response();
+    };
+    let preface = String::from_utf8_lossy(&raw[..split]);
+    let status = preface
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let payload = Bytes::copy_from_slice(&raw[split + 4..]);
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        payload,
+    )
+        .into_response()
+}
+
+async fn get_agent_health() -> Response {
+    forward_agent("GET", "/api/agent/health", Bytes::new()).await
+}
+
+async fn post_agent(body: Bytes) -> Response {
+    forward_agent("POST", "/api/agent", body).await
+}
+
 fn frontend_dir() -> Option<PathBuf> {
     // Look for a built frontend next to the workspace (web/dist), trying a
     // couple of plausible working directories so `cargo run` from either
@@ -76,6 +147,8 @@ async fn main() {
         .route("/api/health", get(health))
         .route("/api/scenarios", get(get_scenarios))
         .route("/api/simulate", post(post_simulate))
+        .route("/api/agent/health", get(get_agent_health))
+        .route("/api/agent", post(post_agent))
         .layer(CorsLayer::permissive());
 
     let app = match frontend_dir() {

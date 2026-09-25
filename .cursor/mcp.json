@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dynamics-math": {
+      "command": "npm",
+      "args": ["run", "--silent", "mcp"],
+      "cwd": "web"
+    }
+  }
+}
