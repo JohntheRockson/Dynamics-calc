@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "dynamics-math": {
+      "type": "stdio",
       "command": "npm",
-      "args": ["run", "--silent", "mcp"],
-      "cwd": "web"
+      "args": ["run", "--silent", "mcp", "--prefix", "${workspaceFolder}/web"]
     }
   }
 }
