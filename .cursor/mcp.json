@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dynamics-math": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/web/mcp/launch.mjs"]
+    }
+  }
+}

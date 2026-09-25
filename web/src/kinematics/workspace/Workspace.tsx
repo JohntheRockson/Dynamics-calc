@@ -7,6 +7,7 @@ import { MathField } from './MathField'
 import type { AngleMode } from './math/expr'
 import { previewTex, validateMath } from './math/syntax'
 import { compileDocument, viewAt, type RowModel } from './evaluate'
+import { AskGrok } from './AskGrok'
 import { FigurePane } from './FigurePane'
 
 const EXAMPLES: { id: ExampleId; label: string }[] = [
@@ -322,6 +323,16 @@ export function Workspace() {
           ))}
           {compiled.duration > 0 && <p className="hint">Solved values follow the playback time.</p>}
         </div>
+        <AskGrok
+          angles={angles}
+          page={doc.statements.flatMap((statement) => (statement.type === 'math' ? [statement.input] : []))}
+          onInsert={(lines) => {
+            setDoc((current) => {
+              const have = new Set(current.statements.flatMap((statement) => (statement.type === 'math' ? [statement.input.trim()] : [])))
+              return lines.filter((line) => !have.has(line.trim())).reduce((next, line) => appendMath(next, line), current)
+            })
+          }}
+        />
         <Composer
           doc={doc}
           onCommit={(commandId, args) => {

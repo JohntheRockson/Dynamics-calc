@@ -8,13 +8,17 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "tsx scripts/run-math-checks.ts"
+    "test": "tsx scripts/run-math-checks.ts",
+    "mcp": "tsx mcp/server.ts",
+    "agent": "tsx mcp/http.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "katex": "^0.18.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "three": "^0.186.0"
+    "three": "^0.186.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/katex": "^0.16.8",
