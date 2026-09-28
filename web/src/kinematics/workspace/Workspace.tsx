@@ -216,6 +216,17 @@ export function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc])
 
+  useEffect(() => {
+    const ids = new Set(doc.statements.map((statement) => statement.id))
+    setSliderValues((current) => {
+      const alive = Object.keys(current).filter((id) => ids.has(id))
+      if (alive.length === Object.keys(current).length) return current
+      const next: Record<string, number> = {}
+      for (const id of alive) next[id] = current[id] ?? 0
+      return next
+    })
+  }, [doc])
+
   const time = compiled.duration > 0 ? Math.min(playback.time, compiled.duration) : 0
   const view = useMemo(() => viewAt(compiled, time), [compiled, time])
 
