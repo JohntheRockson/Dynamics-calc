@@ -204,9 +204,10 @@ export function Workspace() {
   const [decimal, setDecimal] = useState<Record<string, boolean>>({})
   const [planes, setPlanes] = useState<Record<string, boolean>>({})
   const [angles, setAngles] = useState<AngleMode>('rad')
+  const [sliderValues, setSliderValues] = useState<Record<string, number>>({})
   const anglesRef = useRef(angles)
   anglesRef.current = angles
-  const compiled = useMemo(() => compileDocument(doc, angles), [doc, angles])
+  const compiled = useMemo(() => compileDocument(doc, angles, sliderValues), [doc, angles, sliderValues])
   const playback = usePlayback(Math.max(compiled.duration, 0.001))
 
   useEffect(() => {
@@ -338,7 +339,7 @@ export function Workspace() {
           }}
         />
       </section>
-      <FigurePane view={view} playback={playback} planes={planes} />
+      <FigurePane view={view} playback={playback} planes={planes} onSlider={(id, value) => setSliderValues((current) => ({ ...current, [id]: value }))} />
     </div>
   )
 }

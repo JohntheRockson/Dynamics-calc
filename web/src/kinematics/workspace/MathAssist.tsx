@@ -136,7 +136,7 @@ function Body({ assist, active, onPick, onHover }: { assist: Assist; active: num
               ))}
             </ul>
           )}
-          {assist.graph && <p className="math-assist-text is-dim">Graph: Color, PlotPoints, MaxRecursion, Exclusions, Dashed{own.some((option) => option.name === 'Domain') ? '' : ', Domain'}</p>}
+          {assist.graph && <p className="math-assist-text is-dim">Graph: Color, PlotPoints, MaxRecursion, Exclusions, Dashed{own.some((option) => option.name === 'Domain') ? '' : ', Domain'}, Parameter</p>}
           {example && <p className="math-assist-example">e.g. {example}</p>}
         </>
       )

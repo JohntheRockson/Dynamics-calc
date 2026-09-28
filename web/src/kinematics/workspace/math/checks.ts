@@ -556,5 +556,79 @@ export function runMathChecks(): string[] {
   const convertedDomain = convertAngleInput('r(t) = [cos(pi), sin(t)]{t: 0..2}', 'rad', 'deg')
   expect(convertedDomain.includes('180') && convertedDomain.includes('{t: 0..2}'), `a domain survives an angle switch: ${convertedDomain}`)
 
+  const finitePoints = (path: { x: number; y: number; z: number }[]) => path.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z))
+  const nearX = (path: { x: number; y: number; z: number }[], x: number) => finitePoints(path).find((point) => Math.abs(point.x - x) < 0.2)
+
+  const sliceDoc = appendMath(emptyDocument(), 'f(x, y) = x + y{Parameter: y}')
+  const slice = evaluateDocument(sliceDoc)
+  const sliceBody = slice.bodies.find((body) => body.role === 'plot')
+  const sliceAt = sliceBody ? nearX(sliceBody.path, 2) : undefined
+  expect(slice.dimension === 3 && slice.surfaces.length === 0 && Boolean(sliceBody), `a two-input function with Parameter is a 3D slice: ${slice.dimension}, surfaces ${slice.surfaces.length}`)
+  expect(slice.sliders.length === 1 && slice.sliders[0]?.name === 'y' && slice.sliders[0]?.min === -10 && slice.sliders[0]?.max === 10 && slice.sliders[0]?.value === 0, `default slider: ${JSON.stringify(slice.sliders)}`)
+  expect(Boolean(sliceAt && Math.abs(sliceAt.y) < 1e-6 && Math.abs(sliceAt.z - sliceAt.x) < 1e-6), `slice at y = 0 is z = x: ${sliceAt?.x}, ${sliceAt?.y}, ${sliceAt?.z}`)
+  const sliceHeld = evaluateDocument(sliceDoc, 0, 'rad', { s1: 3 })
+  const heldAt = nearX(sliceHeld.bodies.find((body) => body.role === 'plot')?.path ?? [], 2)
+  expect(sliceHeld.sliders[0]?.value === 3 && Boolean(heldAt && Math.abs(heldAt.y - 3) < 1e-6 && Math.abs(heldAt.z - (heldAt.x + 3)) < 1e-6), `slider y = 3 lifts the slice: ${heldAt?.y}, ${heldAt?.z}`)
+  expect(slice.fitKey === sliceHeld.fitKey, 'dragging the slider keeps the camera frame')
+
+  const rangedSlice = evaluateDocument(appendMath(emptyDocument(), 'f(x, y) = x + y{Parameter: y = -1..1}'))
+  expect(rangedSlice.sliders[0]?.min === -1 && rangedSlice.sliders[0]?.max === 1 && rangedSlice.sliders[0]?.value === 0, `explicit slider ends: ${JSON.stringify(rangedSlice.sliders[0])}`)
+  const namedSlice = evaluateDocument(appendMath(emptyDocument(), 'f(x, y) = x + y{Parameter: y, y: -2..2}'))
+  const namedXs = finitePoints(namedSlice.bodies.find((body) => body.role === 'plot')?.path ?? []).map((point) => point.x)
+  expect(namedSlice.sliders[0]?.min === -2 && namedSlice.sliders[0]?.max === 2, `a named range sets the slider: ${JSON.stringify(namedSlice.sliders[0])}`)
+  expect(namedXs.length > 5 && Math.min(...namedXs) < -5 && Math.max(...namedXs) > 5, `the slider range does not clip x: ${Math.min(...namedXs)}..${Math.max(...namedXs)}`)
+  const offsetSlice = evaluateDocument(appendMath(emptyDocument(), 'f(x, y) = x{Parameter: y = 2..4}'))
+  expect(offsetSlice.sliders[0]?.value === 3, `a range that misses 0 starts at its middle: ${offsetSlice.sliders[0]?.value}`)
+
+  const alias = evaluateDocument(appendMath(emptyDocument(), 'f(x, y) = x + y{Slider: y}'))
+  expect(alias.dimension === 3 && alias.sliders[0]?.name === 'y' && alias.surfaces.length === 0, 'Slider is another name for Parameter')
+
+  const surfaceDoc = appendMath(emptyDocument(), 'f(x, y, t) = x + y + t{Parameter: t}')
+  const moving = evaluateDocument(surfaceDoc)
+  const moved = evaluateDocument(surfaceDoc, 0, 'rad', { s1: 4 })
+  const heightOff = (view: typeof moving) => {
+    const grid = view.surfaces[0]?.grid ?? []
+    for (const row of grid) {
+      for (const point of row) {
+        if (Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) return point.z - point.x - point.y
+      }
+    }
+    return Number.NaN
+  }
+  expect(moving.dimension === 3 && moving.surfaces.length === 1 && moving.bodies.length === 0 && moving.sliders[0]?.name === 't', 'three inputs with Parameter stay a surface')
+  expect(Math.abs(heightOff(moving)) < 1e-6 && Math.abs(heightOff(moved) - 4) < 1e-6, `the surface rises with t: ${heightOff(moving)} then ${heightOff(moved)}`)
+  expect(moving.fitKey === moved.fitKey, 'a moving surface keeps the camera frame')
+
+  const plotSlice = evaluateDocument(appendMath(emptyDocument(), 'Plot(x^2 + y, x){Parameter: y}'))
+  const plotAt = nearX(plotSlice.bodies.find((body) => body.role === 'plot')?.path ?? [], 2)
+  expect(plotSlice.dimension === 3 && Boolean(plotAt && Math.abs(plotAt.y) < 1e-6 && Math.abs(plotAt.z - (plotAt.x * plotAt.x)) < 1e-6), `Plot with Parameter draws the slice: ${plotAt?.z}`)
+  const plot3 = evaluateDocument(appendMath(emptyDocument(), 'Plot3D(x*y + t, x, y){Parameter: t}'), 0, 'rad', { s1: 4 })
+  const plot3Off = (() => {
+    const point = plot3.surfaces[0]?.grid.flat().find((item) => Number.isFinite(item.z))
+    return point ? point.z - point.x * point.y : Number.NaN
+  })()
+  expect(plot3.surfaces.length === 1 && Math.abs(plot3Off - 4) < 1e-6, `Plot3D holds the extra variable: ${plot3Off}`)
+  const dropped = evaluateDocument(appendMath(emptyDocument(), 'Plot3D(x + y, x, y){Parameter: y}'), 0, 'rad', { s1: 2 })
+  const droppedAt = nearX(dropped.bodies.find((body) => body.role === 'plot')?.path ?? [], 1)
+  expect(dropped.surfaces.length === 0 && Boolean(droppedAt && Math.abs(droppedAt.y - 2) < 1e-6 && Math.abs(droppedAt.z - (droppedAt.x + 2)) < 1e-6), `Plot3D drops the held input: ${droppedAt?.y}, ${droppedAt?.z}`)
+
+  const curve2d = evaluateDocument(appendMath(emptyDocument(), 'y = x + t{Parameter: t}'), 0, 'rad', { s1: 3 })
+  const curveAt = nearX(curve2d.bodies.find((body) => body.role === 'plot')?.path ?? [], 2)
+  expect(curve2d.dimension === 2 && curve2d.sliders[0]?.value === 3 && Boolean(curveAt && Math.abs(curveAt.y - (curveAt.x + 3)) < 1e-6), `y = with Parameter stays a 2D curve: ${curve2d.dimension}, ${curveAt?.y}`)
+  const zSlice = evaluateDocument(appendMath(emptyDocument(), 'z = x + t{Parameter: t}'), 0, 'rad', { s1: 2 })
+  const zAt = nearX(zSlice.bodies.find((body) => body.role === 'plot')?.path ?? [], 1)
+  expect(zSlice.dimension === 3 && zSlice.surfaces.length === 0 && Boolean(zAt && Math.abs(zAt.y - 2) < 1e-6 && Math.abs(zAt.z - (zAt.x + 2)) < 1e-6), `z = with one input left is a slice: ${zAt?.y}, ${zAt?.z}`)
+
+  const notFree = evaluateDocument(appendMath(emptyDocument(), 'Plot(x^2, x){Parameter: y}'))
+  const notFreeText = notFree.blocks.flatMap((block) => block.rows).map((row) => row.text).join(' ')
+  expect(notFree.bodies.length === 0 && notFreeText.includes('not one of'), `a parameter has to be in the expression: ${notFreeText}`)
+  const unknownParam = evaluateDocument(appendMath(emptyDocument(), 'f(x, y) = x + y{Parameter: t}'))
+  const unknownText = unknownParam.blocks.flatMap((block) => block.rows).map((row) => row.text).join(' ')
+  expect(unknownParam.bodies.length === 0 && unknownParam.surfaces.length === 0 && unknownText.includes('not one of'), `an unknown parameter is refused: ${unknownText}`)
+  const twice = validateMath('f(x, y) = x + y{Parameter: y, Parameter: x}')
+  expect(twice === 'Parameter is set twice.', `Parameter twice: ${twice}`)
+  const coneSlider = evaluateDocument(appendMath(emptyDocument(), 'z^2 = x + t{Parameter: t}'))
+  expect(coneSlider.sliders.length === 1 && coneSlider.bodies.filter((body) => body.role === 'plot').length === 2, `one slider for both branches: ${coneSlider.sliders.length}`)
+
   return [...errors, ...runSyntaxChecks()]
 }

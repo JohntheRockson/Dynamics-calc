@@ -140,6 +140,13 @@ export interface PlotDomain {
   max: Expr
 }
 
+/** One variable held on a slider, as in {Parameter: y} or {Parameter: y = -2..2}. */
+export interface PlotParameter {
+  name: string
+  min: Expr | null
+  max: Expr | null
+}
+
 export interface PlotOptions {
   points: number
   recursion: number
@@ -151,6 +158,8 @@ export interface PlotOptions {
   dashed: boolean
   /** Fill between the curve and the axis: an interval, or 'all' for the whole curve. */
   shade: { min: Expr; max: Expr } | 'all' | null
+  /** A variable the figure holds on a slider instead of drawing it as an axis. */
+  parameter: PlotParameter | null
 }
 
 export interface SearchDomain {
@@ -159,7 +168,7 @@ export interface SearchDomain {
   max: Expr
 }
 
-export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null, ranges: [], color: null, dashed: false, shade: null }
+export const DEFAULT_PLOT: PlotOptions = { points: 128, recursion: 5, exclusions: true, domain: null, ranges: [], color: null, dashed: false, shade: null, parameter: null }
 
 export function plotDefaults(): PlotOptions {
   return { ...DEFAULT_PLOT, ranges: [] }

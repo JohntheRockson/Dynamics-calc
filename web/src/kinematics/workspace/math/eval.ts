@@ -75,6 +75,17 @@ export interface CurvePlot {
   shade?: { from: number; to: number }
   /** Which coordinate the shade interval is measured along. */
   along?: 'x' | 'y'
+  /** This curve is the slice of a surface at a slider value, so it belongs in the 3D box. */
+  slice?: boolean
+  /** The variable a slider holds for this graph. */
+  slider?: PlotSlider
+}
+
+export interface PlotSlider {
+  name: string
+  min: number
+  max: number
+  value: number
 }
 
 export interface SurfacePlot {
@@ -86,6 +97,8 @@ export interface SurfacePlot {
   grid: { x: number; y: number; z: number }[][]
   sheets: { x: number; y: number; z: number }[][][]
   sample: (window: PlotWindow) => { x: number; y: number; z: number }[][][]
+  /** The variable a slider holds for this surface. */
+  slider?: PlotSlider
 }
 
 export interface MathCompilation {
@@ -164,7 +177,7 @@ function quietRow(row: MathConsoleRow, input: string): void {
   row.visible = true
 }
 
-export function compileMath(statements: Statement[], angles: AngleMode = 'rad'): MathCompilation {
+export function compileMath(statements: Statement[], angles: AngleMode = 'rad', sliders: Record<string, number> = {}): MathCompilation {
   const env: MathEnv = new Map()
   const rows: MathConsoleRow[] = []
   const plots: Array<CurvePlot | SurfacePlot> = []
@@ -240,6 +253,58 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const formulaText = `${label} = ${plain(shownBody)}`
         env.set(parsed.name, { kind: 'fn', params: parsed.params, body })
         const param = parsed.params[0] ?? 'x'
+        const held = holdParameter(parsed.plot, statement.id, env, angles, sliders)
+        if (held) {
+          if ('warn' in held) {
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, held.warn))
+            continue
+          }
+          const known = [...new Set([...parsed.params, ...freeSymbols(body)])]
+          if (!known.includes(held.slider.name)) {
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, parameterMissing(held.slider.name, parsed.params)))
+            continue
+          }
+          const rest = parsed.params.filter((name) => name !== held.slider.name)
+          const color = colorFor(parsed.plot)
+          if (rest.length > 2) {
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, `Parameter holds one variable. ${label} still has ${rest.join(', ')} left, so keep two inputs for a surface or one for a line.`))
+            continue
+          }
+          if (rest.length === 2) {
+            const names: [string, string] = [rest[0] ?? 'x', rest[1] ?? 'y']
+            const clips = surfaceRanges(parsed.plot, names, env, angles)
+            const drawn = surfacePlot(statement.id, label, color, statement.visible, [body], names, held.env, angles, parsed.plot, clips, held.slider)
+            const warn = clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(names[0], null))
+            plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, warn))
+            continue
+          }
+          if (rest.length === 1 && parsed.params.includes(held.slider.name)) {
+            const free = rest[0] ?? 'x'
+            const clip = rangeOf(parsed.plot, free, env, angles, [free])
+            const drawn = slicePlot(statement.id, label, color, statement.visible, body, free, held.slider, env, angles, parsed.plot, clip.interval)
+            const warn = clip.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(free, clip.interval))
+            plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
+            continue
+          }
+          if (rest.length === 1) {
+            const free = rest[0] ?? 'x'
+            const clip = rangeOf(parsed.plot, free, env, angles, [free])
+            const fill = shadeOf(parsed.plot, clip.interval, env, angles)
+            const drawn = { ...curvePlot(statement.id, label, color, statement.visible, { bodies: [body], param: free, along: 'x' }, held.env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed, shade: fill.shade }), slider: held.slider }
+            const warn = clip.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(free, clip.interval))
+            plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
+            continue
+          }
+          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, `Parameter holds ${held.slider.name}, so leave another input to draw, for example f(x, y) = sin(x) + y{Parameter: y}.`))
+          continue
+        }
+        if (parsed.params.length > 2) {
+          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, `Name one input as Parameter to draw this, for example f(x, y, t) = sin(x)*cos(y) + t{Parameter: t}.`))
+          continue
+        }
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
           const range = rangeOf(parsed.plot, param, env, angles)
           const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, body.args, param, env, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
@@ -274,7 +339,61 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
           : null
       if (equation) {
         const dep = dependentAxis(equation.left)
-        const plotted = dep ? explicitPlot(dep, equation.right, env, angles) : null
+        const held = dep ? holdParameter(parsed.plot, statement.id, env, angles, sliders) : null
+        if (held && dep) {
+          const color = colorFor(parsed.plot)
+          const label = dep.power === 1 ? dep.name : plain(equation.left)
+          const computed = containsCas(equation.right)
+          const rawValue = normalize(rewriteAll(applyEnv(equation.right, env, 0), angles), angles)
+          const formulaTex = computed || !echo ? `${tex(equation.left)} = ${tex(computed ? rawValue : equation.right)}` : echo
+          const formulaText = `${plain(equation.left)} = ${plain(computed ? rawValue : equation.right)}`
+          if ('warn' in held) {
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, dep.name === 'z' ? 'surface' : 'curve', statement.visible, held.warn))
+            continue
+          }
+          const symbols = freeSymbols(rawValue)
+          if (!symbols.includes(held.slider.name)) {
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, parameterMissing(held.slider.name, symbols)))
+            continue
+          }
+          const rest = symbols.filter((name) => name !== held.slider.name)
+          if (parsed.kind === 'assign') env.set(parsed.name, { kind: 'expr', expr: rawValue })
+          if (dep.name === 'z') {
+            const axes = rest.filter((name) => name === 'x' || name === 'y')
+            const extra = rest.filter((name) => name !== 'x' && name !== 'y')
+            if (extra.length > 0) {
+              rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, giveValue(extra)))
+              continue
+            }
+            if (axes.length >= 2) {
+              const clips = surfaceRanges(parsed.plot, ['x', 'y'], held.env, angles)
+              const drawn = surfacePlot(statement.id, label, color, statement.visible, rootBodies(rawValue, dep.power), ['x', 'y'], held.env, angles, parsed.plot, clips, held.slider)
+              const warn = clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning('x', null))
+              plots.push(drawn)
+              rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, warn))
+              continue
+            }
+            const free = axes[0] ?? (held.slider.name === 'x' ? 'y' : 'x')
+            const clip = rangeOf(parsed.plot, free, env, angles, [free, held.slider.name])
+            const bodies = rootBodies(rawValue, dep.power)
+            for (const body of bodies) plots.push(slicePlot(statement.id, label, color, statement.visible, body, free, held.slider, env, angles, parsed.plot, clip.interval))
+            const drawn = plots[plots.length - 1]
+            const warn = clip.warn ?? curveOnlyShade(parsed.plot) ?? (drawn && hasGeometry(drawn) ? null : emptyWarning(free, clip.interval))
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
+            continue
+          }
+          const plotted = explicitPlot(dep, equation.right, held.env, angles)
+          if (plotted?.kind === 'curve') {
+            const clip = rangeOf(parsed.plot, plotted.param, held.env, angles)
+            const fill = shadeOf(parsed.plot, clip.interval, held.env, angles)
+            const drawn = { ...curvePlot(statement.id, label, color, statement.visible, { bodies: plotted.bodies, param: plotted.param, along: plotted.along }, held.env, angles, { plot: parsed.plot, clip: clip.interval, dashed: parsed.plot.dashed, shade: fill.shade }), slider: held.slider }
+            const warn = plotted.warn ?? clip.warn ?? fill.warn ?? (hasGeometry(drawn) ? null : emptyWarning(plotted.param, clip.interval))
+            plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, warn))
+            continue
+          }
+        }
+        const plotted = dep && !held ? explicitPlot(dep, equation.right, env, angles) : null
         if (parsed.kind === 'assign' && !plotted) {
           const value = normalize(rewriteAll(applyEnv(parsed.expr, env, 0), angles), angles)
           env.set(parsed.name, { kind: 'expr', expr: value })
@@ -352,15 +471,44 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         continue
       }
       if (parsed.kind === 'plot') {
-        const variable = parsed.variable ?? guessNames(applyEnv(parsed.expr, env, 0), 'Plot', 1)[0] ?? 'x'
+        const parameter = parsed.plot.parameter
+        const prepared = applyEnv(parsed.expr, env, 0)
+        const symbols = freeSymbols(prepared).filter((name) => name !== INFER_NAME)
+        const variable = parsed.variable ?? (parameter ? symbols.filter((name) => name !== parameter.name)[0] : null) ?? guessNames(prepared, 'Plot', 1)[0] ?? 'x'
         if (parsed.plot.domain && !parsed.plot.domain.name) parsed.plot.domain = { ...parsed.plot.domain, name: variable }
-        const local = withoutNames(env, [variable])
+        const local = withoutNames(env, [variable, parameter?.name ?? ''])
         const value = normalize(rewriteAll(applyEnv(parsed.expr, local, 0), angles), angles)
-        const missing = freeSymbols(value).filter((name) => name !== variable)
         const text = `Plot(${plain(parsed.expr)}, ${variable})`
         const formula = echo ?? `\\operatorname{Plot}\\left(${tex(parsed.expr)}, ${texName(variable)}\\right)`
         const label = shortLabel(parsed.expr, 'Plot')
+        const held = holdParameter(parsed.plot, statement.id, env, angles, sliders)
+        if (held) {
+          if ('warn' in held) {
+            rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, held.warn))
+            continue
+          }
+          if (variable === held.slider.name) {
+            rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, `Parameter holds ${held.slider.name}, so plot a different variable, for example Plot(x^2 + y, x){Parameter: y}.`))
+            continue
+          }
+          if (!symbols.includes(held.slider.name)) {
+            rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, parameterMissing(held.slider.name, symbols)))
+            continue
+          }
+          const missing = freeSymbols(value).filter((name) => name !== variable && name !== held.slider.name)
+          const range = rangeOf(parsed.plot, variable, env, angles, [variable])
+          if (value.type === 'vec') {
+            rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, 'Parameter holds a variable of a curve or a surface, not a parametric list.'))
+            continue
+          }
+          const drawn = missing.length > 0 ? null : slicePlot(statement.id, label, colorFor(parsed.plot), statement.visible, value, variable, held.slider, local, angles, parsed.plot, range.interval)
+          const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? curveOnlyShade(parsed.plot) ?? (drawn && hasGeometry(drawn) ? null : emptyWarning(variable, range.interval)))
+          if (drawn) plots.push(drawn)
+          rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
+          continue
+        }
         const range = rangeOf(parsed.plot, variable, env, angles)
+        const missing = freeSymbols(value).filter((name) => name !== variable)
         if (value.type === 'vec') {
           if (value.args.length < 2 || value.args.length > 3) throw new MathError('Plot draws a list of two or three expressions as a curve, for example Plot([cos(t), sin(t)], t).')
           const drawn = parametricPlot(statement.id, label, colorFor(parsed.plot), statement.visible, missing.length ? [] : value.args, variable, local, angles, parsed.plot, range.interval ?? DEFAULT_RANGE, parsed.plot.dashed)
@@ -377,16 +525,51 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         continue
       }
       if (parsed.kind === 'plot3d') {
-        const names = parsed.variables ?? (guessNames(applyEnv(parsed.expr, env, 0), 'Plot3D', 2) as [string, string])
-        const local = withoutNames(env, names)
+        const parameter = parsed.plot.parameter
+        const prepared = applyEnv(parsed.expr, env, 0)
+        const symbols = freeSymbols(prepared).filter((name) => name !== INFER_NAME)
+        const held = holdParameter(parsed.plot, statement.id, env, angles, sliders)
+        const rest = parameter ? symbols.filter((name) => name !== parameter.name) : symbols
+        const guessed: [string, string] | null = !parsed.variables && rest.length === 2 ? (rest.includes('x') && rest.includes('y') ? ['x', 'y'] : [rest[0] ?? 'x', rest[1] ?? 'y']) : null
+        const names = parsed.variables ?? guessed ?? (guessNames(prepared, 'Plot3D', 2) as [string, string])
+        const dropping = Boolean(parameter && names.includes(parameter.name))
+        const freeName = dropping ? names.find((name) => name !== parameter?.name) ?? names[0] : null
+        const local = withoutNames(env, dropping && freeName ? [freeName, parameter?.name ?? ''] : [...names, parameter?.name ?? ''])
         const value = normalize(rewriteAll(applyEnv(parsed.expr, local, 0), angles), angles)
+        const formula = echo ?? `\\operatorname{Plot3D}\\left(${tex(parsed.expr)}, ${texName(names[0])}, ${texName(names[1])}\\right)`
+        const title = `Plot3D(${plain(parsed.expr)}, ${names[0]}, ${names[1]})`
+        if (held) {
+          if ('warn' in held) {
+            rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'surface', statement.visible, held.warn))
+            continue
+          }
+          if (!symbols.includes(held.slider.name)) {
+            rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'surface', statement.visible, parameterMissing(held.slider.name, symbols)))
+            continue
+          }
+          if (dropping && freeName) {
+            const missing = freeSymbols(value).filter((name) => name !== freeName && name !== held.slider.name)
+            const range = rangeOf(parsed.plot, freeName, env, angles, [freeName])
+            const drawn = missing.length > 0 ? null : slicePlot(statement.id, shortLabel(parsed.expr, 'Plot3D'), colorFor(parsed.plot), statement.visible, value, freeName, held.slider, local, angles, parsed.plot, range.interval)
+            const warn = missing.length > 0 ? giveValue(missing) : (range.warn ?? curveOnlyShade(parsed.plot) ?? (drawn && hasGeometry(drawn) ? null : emptyWarning(freeName, range.interval)))
+            if (drawn) plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'curve', statement.visible, warn))
+            continue
+          }
+          const missing = freeSymbols(value).filter((name) => !names.includes(name) && name !== held.slider.name)
+          const clips = surfaceRanges(parsed.plot, names, held.env, angles)
+          const drawn = surfacePlot(statement.id, shortLabel(parsed.expr, 'Plot3D'), colorFor(parsed.plot), statement.visible, missing.length ? [] : [value], names, held.env, angles, parsed.plot, clips, held.slider)
+          const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(names[0], null)))
+          plots.push(drawn)
+          rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'surface', statement.visible, warn))
+          continue
+        }
         const missing = freeSymbols(value).filter((name) => !names.includes(name))
         const clips = surfaceRanges(parsed.plot, names, env, angles)
         const drawn = surfacePlot(statement.id, shortLabel(parsed.expr, 'Plot3D'), colorFor(parsed.plot), statement.visible, missing.length ? [] : [value], names, local, angles, parsed.plot, clips)
         const warn = missing.length > 0 ? giveValue(missing) : (clips.warn ?? curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : emptyWarning(names[0], null)))
-        const formula = echo ?? `\\operatorname{Plot3D}\\left(${tex(parsed.expr)}, ${texName(names[0])}, ${texName(names[1])}\\right)`
         plots.push(drawn)
-        rows.push(rowBase(statement.id, statement.input, 'Plot3D', `Plot3D(${plain(parsed.expr)}, ${names[0]}, ${names[1]})`, formula, 'surface', statement.visible, warn))
+        rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'surface', statement.visible, warn))
         continue
       }
       if (parsed.kind !== 'expr') continue
@@ -583,6 +766,77 @@ interface CurveOptions {
   clip?: Interval | null
 }
 
+/** A slider from {Parameter: y} or {Parameter: y = -2..2}. A named range {y: -2..2} sets the ends when the setting itself has none. */
+function holdParameter(plot: PlotOptions, id: string, env: MathEnv, angles: AngleMode, values: Record<string, number>): { slider: PlotSlider; env: MathEnv } | { warn: string } | null {
+  const parameter = plot.parameter
+  if (!parameter) return null
+  const named = plot.ranges.find((range) => range.name === parameter.name)
+  const domain = parameter.min && parameter.max ? { name: parameter.name, min: parameter.min, max: parameter.max } : named ?? null
+  let min = -10
+  let max = 10
+  if (domain) {
+    const interval = readInterval(domain, env, angles)
+    if (!interval) return { warn: `The range of ${parameter.name} needs two different numbers, for example {Parameter: ${parameter.name} = -2..2}.` }
+    min = interval.min
+    max = interval.max
+  }
+  const stored = values[id]
+  const fallback = min <= 0 && max >= 0 ? 0 : (min + max) / 2
+  const value = stored === undefined || !Number.isFinite(stored) ? fallback : Math.min(max, Math.max(min, stored))
+  const slider: PlotSlider = { name: parameter.name, min, max, value }
+  return { slider, env: bind(env, parameter.name, value) }
+}
+
+function parameterMissing(name: string, known: string[]): string {
+  const list = known.length > 0 ? known.join(', ') : 'its variables'
+  return `Parameter ${name} is not one of ${list}. Name a variable this line still uses, for example {Parameter: y}.`
+}
+
+/** Put the free input and the held variable on the x and y axes. The function value is the height. */
+function placeSlice(free: string, hold: string, t: number, held: number, height: number): { x: number; y: number; z: number } {
+  const point = { x: Number.NaN, y: Number.NaN, z: height }
+  const put = (name: string, value: number) => {
+    if (name === 'x') point.x = value
+    else if (name === 'y') point.y = value
+  }
+  put(free, t)
+  put(hold, held)
+  if (!Number.isFinite(point.x)) point.x = free === 'y' ? held : t
+  if (!Number.isFinite(point.y)) point.y = hold === 'x' ? t : held
+  return point
+}
+
+function sampleSlice(body: Expr, free: string, slider: PlotSlider, env: MathEnv, window: PlotWindow, angles: AngleMode, style: PlotOptions, clip: Interval | null): { x: number; y: number; z: number }[] {
+  const along: 'x' | 'y' = free === 'y' && slider.name !== 'y' ? 'y' : 'x'
+  const min = Math.max(along === 'x' ? window.xMin : window.yMin, clip?.min ?? -Infinity)
+  const max = Math.min(along === 'x' ? window.xMax : window.yMax, clip?.max ?? Infinity)
+  if (max < min) return []
+  const ySpan = Math.max(1e-6, window.yMax - window.yMin, window.xMax - window.xMin)
+  const held = bind(env, slider.name, slider.value)
+  const at = (t: number) => {
+    const value = numericValue(body, bind(held, free, t), angles)
+    return value === null || !Number.isFinite(value) ? null : value
+  }
+  const nodes = refineSamples(min, max, { ...style, points: Math.min(style.points, 160), recursion: Math.min(style.recursion, 4) }, ySpan, at)
+  const path: { x: number; y: number; z: number }[] = []
+  let previous = false
+  for (const node of nodes) {
+    if (node.y === null || node.cut) {
+      if (previous) path.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
+      previous = false
+      continue
+    }
+    path.push(placeSlice(free, slider.name, node.t, slider.value, node.y))
+    previous = true
+  }
+  return path
+}
+
+function slicePlot(id: string, label: string, color: string, visible: boolean, body: Expr, free: string, slider: PlotSlider, env: MathEnv, angles: AngleMode, plot: PlotOptions, clip: Interval | null): CurvePlot {
+  const sample = (window: PlotWindow) => sampleSlice(body, free, slider, env, window, angles, plot, clip)
+  return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), dashed: plot.dashed, slider, slice: true, along: free === 'y' ? 'y' : 'x' }
+}
+
 function curvePlot(id: string, label: string, color: string, visible: boolean, spec: { bodies: Expr[]; param: string; along: 'x' | 'y' } | null, env: MathEnv, angles: AngleMode, options: CurveOptions = {}): CurvePlot {
   const style = options.plot ?? DEFAULT_PLOT
   const clip = options.clip ?? null
@@ -618,10 +872,10 @@ function pointPlot(id: string, label: string, color: string, visible: boolean, x
   return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(DEFAULT_WINDOW), marker: true }
 }
 
-function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], names: [string, string], env: MathEnv, angles: AngleMode, plot: PlotOptions, clips: { x: Interval | null; y: Interval | null }): SurfacePlot {
+function surfacePlot(id: string, label: string, color: string, visible: boolean, bodies: Expr[], names: [string, string], env: MathEnv, angles: AngleMode, plot: PlotOptions, clips: { x: Interval | null; y: Interval | null }, slider?: PlotSlider): SurfacePlot {
   const sample = (window: PlotWindow) => (bodies.length > 0 ? bodies.map((body) => sampleSurface(body, names, env, window, angles, plot, clips)) : [])
   const sheets = sample(DEFAULT_WINDOW)
-  return { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [], sample }
+  return { kind: 'surface', statementId: id, label, color, visible, sheets, grid: sheets[0] ?? [], sample, slider }
 }
 
 const CAS_NOUNS: Record<string, string> = { integrate: 'Integral', fmin: 'Minimum', fmax: 'Maximum', dsolve: 'Solution' }
@@ -774,11 +1028,12 @@ function readInterval(domain: PlotDomain, env: MathEnv, angles: AngleMode): Inte
   return min < max ? { min, max } : { min: max, max: min }
 }
 
-/** The interval a setting gives one input: {t: 0..2*pi} or {Domain: 0..2*pi}. */
+/** The interval a setting gives one input: {t: 0..2*pi} or {Domain: 0..2*pi}. A range named for the slider is that slider's extent, not a drawn axis. */
 function rangeOf(plot: PlotOptions, param: string, env: MathEnv, angles: AngleMode, inputs: string[] = [param]): { interval: Interval | null; warn: string | null } {
-  const domain = plot.ranges.find((range) => range.name === param) ?? plot.domain
+  const ranges = plot.parameter ? plot.ranges.filter((range) => range.name !== plot.parameter?.name) : plot.ranges
+  const domain = ranges.find((range) => range.name === param) ?? plot.domain
   if (!domain) {
-    const stray = plot.ranges.find((range) => !inputs.includes(range.name))
+    const stray = ranges.find((range) => !inputs.includes(range.name))
     return { interval: null, warn: stray ? `This graph's input is ${param}, so write {${param}: …} or {Domain: …}.` : null }
   }
   const interval = readInterval(domain, env, angles)
@@ -802,7 +1057,7 @@ function curveOnlyShade(plot: PlotOptions): string | null {
 
 /** A surface can trim either input by name. A plain Domain trims both. */
 function surfaceRanges(plot: PlotOptions, names: [string, string], env: MathEnv, angles: AngleMode): { x: Interval | null; y: Interval | null; warn: string | null } {
-  const stray = plot.ranges.find((range) => !names.includes(range.name))
+  const stray = plot.ranges.find((range) => range.name !== plot.parameter?.name && !names.includes(range.name))
   if (stray) return { x: null, y: null, warn: `This surface's inputs are ${names[0]} and ${names[1]}, so name one of those: {${names[0]}: -2..2}.` }
   const [x, y] = names.map((name) => rangeOf(plot, name, env, angles, names))
   return { x: x?.interval ?? null, y: y?.interval ?? null, warn: x?.warn ?? y?.warn ?? null }
