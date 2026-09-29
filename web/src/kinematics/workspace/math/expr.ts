@@ -495,8 +495,13 @@ class Parser {
     }
     const start = this.i
     this.i += 1
-    while (this.i < this.src.length && /[A-Za-z0-9]/.test(this.src[this.i])) this.i += 1
-    return { name: canonicalGreek(this.src.slice(start, this.i)) }
+    while (this.i < this.src.length && /[A-Za-z0-9]/.test(this.src[this.i] ?? '')) this.i += 1
+    const raw = this.src.slice(start, this.i)
+    // A name before "(" is a call, even when it is several letters. Otherwise ax is a*x.
+    if (this.peek() === '(') return { name: canonicalGreek(raw) }
+    const taken = factorLength(raw)
+    this.i = start + taken
+    return { name: canonicalGreek(raw.slice(0, taken)) }
   }
 
   parseNumber(): Expr {
@@ -1101,7 +1106,23 @@ function trimNum(n: number): string {
   return text.replace(/(\.\d*?)0+(e|$)/, '$1$2').replace(/\.(e|$)/, '$1')
 }
 
-function toSum(e: Expr): Term[] {
+/**
+ * Letters written together are a product, except a known word. `ax` is `a` times `x`,
+ * `sinx` starts at `sin`, and `theta` stays whole. A digit keeps the name, as in `x1`.
+ */
+function factorLength(raw: string): number {
+  if (raw.length <= 1 || /\d/.test(raw) || isWholeWord(raw)) return raw.length
+  for (let length = raw.length - 1; length >= 2; length -= 1) {
+    if (isWholeWord(raw.slice(0, length))) return length
+  }
+  return raw.length === 2 ? 1 : raw.length
+}
+
+function isWholeWord(name: string): boolean {
+  return isGreekName(name) || isReservedName(name)
+}
+
+function toSum(e: Expr, expand = true): Term[] {
   switch (e.type) {
     case 'rat': {
       const coeff = asRat(rat(e.n, e.d)) ?? ONE
@@ -1112,32 +1133,39 @@ function toSum(e: Expr): Term[] {
     case 'sym':
       return [{ coeff: ONE, atoms: [atomOf(e)] }]
     case 'add':
-      return mergeTerms(e.args.flatMap(toSum))
+      return mergeTerms(e.args.flatMap((arg) => toSum(arg, expand)))
     case 'mul':
-      return e.args.reduce<Term[]>((acc, arg) => mulSums(acc, toSum(arg)), [{ coeff: ONE, atoms: [] }])
+      return e.args.reduce<Term[]>((acc, arg) => mulSums(acc, toSum(arg, expand)), [{ coeff: ONE, atoms: [] }])
     case 'div': {
-      const num = toSum(e.num)
-      const den = toSum(e.den)
-      if (den.length === 1 && den[0].coeff.n !== 0n) {
-        const factor = den[0]
-        if (exprKey(fromTerms(num)) === exprKey(fromTerms(den))) return [{ coeff: ONE, atoms: [] }]
-        const inv: Term = {
-          coeff: divRat(ONE, factor.coeff),
-          atoms: factor.atoms.map((atom) => ({ ...atom, exp: -atom.exp })),
-        }
-        return mulSums(num, [inv])
-      }
-      return [{ coeff: ONE, atoms: [{ kind: 'expr', expr: e, exp: 1 }] }]
+      const num = toSum(e.num, expand)
+      const den = toSum(e.den, expand)
+      const divided = divideBy(num, den)
+      if (divided !== null) return divided
+      // (x + 1)^2 in a denominator stays a square, so the numerator can still cancel.
+      const compact = expand ? toSum(e.den, false) : den
+      const compactDivided = divideBy(num, compact)
+      if (compactDivided !== null) return compactDivided
+      if (num.length === 0 && (den.length > 0 || compact.length > 0)) return []
+      const bottom = fromTerms(compact.length > 0 ? compact : den)
+      return [{ coeff: ONE, atoms: [{ kind: 'expr', expr: { type: 'div', num: fromTerms(num), den: bottom }, exp: 1 }] }]
     }
     case 'pow': {
-      if (e.exp.type === 'rat' && e.exp.d === 1n && e.exp.n >= 0n && e.exp.n <= 12n) {
+      if (expand && e.exp.type === 'rat' && e.exp.d === 1n && e.exp.n >= 0n && e.exp.n <= 12n) {
         let acc: Term[] = [{ coeff: ONE, atoms: [] }]
-        const base = toSum(e.base)
+        const base = toSum(e.base, true)
         for (let i = 0n; i < e.exp.n; i += 1n) {
           acc = mulSums(acc, base)
           if (acc.length > 400) return [{ coeff: ONE, atoms: [{ kind: 'expr', expr: e, exp: 1 }] }]
         }
         return acc
+      }
+      if (!expand) {
+        const base = fromTerms(toSum(e.base, false))
+        const exp = fromTerms(toSum(e.exp, false))
+        if (base.type === 'sym' && exp.type === 'rat' && exp.d === 1n && exp.n > -12n && exp.n < 12n) {
+          return [{ coeff: ONE, atoms: [{ kind: 'var', name: base.name, sub: base.sub, dots: base.dots, exp: Number(exp.n) }] }]
+        }
+        return [{ coeff: ONE, atoms: [atomOf({ type: 'pow', base, exp })] }]
       }
       if (e.base.type === 'sym' && e.exp.type === 'rat' && e.exp.d === 1n && e.exp.n > -12n && e.exp.n < 12n) {
         return [{ coeff: ONE, atoms: [{ kind: 'var', name: e.base.name, sub: e.base.sub, dots: e.base.dots, exp: Number(e.exp.n) }] }]
@@ -1150,10 +1178,22 @@ function toSum(e: Expr): Term[] {
     case 'mat':
       return [{ coeff: ONE, atoms: [atomOf(e)] }]
     case 'group':
-      return toSum(e.body)
+      return toSum(e.body, expand)
     case 'caret':
-      return e.body ? toSum(e.body) : []
+      return e.body ? toSum(e.body, expand) : []
   }
+}
+
+/** Divide by a one-term denominator. A sum such as x + 1 cannot be inverted term by term. */
+function divideBy(num: Term[], den: Term[]): Term[] | null {
+  if (den.length !== 1 || den[0].coeff.n === 0n) return null
+  if (exprKey(fromTerms(num)) === exprKey(fromTerms(den))) return [{ coeff: ONE, atoms: [] }]
+  const factor = den[0]
+  const inv: Term = {
+    coeff: divRat(ONE, factor.coeff),
+    atoms: factor.atoms.map((atom) => ({ ...atom, exp: -atom.exp })),
+  }
+  return mulSums(num, [inv])
 }
 
 function atomOf(e: Expr): Atom {

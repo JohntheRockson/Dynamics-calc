@@ -247,6 +247,11 @@ export function runMathChecks(): string[] {
   expect(has('Derivative(x^2, x) = 2x'), `derivative: ${algebraText.join(' | ')}`)
   expect(has('Derivative(x^3, x){Order: 2} = 6x'), `second derivative: ${algebraText.join(' | ')}`)
   expect(has('Derivative(x^2, x){At: 3} = 6'), `derivative at a point: ${algebraText.join(' | ')}`)
+  const quotient = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(ax+by), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(quotient.includes('-a^2/(a*x + b*y)^2'), `quotient rule keeps ax as a product: ${quotient}`)
+  const starred = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(a*x+b*y), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(starred.includes('-a^2/(a*x + b*y)^2'), `quotient rule cancels the zeros: ${starred}`)
+  expect(evaluateDocument(appendMath(emptyDocument(), 'mass = 5')).blocks.flatMap((block) => block.rows)[0]?.text === 'mass = 5', 'a longer name stays one variable')
   expect(has('x^3/3') && has('C'), `integral: ${algebraText.join(' | ')}`)
   expect(has('Integrate(x, x){Bounds: 0..1} = 1/2'), `definite integral: ${algebraText.join(' | ')}`)
   expect(has('Limit(sin(x)/x, x, 0) = 1'), `limit: ${algebraText.join(' | ')}`)
