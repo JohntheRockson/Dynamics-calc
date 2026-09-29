@@ -1122,15 +1122,16 @@ function trimNum(n: number): string {
 }
 
 /**
- * Letters written together are a product, except a known word. `ax` is `a` times `x`,
- * `sinx` starts at `sin`, and `theta` stays whole. A digit keeps the name, as in `x1`.
+ * Letters written together are a product, except a known word. `xy` and `axy` are
+ * single-letter factors, `sinx` starts at `sin`, and `theta` stays whole.
+ * A digit keeps the name, as in `x1`.
  */
 function factorLength(raw: string): number {
   if (raw.length <= 1 || /\d/.test(raw) || isWholeWord(raw)) return raw.length
   for (let length = raw.length - 1; length >= 2; length -= 1) {
     if (isWholeWord(raw.slice(0, length))) return length
   }
-  return raw.length === 2 ? 1 : raw.length
+  return 1
 }
 
 function isWholeWord(name: string): boolean {

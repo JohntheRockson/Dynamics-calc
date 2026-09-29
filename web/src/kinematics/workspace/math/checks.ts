@@ -257,7 +257,11 @@ export function runMathChecks(): string[] {
   expect(atOrder.includes('{At: 2}') && atOrder.includes('12'), `a repeated order can still be evaluated at a point: ${atOrder}`)
   const starred = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(a*x+b*y), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
   expect(starred.includes('-a^2/(a*x + b*y)^2'), `quotient rule cancels the zeros: ${starred}`)
-  expect(evaluateDocument(appendMath(emptyDocument(), 'mass = 5')).blocks.flatMap((block) => block.rows)[0]?.text === 'mass = 5', 'a longer name stays one variable')
+  const product = evaluateDocument(appendMath(emptyDocument(), 'xy')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(product === 'x*y', `xy is a product: ${product}`)
+  const longer = evaluateDocument(appendMath(emptyDocument(), 'axy + xyz')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(longer.includes('a*x*y') && longer.includes('x*y*z'), `letters side by side multiply: ${longer}`)
+  expect(evaluateDocument(appendMath(emptyDocument(), 'theta')).blocks.flatMap((block) => block.rows)[0]?.text === 'theta', 'a greek name stays one variable')
   expect(has('x^3/3') && has('C'), `integral: ${algebraText.join(' | ')}`)
   expect(has('Integrate(x, x){Bounds: 0..1} = 1/2'), `definite integral: ${algebraText.join(' | ')}`)
   expect(has('Limit(sin(x)/x, x, 0) = 1'), `limit: ${algebraText.join(' | ')}`)
