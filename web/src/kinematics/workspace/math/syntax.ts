@@ -522,6 +522,16 @@ function kernelCall(spec: FunctionSpec, args: Expr[], settings: Settings): Expr 
   switch (spec.kernel) {
     case 'diff': {
       oneOrTwo()
+      const second = args[1]
+      if (second?.type === 'vec') {
+        if (second.args.length === 0 || second.args.some((item) => !isVariable(item))) throw new MathError('A derivative order looks like {xyx}.')
+        if (entry('Order')) throw new MathError('{xyx} already lists each derivative, so drop Order.')
+        const at = entry('At')
+        const names = second.args.map((item) => (item.type === 'sym' ? item.name : ''))
+        if (at && new Set(names).size !== 1) throw new MathError('At evaluates one variable. {xyx} uses more than one.')
+        const head = [args[0] as Expr, second]
+        return call(at ? [...head, readValue(option('At'), at)] : head)
+      }
       const variable = variableArg(spec, args, 1)
       const order = entry('Order')
       const at = entry('At')

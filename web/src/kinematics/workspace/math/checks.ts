@@ -249,6 +249,12 @@ export function runMathChecks(): string[] {
   expect(has('Derivative(x^2, x){At: 3} = 6'), `derivative at a point: ${algebraText.join(' | ')}`)
   const quotient = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(ax+by), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
   expect(quotient.includes('-a^2/(a*x + b*y)^2'), `quotient rule keeps ax as a product: ${quotient}`)
+  const mixed = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^7y^5 - x^6y^4, {xyx})')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(mixed.includes('210x^5*y^4 - 120x^4*y^3'), `partials in the order xyx: ${mixed}`)
+  const third = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^7y^5 - x^6y^4, {xxx})')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(third.includes('210x^4*y^5 - 120x^3*y^4'), `partials in the order xxx: ${third}`)
+  const atOrder = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^3, {xx}){At: 2}')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(atOrder.includes('{At: 2}') && atOrder.includes('12'), `a repeated order can still be evaluated at a point: ${atOrder}`)
   const starred = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(a*x+b*y), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
   expect(starred.includes('-a^2/(a*x + b*y)^2'), `quotient rule cancels the zeros: ${starred}`)
   expect(evaluateDocument(appendMath(emptyDocument(), 'mass = 5')).blocks.flatMap((block) => block.rows)[0]?.text === 'mass = 5', 'a longer name stays one variable')

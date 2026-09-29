@@ -158,14 +158,14 @@ export const FUNCTIONS: FunctionSpec[] = [
     kernel: 'diff',
     aliases: ['diff', 'deriv'],
     section: 'calculus',
-    summary: 'Differentiate with respect to a variable. With t, every symbol depends on time',
-    params: [expression('The expression to differentiate', 'x^3'), variable('The variable to differentiate by', 'x')],
+    summary: 'Differentiate with respect to a variable. {xyx} takes the partials in that order. With t, every symbol depends on time',
+    params: [expression('The expression to differentiate', 'x^3'), variable('The variable to differentiate by, or {xyx} for the partials in that order', 'x')],
     options: [
       { name: 'Order', kind: 'whole', description: 'How many times to differentiate', default: 1, example: '2', min: 1, max: 6 },
       { name: 'At', kind: 'value', description: 'Evaluate the derivative at this value', default: null, example: '3' },
     ],
     draws: true,
-    examples: ['Derivative(x^3, x)', 'Derivative(x^3, x){Order: 2}', 'Derivative(x^2, x){At: 3}', "Derivative(r*theta'*e_theta, t)"],
+    examples: ['Derivative(x^3, x)', 'Derivative(x^3, x){Order: 2}', 'Derivative(x^2, x){At: 3}', 'Derivative(x^7*y^5 - x^6*y^4, {xyx})', "Derivative(r*theta'*e_theta, t)"],
   },
   {
     name: 'Integrate',

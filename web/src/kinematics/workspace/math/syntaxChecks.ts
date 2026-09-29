@@ -188,6 +188,7 @@ export function runSyntaxChecks(): string[] {
     ['Solve([x + y = 3, |', 'params Solve 0'],
     ['GCD(12, 18, 30, |', 'params GCD 1'],
     ['Derivative(|', 'params Derivative 0 graph'],
+    ['Derivative(x^2, {|})', 'params Derivative 1 graph'],
     ['Expand(Derivative(|', 'params Derivative 0'],
     ['Solve(x = 1, x){Domain: 0..5}\nDerivative(|', 'params Derivative 0 graph'],
     ['Solve(x^2 = 4, x)|', 'after Solve'],

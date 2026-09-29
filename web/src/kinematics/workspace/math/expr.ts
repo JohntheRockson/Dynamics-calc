@@ -417,6 +417,7 @@ class Parser {
       if (isElementary(name) && this.canStartPrimary()) return { type: 'call', name, args: [this.parseProduct()] }
       return { type: 'sym', name: ident.name }
     }
+    if (c === '{') return this.parseDerivativeOrder()
     if (c === '?') {
       this.i += 1
       return { type: 'sym', name: '?' }
@@ -485,6 +486,20 @@ class Parser {
     while (this.eat(',')) items.push(this.parseSum())
     if (!this.eat(']')) throw new MathError('Close the matrix row with ].')
     return items
+  }
+
+  /** `{xyx}` is the derivative order x, then y, then x. `{x, theta}` names each variable. */
+  parseDerivativeOrder(): Expr {
+    if (!this.eat('{')) throw new MathError(UNREADABLE)
+    const start = this.i
+    while (this.i < this.src.length && this.src[this.i] !== '}') {
+      if (this.src[this.i] === '{') throw new MathError('A derivative order looks like {xyx}.')
+      this.i += 1
+    }
+    const inner = this.src.slice(start, this.i)
+    if (!this.eat('}')) throw new MathError('Close the derivative order with }.')
+    const names = derivativeOrderNames(inner)
+    return { type: 'vec', args: names.map((name) => ({ type: 'sym', name })) }
   }
 
   parseIdent(): { name: string } {
@@ -1120,6 +1135,63 @@ function factorLength(raw: string): number {
 
 function isWholeWord(name: string): boolean {
   return isGreekName(name) || isReservedName(name)
+}
+
+/** Names inside `{xyx}` or `{x, theta}`, in the order they are written. */
+export function derivativeOrderNames(inner: string): string[] {
+  const text = inner.replaceAll(MATH_CARET, '').trim()
+  if (!text) throw new MathError('A derivative order looks like {xyx}.')
+  if (/[:=]/.test(text)) throw new MathError('Settings go after the closing parenthesis. A derivative order looks like {xyx}.')
+  const names = text.includes(',') ? text.split(',').map((piece) => oneOrderName(piece.trim())) : peelOrderNames(text.replace(/\s+/g, ''))
+  if (names.length === 0) throw new MathError('A derivative order looks like {xyx}.')
+  if (names.length > 6) throw new MathError('Differentiate at most 6 times, for example {xyx}.')
+  return names
+}
+
+function oneOrderName(piece: string): string {
+  if (!piece) throw new MathError('A derivative order looks like {xyx}.')
+  const name = naming(piece)
+  if (name === 'pi' || name === 'e') throw new MathError('A derivative order lists variables, for example {xyx}.')
+  if (isGreekName(name) || name.length === 1) return name
+  throw new MathError('A derivative order looks like {xyx}, or {x, theta} when a name is longer than one letter.')
+}
+
+function peelOrderNames(text: string): string[] {
+  const names: string[] = []
+  let i = 0
+  while (i < text.length) {
+    const rest = text.slice(i)
+    const char = [...rest][0] ?? ''
+    const fromChar = greekCharName(char)
+    if (fromChar) {
+      names.push(fromChar)
+      i += char.length
+      continue
+    }
+    const greek = longestGreekPrefix(rest)
+    if (greek) {
+      names.push(greek)
+      i += greek.length
+      continue
+    }
+    if (/^[A-Za-z]$/.test(char)) {
+      names.push(char)
+      i += 1
+      continue
+    }
+    throw new MathError('A derivative order looks like {xyx}.')
+  }
+  return names
+}
+
+function longestGreekPrefix(rest: string): string | null {
+  const lower = rest.toLowerCase()
+  let best: string | null = null
+  for (const name of Object.keys(GREEK)) {
+    if (name === 'pi') continue
+    if (lower.startsWith(name) && (best === null || name.length > best.length)) best = name
+  }
+  return best
 }
 
 function toSum(e: Expr, expand = true): Term[] {
@@ -1793,12 +1865,30 @@ function texCall(e: CallExpr): string {
   return `${texCallBody(e.name, e.args)}${e.options ? blockTex(e.options) : ''}`
 }
 
+function orderNames(arg: Expr): string[] | null {
+  if (arg.type !== 'vec' || arg.args.length === 0) return null
+  const names: string[] = []
+  for (const item of arg.args) {
+    if (item.type !== 'sym' || item.sub || (item.dots ?? 0) > 0) return null
+    names.push(item.name)
+  }
+  return names
+}
+
 function texCallBody(name: string, args: Expr[]): string {
   if (name === 'Dt' && args.length === 1) return texTimeDerivative(args[0], 1)
   if (name === 'sqrt' && args.length === 1) return `\\sqrt{${texAt(args[0], 0)}}`
   if (name === 'abs' && args.length === 1) return `\\left|${texAt(args[0], 0)}\\right|`
   if (name === 'log' && args.length === 2) return `\\log_{${texAt(args[1], 0)}}\\left(${texAt(args[0], 0)}\\right)`
   const spec = functionByKernel(name)
+  if (spec?.kernel === 'diff' && args[1]) {
+    const names = orderNames(args[1])
+    if (names) {
+      const body = names.every((item) => item.length === 1) ? names.map((item) => texSymbol(item)).join('') : names.map((item) => texSymbol(item)).join(', ')
+      const inside = [texAt(args[0], 0), `\\{${body}\\}`, ...args.slice(2).map((arg) => texAt(arg, 0))].join(', ')
+      return `\\operatorname{${spec.name}}\\left(${inside}\\right)`
+    }
+  }
   const head = ELEMENTARY_TEX[name] ?? (spec ? `\\operatorname{${spec.name}}` : texSymbol(name))
   if (args.length === 1 && isBareCaret(args[0])) return `${head}(${CARET_TEX}\\vphantom{0})`
   return `${head}\\left(${args.map((arg) => texAt(arg, 0)).join(', ')}\\right)`
@@ -1934,7 +2024,16 @@ function plainCall(e: CallExpr): string {
   const spec = functionByKernel(e.name)
   const shown = spec && !e.options ? unbind(spec, e.args) : { args: e.args, settings: [] }
   const block = e.options ? `{${e.options.raw}}` : shown.settings.length > 0 ? `{${shown.settings.join(', ')}}` : ''
-  return `${spec?.name ?? e.name}(${shown.args.map((arg) => plainAt(arg, 0)).join(', ')})${block}`
+  const args = shown.args.map((arg, index) => (spec?.kernel === 'diff' && index === 1 ? (orderPlain(arg) ?? plainAt(arg, 0)) : plainAt(arg, 0)))
+  return `${spec?.name ?? e.name}(${args.join(', ')})${block}`
+}
+
+/** `{xyx}` as written. A vector of numbers stays in square brackets. */
+function orderPlain(arg: Expr): string | null {
+  const names = orderNames(arg)
+  if (!names) return null
+  const body = names.every((name) => name.length === 1) ? names.join('') : names.join(', ')
+  return `{${body}}`
 }
 
 /** A bound call written the way it is typed: diff(x^3, x, 2) is Derivative(x^3, x){Order: 2}. */
@@ -1949,6 +2048,10 @@ function unbind(spec: FunctionSpec, args: Expr[]): { args: Expr[]; settings: str
   switch (spec.kernel) {
     case 'diff': {
       if (args.length === 3) {
+        if (orderNames(args[1])) {
+          put('At', text(args[2]))
+          return { args: args.slice(0, 2), settings }
+        }
         const order = args[2]?.type === 'rat' && args[2].d === 1n ? Number(args[2].n) : null
         if (order !== null && order >= 1 && order <= 6) put('Order', String(order))
         else put('At', text(args[2]))
