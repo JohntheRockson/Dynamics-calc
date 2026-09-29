@@ -2001,7 +2001,7 @@ function plainPrec(e: Expr): [string, number] {
     case 'mul':
       return [plainMul(e.args), P_MUL]
     case 'div':
-      return [`${plainAt(peelGroup(e.num), P_MUL)}/${plainAt(peelGroup(e.den), P_MUL)}`, P_MUL]
+      return [`${plainAt(peelGroup(e.num), P_MUL)}/${plainAt(peelGroup(e.den), P_MUL + 1)}`, P_MUL]
     case 'pow':
       if (e.exp.type === 'rat' && e.exp.n === 1n && e.exp.d === 2n) return [`sqrt(${plainAt(e.base, 0)})`, P_ATOM]
       return [`${plainAt(e.base, P_POW + 1)}^${plainAt(e.exp, P_POW)}`, P_POW]

@@ -245,6 +245,11 @@ export function runMathChecks(): string[] {
   expect(algebraText.some((text) => text.includes('x = 1') && text.includes('x = -1')), `zeros: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('x = 2') && text.includes('y = 1')), `system: ${algebraText.join(' | ')}`)
   expect(has('Derivative(x^2, x) = 2x'), `derivative: ${algebraText.join(' | ')}`)
+  const three = appendMath(emptyDocument(), 'f(x,y,z) = x/(yz^(2))+ye^(xz)')
+  const defined = evaluateDocument(three).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(defined && defined.source !== 'error' && defined.text.includes('f(x, y, z)')), `a function of three inputs is defined: ${defined?.text}`)
+  const called = evaluateDocument(appendMath(three, 'f(1, 2, 3)')).blocks.flatMap((block) => block.rows).at(-1)
+  expect(Boolean(called?.text.includes('1/18') && called.text.includes('e^3')), `f(1, 2, 3) uses all three inputs: ${called?.text}`)
   expect(has('Derivative(x^3, x){Order: 2} = 6x'), `second derivative: ${algebraText.join(' | ')}`)
   expect(has('Derivative(x^2, x){At: 3} = 6'), `derivative at a point: ${algebraText.join(' | ')}`)
   const quotient = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(ax+by), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''

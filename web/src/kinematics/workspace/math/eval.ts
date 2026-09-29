@@ -239,6 +239,24 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad'):
         const formulaTex = computed || !echo ? `${labelTex(parsed.name, parsed.params)} = ${tex(shownBody)}` : echo
         const formulaText = `${label} = ${plain(shownBody)}`
         env.set(parsed.name, { kind: 'fn', params: parsed.params, body })
+        if (parsed.params.length > 2) {
+          rows.push({
+            statementId: statement.id,
+            label,
+            input: statement.input,
+            text: formulaText,
+            tex: formulaTex,
+            exactTex: formulaTex,
+            exactText: formulaText,
+            approxTex: null,
+            approxText: null,
+            preferDecimal: false,
+            plotKind: null,
+            visible: statement.visible,
+            warn: null,
+          })
+          continue
+        }
         const param = parsed.params[0] ?? 'x'
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
           const range = rangeOf(parsed.plot, param, env, angles)

@@ -99,25 +99,18 @@ function readLine(input: string): LineRead {
   const raw = source.trim()
   if (!raw.replaceAll(MATH_CARET, '').trim()) throw new MathError(split.block ? 'Write the calculation before the settings in { }.' : 'Enter a calculation.')
   const base = { block: split.block, caretAfter: split.caretAfter, legacy: plotDefaults(), raw, left: null, silent: peeled.silent }
-  const fn2 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*,\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
-  if (fn2) {
-    const name = naming(fn2[1] ?? '')
-    const params = [naming(fn2[2] ?? ''), naming(fn2[3] ?? '')]
+  const defined = new RegExp(`^(${IDENT})\\s*\\((\\s*${IDENT}(?:\\s*,\\s*${IDENT})*)\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
+  if (defined) {
+    const name = naming(defined[1] ?? '')
     assertDefinable(name)
-    if (params[0] === params[1]) throw new MathError('Use two different inputs.')
-    const body = parseTracked(fn2[4] ?? '')
+    const params = (defined[2] ?? '').split(',').map((part) => naming(part.trim())).filter((part) => part.length > 0)
+    if (new Set(params).size !== params.length) throw new MathError(params.length === 2 ? 'Use two different inputs.' : 'Use a different name for each input.')
+    const body = parseTracked(defined[3] ?? '')
     return { ...base, kind: 'fn', name, params, expr: body.expr, tail: body.tail }
-  }
-  const fn1 = new RegExp(`^(${IDENT})\\s*\\(\\s*(${IDENT})\\s*\\)\\s*=\\s*([\\s\\S]+)$`).exec(raw)
-  if (fn1) {
-    const name = naming(fn1[1] ?? '')
-    assertDefinable(name)
-    const body = parseTracked(fn1[3] ?? '')
-    return { ...base, kind: 'fn', name, params: [naming(fn1[2] ?? '')], expr: body.expr, tail: body.tail }
   }
   const read = parseTracked(raw)
   const expr = read.expr
-  if (expr.type === 'eq' && expr.left.type === 'call') throw new MathError('Define a curve as f(x) = … or a surface as f(x, y) = ….')
+  if (expr.type === 'eq' && expr.left.type === 'call') throw new MathError('Define a curve as f(x) = …, a surface as f(x, y) = …, or a function of more inputs as f(x, y, z) = ….')
   if (expr.type === 'eq' && expr.left.type === 'sym') {
     if (findFunction(expr.left.name)) throw new MathError(`${expr.left.name} is a built-in function. Pick another name.`)
     if (!isReservedName(expr.left.name)) return { ...base, kind: 'assign', name: expr.left.name, params: [], left: expr.left, expr: expr.right, tail: read.tail }
