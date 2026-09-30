@@ -201,6 +201,7 @@ export function signatureAt(source: string, cursor: number): SignatureHelp | nul
     } else if (ch === '{') {
       const before = line[previousSolid(line, i)] ?? ''
       if (before === '_' || before === '^') stack.push({ kind: 'slot', open: i, name: '', commas: 0, entryStart: i + 1, owner: null })
+      else if (before !== ')' && stack.some((frame) => frame.kind === 'call')) stack.push({ kind: 'group', open: i, name: '', commas: 0, entryStart: i + 1, owner: null })
       else stack.push({ kind: 'block', open: i, name: '', commas: 0, entryStart: i + 1, owner: blockOwner(line, i, closed, stack.length > 0, drawsLine) })
     } else if (ch === ')' || ch === ']' || ch === '}') {
       const frame = stack.pop()

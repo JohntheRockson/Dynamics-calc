@@ -245,8 +245,28 @@ export function runMathChecks(): string[] {
   expect(algebraText.some((text) => text.includes('x = 1') && text.includes('x = -1')), `zeros: ${algebraText.join(' | ')}`)
   expect(algebraText.some((text) => text.includes('x = 2') && text.includes('y = 1')), `system: ${algebraText.join(' | ')}`)
   expect(has('Derivative(x^2, x) = 2x'), `derivative: ${algebraText.join(' | ')}`)
+  const three = appendMath(emptyDocument(), 'f(x,y,z) = x/(yz^(2))+ye^(xz)')
+  const defined = evaluateDocument(three).blocks.flatMap((block) => block.rows)[0]
+  expect(Boolean(defined && defined.source !== 'error' && defined.text.includes('f(x, y, z)')), `a function of three inputs is defined: ${defined?.text}`)
+  const called = evaluateDocument(appendMath(three, 'f(1, 2, 3)')).blocks.flatMap((block) => block.rows).at(-1)
+  expect(Boolean(called?.text.includes('1/18') && called.text.includes('e^3')), `f(1, 2, 3) uses all three inputs: ${called?.text}`)
   expect(has('Derivative(x^3, x){Order: 2} = 6x'), `second derivative: ${algebraText.join(' | ')}`)
   expect(has('Derivative(x^2, x){At: 3} = 6'), `derivative at a point: ${algebraText.join(' | ')}`)
+  const quotient = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(ax+by), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(quotient.includes('-a^2/(a*x + b*y)^2'), `quotient rule keeps ax as a product: ${quotient}`)
+  const mixed = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^7y^5 - x^6y^4, {xyx})')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(mixed.includes('210x^5*y^4 - 120x^4*y^3'), `partials in the order xyx: ${mixed}`)
+  const third = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^7y^5 - x^6y^4, {xxx})')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(third.includes('210x^4*y^5 - 120x^3*y^4'), `partials in the order xxx: ${third}`)
+  const atOrder = evaluateDocument(appendMath(emptyDocument(), 'Derivative(x^3, {xx}){At: 2}')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(atOrder.includes('{At: 2}') && atOrder.includes('12'), `a repeated order can still be evaluated at a point: ${atOrder}`)
+  const starred = evaluateDocument(appendMath(emptyDocument(), 'Derivative(a/(a*x+b*y), x)')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(starred.includes('-a^2/(a*x + b*y)^2'), `quotient rule cancels the zeros: ${starred}`)
+  const product = evaluateDocument(appendMath(emptyDocument(), 'xy')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(product === 'x*y', `xy is a product: ${product}`)
+  const longer = evaluateDocument(appendMath(emptyDocument(), 'axy + xyz')).blocks.flatMap((block) => block.rows)[0]?.text ?? ''
+  expect(longer.includes('a*x*y') && longer.includes('x*y*z'), `letters side by side multiply: ${longer}`)
+  expect(evaluateDocument(appendMath(emptyDocument(), 'theta')).blocks.flatMap((block) => block.rows)[0]?.text === 'theta', 'a greek name stays one variable')
   expect(has('x^3/3') && has('C'), `integral: ${algebraText.join(' | ')}`)
   expect(has('Integrate(x, x){Bounds: 0..1} = 1/2'), `definite integral: ${algebraText.join(' | ')}`)
   expect(has('Limit(sin(x)/x, x, 0) = 1'), `limit: ${algebraText.join(' | ')}`)

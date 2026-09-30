@@ -110,7 +110,7 @@ function readLine(input: string): LineRead {
   }
   const read = parseTracked(raw)
   const expr = read.expr
-  if (expr.type === 'eq' && expr.left.type === 'call') throw new MathError('Define a curve as f(x) = …, a surface as f(x, y) = …, or f(x, y, t) = …{Parameter: t}.')
+  if (expr.type === 'eq' && expr.left.type === 'call') throw new MathError('Define a curve as f(x) = …, a surface as f(x, y) = …, or a function of more inputs as f(x, y, z) = …. Hold one input on a slider with {Parameter: t}.')
   if (expr.type === 'eq' && expr.left.type === 'sym') {
     if (findFunction(expr.left.name)) throw new MathError(`${expr.left.name} is a built-in function. Pick another name.`)
     if (!isReservedName(expr.left.name)) return { ...base, kind: 'assign', name: expr.left.name, params: [], left: expr.left, expr: expr.right, tail: read.tail }
@@ -515,6 +515,16 @@ function kernelCall(spec: FunctionSpec, args: Expr[], settings: Settings): Expr 
   switch (spec.kernel) {
     case 'diff': {
       oneOrTwo()
+      const second = args[1]
+      if (second?.type === 'vec') {
+        if (second.args.length === 0 || second.args.some((item) => !isVariable(item))) throw new MathError('A derivative order looks like {xyx}.')
+        if (entry('Order')) throw new MathError('{xyx} already lists each derivative, so drop Order.')
+        const at = entry('At')
+        const names = second.args.map((item) => (item.type === 'sym' ? item.name : ''))
+        if (at && new Set(names).size !== 1) throw new MathError('At evaluates one variable. {xyx} uses more than one.')
+        const head = [args[0] as Expr, second]
+        return call(at ? [...head, readValue(option('At'), at)] : head)
+      }
       const variable = variableArg(spec, args, 1)
       const order = entry('Order')
       const at = entry('At')

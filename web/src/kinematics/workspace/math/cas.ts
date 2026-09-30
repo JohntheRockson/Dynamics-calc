@@ -323,7 +323,22 @@ function diffCall(e: Extract<Expr, { type: 'call' }>, variable: string, angles: 
 }
 
 function diffValue(args: Expr[], angles: AngleMode): { value: Expr; variable: string; at: Expr | null } {
-  if (args.length < 2 || args[1].type !== 'sym') throw new MathError('Use Derivative(expression, variable), for example Derivative(x^2, x).')
+  if (args.length < 2) throw new MathError('Use Derivative(expression, variable), for example Derivative(x^2, x).')
+  if (args[1].type === 'vec') {
+    const names = args[1].args.map((item) => {
+      if (item.type !== 'sym' || item.sub || (item.dots ?? 0) > 0 || item.name === 'pi' || item.name === 'e') throw new MathError('A derivative order looks like {xyx}.')
+      return item.name
+    })
+    if (names.length === 0) throw new MathError('A derivative order looks like {xyx}.')
+    let value = args[0]
+    for (const name of names) value = derivative(value, name, angles, undefined, name === 't')
+    const at = args[2] ?? null
+    if (at && new Set(names).size !== 1) throw new MathError('At evaluates one variable. {xyx} uses more than one.')
+    if (at) value = substitute(value, new Map([[names[0] ?? 'x', at]]))
+    const variable = names.every((name) => name === names[0]) ? (names[0] ?? 'x') : (names[names.length - 1] ?? 'x')
+    return { value, variable, at }
+  }
+  if (args[1].type !== 'sym') throw new MathError('Use Derivative(expression, variable), for example Derivative(x^2, x).')
   const variable = args[1].name
   let order = 1
   let at: Expr | null = null
@@ -341,6 +356,15 @@ function diffValue(args: Expr[], angles: AngleMode): { value: Expr; variable: st
   for (let i = 0; i < order; i += 1) value = derivative(value, variable, angles, undefined, total)
   if (at) value = substitute(value, new Map([[variable, at]]))
   return { value, variable, at }
+}
+
+function diffAxis(arg: Expr): string {
+  if (arg.type === 'vec') {
+    const names = arg.args.filter((item): item is Extract<Expr, { type: 'sym' }> => item.type === 'sym').map((item) => item.name)
+    if (names.length > 0 && names.every((name) => name === names[0])) return names[0] ?? 'x'
+    return names[names.length - 1] ?? 'x'
+  }
+  return symbolOf(arg, 'x')
 }
 
 function hasDot(e: Expr): boolean {
@@ -1413,7 +1437,7 @@ export function evaluateCas(call: Expr, angles: AngleMode): CasVisual | null {
   const reduced = reduceNamed(call.name, args, angles)
   const simplified = normalize(reduced, angles)
   if (call.name === 'diff' || call.name === 'series') {
-    const variable = symbolOf(args[1], 'x')
+    const variable = call.name === 'diff' ? diffAxis(args[1]) : symbolOf(args[1], 'x')
     const atPoint = call.name === 'diff' && diffValue(args, angles).at !== null
     const label = displayName(call.name).toLowerCase()
     const curve = atPoint ? null : curveFor(simplified, variable, label)

@@ -302,7 +302,21 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
           continue
         }
         if (parsed.params.length > 2) {
-          rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, `Name one input as Parameter to draw this, for example f(x, y, t) = sin(x)*cos(y) + t{Parameter: t}.`))
+          rows.push({
+            statementId: statement.id,
+            label,
+            input: statement.input,
+            text: formulaText,
+            tex: formulaTex,
+            exactTex: formulaTex,
+            exactText: formulaText,
+            approxTex: null,
+            approxText: null,
+            preferDecimal: false,
+            plotKind: null,
+            visible: statement.visible,
+            warn: null,
+          })
           continue
         }
         if (parsed.params.length === 1 && body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
