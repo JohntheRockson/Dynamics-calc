@@ -95,7 +95,7 @@ export const GRAPH_OPTIONS: OptionSpec[] = [
   { name: 'Dashed', kind: 'boolean', description: 'Draw a dashed line', default: false, example: 'true' },
   { name: 'Domain', kind: 'range', description: 'Only draw this interval of the input', default: null, example: '0..2*pi' },
   { name: 'Shade', kind: 'range', description: 'Shade between the curve and the x-axis over this interval. Shade: true shades the whole curve', default: null, example: '0..2', aliases: ['Fill', 'Filling'] },
-  { name: 'Parameter', kind: 'value', description: 'Hold this variable on a slider. One input left draws that slice as a line in the 3D box; two inputs left draw a surface that moves with the slider', default: null, example: 'y = -2..2', aliases: ['Slider'] },
+  { name: 'Parameter', kind: 'value', description: 'Hold this variable on a slider. A slice of f(x, y) is a line, f(x, y, t) stays a surface, and a vector r(t) draws its path with the arrow at that time', default: null, example: 't = 0..2*pi', aliases: ['Slider'] },
 ]
 
 const expression = (description = 'The expression to work on', example = 'x^2'): ParamSpec => ({ name: 'expression', kind: 'expression', phrase: 'an expression', description, example })
@@ -568,7 +568,7 @@ export const MATH_FORMS: FormSpec[] = [
   { section: 'graphs', title: 'Parametric curve', summary: 'A vector function of one input', example: 'r(t) = [cos(t), sin(t)]{t: 0..2*pi}' },
   { section: 'graphs', title: 'Space curve', summary: 'Three components draw in 3D', example: 'r(t) = [cos(t), sin(t), t/4]{t: 0..4*pi}' },
   { section: 'graphs', title: 'Surface', summary: 'A two-input function, or z = , draws a surface', example: 'g(x, y) = x^2 - y^2' },
-  { section: 'graphs', title: 'Slider', summary: 'Hold one variable on a slider. A slice of f(x, y) is a line in the 3D box; f(x, y, t) stays a surface', example: 'f(x, y) = sin(x) + y{Parameter: y = -2..2}' },
+  { section: 'graphs', title: 'Slider', summary: 'Hold one variable on a slider. A slice of f(x, y) is a line in the 3D box; f(x, y, t) stays a surface; r(t) shows the arrow at that time', example: 'r(t) = [cos(t), sin(t), t]{Parameter: t = 0..4*pi}' },
   { section: 'linear', title: 'Vector', summary: 'Square brackets, drawn as an arrow', example: '[1, 2, 3]' },
   { section: 'linear', title: 'Matrix', summary: 'Rows of the same length', example: '[[1, 2], [3, 4]]' },
 ]
@@ -580,7 +580,7 @@ export const SYNTAX_RULES: string[] = [
   'A yes-or-no setting can stand alone: {Dashed}.',
   'Settings at the end of a definition or an equation style its graph: f(x) = sin(x){Color: red}.',
   'Integrate only computes. To show an area, shade the curve that draws it: Plot(x^2, x){Shade: 0..2}.',
-  'Parameter holds one variable on a slider: f(x, y) = sin(x) + y{Parameter: y} draws the slice, and f(x, y, t) = sin(x)*cos(y) + t{Parameter: t} moves the surface.',
+  'Parameter holds one variable on a slider: f(x, y) = sin(x) + y{Parameter: y} draws the slice, f(x, y, t) = sin(x)*cos(y) + t{Parameter: t} moves the surface, and r(t) = [cos(t), sin(t), t]{Parameter: t} moves the arrow along its path.',
 ]
 
 function nameKey(name: string): string {

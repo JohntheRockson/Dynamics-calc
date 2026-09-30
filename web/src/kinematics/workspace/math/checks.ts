@@ -650,5 +650,22 @@ export function runMathChecks(): string[] {
   const coneSlider = evaluateDocument(appendMath(emptyDocument(), 'z^2 = x + t{Parameter: t}'))
   expect(coneSlider.sliders.length === 1 && coneSlider.bodies.filter((body) => body.role === 'plot').length === 2, `one slider for both branches: ${coneSlider.sliders.length}`)
 
+  const helixDoc = appendMath(emptyDocument(), 'r(t) = [cos(t), sin(t), t]{Parameter: t = 0..1}')
+  const helix = evaluateDocument(helixDoc)
+  const helixArrow = helix.bodies.find((body) => body.arrow)
+  const helixTip = helixArrow?.path.filter((point) => Number.isFinite(point.x) && (point.x !== 0 || point.y !== 0 || point.z !== 0)).at(-1)
+  const helixZs = helix.bodies.filter((body) => !body.arrow).flatMap((body) => body.path).filter((point) => Number.isFinite(point.z)).map((point) => point.z)
+  expect(helix.dimension === 3 && helix.sliders.length === 1 && helix.sliders[0]?.name === 't' && helix.sliders[0]?.min === 0 && helix.sliders[0]?.max === 1, `a vector parameter is a time slider: ${JSON.stringify(helix.sliders)}`)
+  expect(Boolean(helixTip && Math.abs(helixTip.x - 1) < 1e-6 && Math.abs(helixTip.y) < 1e-6 && Math.abs(helixTip.z) < 1e-6), `at t = 0 the arrow is (1, 0, 0): ${helixTip?.x}, ${helixTip?.y}, ${helixTip?.z}`)
+  expect(helixZs.length > 5 && Math.min(...helixZs) < 0.05 && Math.max(...helixZs) > 0.9, `the path still covers t from 0 to 1: ${Math.min(...helixZs)}..${Math.max(...helixZs)}`)
+  const later = evaluateDocument(helixDoc, 0, 'rad', { s1: 1 })
+  const laterTip = later.bodies.find((body) => body.arrow)?.path.filter((point) => Number.isFinite(point.z)).at(-1)
+  expect(later.sliders[0]?.value === 1 && Boolean(laterTip && Math.abs(laterTip.x - Math.cos(1)) < 1e-6 && Math.abs(laterTip.y - Math.sin(1)) < 1e-6 && Math.abs(laterTip.z - 1) < 1e-6), `the arrow follows t: ${laterTip?.x}, ${laterTip?.y}, ${laterTip?.z}`)
+  expect(helix.fitKey === later.fitKey, 'moving a vector keeps the camera frame')
+
+  const family = evaluateDocument(appendMath(emptyDocument(), 'r(t) = [cos(t), sin(t), a*t]{Parameter: a, t: 0..1}'), 0, 'rad', { s1: 2 })
+  const familyZs = family.bodies.filter((body) => body.role === 'plot' && !body.arrow).flatMap((body) => body.path).filter((point) => Number.isFinite(point.z) && Math.abs(point.x - Math.cos(1)) < 0.15)
+  expect(family.sliders[0]?.name === 'a' && family.sliders[0]?.value === 2 && familyZs.some((point) => Math.abs(point.z - 2) < 0.2), `an extra vector parameter moves the path: ${familyZs.map((point) => point.z).join(', ')}`)
+
   return [...errors, ...runSyntaxChecks()]
 }

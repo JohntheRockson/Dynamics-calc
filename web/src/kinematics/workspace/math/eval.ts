@@ -266,6 +266,22 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
           }
           const rest = parsed.params.filter((name) => name !== held.slider.name)
           const color = colorFor(parsed.plot)
+          if (body.type === 'vec' && body.args.length >= 2 && body.args.length <= 3) {
+            if (rest.length > 1) {
+              rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, `Parameter holds one variable. ${label} still has ${rest.join(', ')} left, so keep its time input or one other input.`))
+              continue
+            }
+            if (rest.length === 0) {
+              placeVector(plots, statement.id, label, color, statement.visible, body.args, null, held.slider, env, angles, parsed.plot, { min: held.slider.min, max: held.slider.max })
+              rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, curveOnlyShade(parsed.plot)))
+              continue
+            }
+            const trace = rest[0] ?? 't'
+            const clip = rangeOf(parsed.plot, trace, env, angles, [trace])
+            placeVector(plots, statement.id, label, color, statement.visible, body.args, trace, held.slider, held.env, angles, parsed.plot, clip.interval ?? DEFAULT_RANGE)
+            rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'curve', statement.visible, clip.warn ?? curveOnlyShade(parsed.plot)))
+            continue
+          }
           if (rest.length > 2) {
             rows.push(rowBase(statement.id, statement.input, label, formulaText, formulaTex, 'surface', statement.visible, `Parameter holds one variable. ${label} still has ${rest.join(', ')} left, so keep two inputs for a surface or one for a line.`))
             continue
@@ -501,7 +517,7 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
             rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, held.warn))
             continue
           }
-          if (variable === held.slider.name) {
+          if (variable === held.slider.name && value.type !== 'vec') {
             rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, `Parameter holds ${held.slider.name}, so plot a different variable, for example Plot(x^2 + y, x){Parameter: y}.`))
             continue
           }
@@ -512,7 +528,23 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
           const missing = freeSymbols(value).filter((name) => name !== variable && name !== held.slider.name)
           const range = rangeOf(parsed.plot, variable, env, angles, [variable])
           if (value.type === 'vec') {
-            rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, 'Parameter holds a variable of a curve or a surface, not a parametric list.'))
+            if (value.args.length < 2 || value.args.length > 3) throw new MathError('Plot draws a list of two or three expressions as a curve, for example Plot([cos(t), sin(t)], t).')
+            const tracing = freeSymbols(value).filter((name) => name !== held.slider.name)
+            if (tracing.length > 1) {
+              rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, giveValue(tracing)))
+              continue
+            }
+            const color = colorFor(parsed.plot)
+            if (tracing.length === 0) {
+              placeVector(plots, statement.id, label, color, statement.visible, value.args, null, held.slider, local, angles, parsed.plot, { min: held.slider.min, max: held.slider.max })
+              rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, curveOnlyShade(parsed.plot)))
+              continue
+            }
+            const trace = variable !== held.slider.name ? variable : (tracing[0] ?? 't')
+            const clip = rangeOf(parsed.plot, trace, env, angles, [trace])
+            placeVector(plots, statement.id, label, color, statement.visible, missing.length ? [] : value.args, trace, held.slider, bind(local, held.slider.name, held.slider.value), angles, parsed.plot, clip.interval ?? DEFAULT_RANGE)
+            const warn = missing.length > 0 ? giveValue(missing) : (clip.warn ?? curveOnlyShade(parsed.plot))
+            rows.push(rowBase(statement.id, statement.input, 'Plot', text, formula, 'curve', statement.visible, warn))
             continue
           }
           const drawn = missing.length > 0 ? null : slicePlot(statement.id, label, colorFor(parsed.plot), statement.visible, value, variable, held.slider, local, angles, parsed.plot, range.interval)
@@ -595,6 +627,36 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
         continue
       }
       const value = normalize(rewriteAll(applied, angles), angles)
+      const held = holdParameter(parsed.plot, statement.id, env, angles, sliders)
+      if (held && value.type === 'vec' && value.args.length >= 2 && value.args.length <= 3) {
+        const shown = described(expr, value, statement.input, angles)
+        if ('warn' in held) {
+          rows.push({ ...shown, text: held.warn, statementId: statement.id, label: 'Vector', plotKind: 'curve', visible: statement.visible, warn: held.warn })
+          continue
+        }
+        const symbols = freeSymbols(value)
+        if (!symbols.includes(held.slider.name)) {
+          const warn = parameterMissing(held.slider.name, symbols)
+          rows.push({ ...shown, text: warn, statementId: statement.id, label: 'Vector', plotKind: 'curve', visible: statement.visible, warn })
+          continue
+        }
+        const tracing = symbols.filter((name) => name !== held.slider.name)
+        if (tracing.length > 1) {
+          const warn = giveValue(tracing)
+          rows.push({ ...shown, text: warn, statementId: statement.id, label: 'Vector', plotKind: 'curve', visible: statement.visible, warn })
+          continue
+        }
+        const color = colorFor(parsed.plot)
+        if (tracing.length === 0) placeVector(plots, statement.id, 'vector', color, statement.visible, value.args, null, held.slider, env, angles, parsed.plot, { min: held.slider.min, max: held.slider.max })
+        else {
+          const trace = tracing[0] ?? 't'
+          const clip = rangeOf(parsed.plot, trace, env, angles, [trace])
+          placeVector(plots, statement.id, trace, color, statement.visible, value.args, trace, held.slider, held.env, angles, parsed.plot, clip.interval ?? DEFAULT_RANGE)
+        }
+        const warn = curveOnlyShade(parsed.plot)
+        rows.push({ ...shown, text: warn ? `${shown.text} (${warn})` : shown.text, statementId: statement.id, label: 'Vector', plotKind: 'curve', visible: statement.visible, warn })
+        continue
+      }
       const picture = vectorPicture(value)
       if (picture) {
         const color = colorFor(parsed.plot)
@@ -869,6 +931,29 @@ function arrowPlot(id: string, label: string, color: string, visible: boolean, x
     { x, y, z },
   ]
   return { kind: 'curve', statementId: id, label, color, visible, sample, path: sample(), arrow: true }
+}
+
+function componentPoint(components: Expr[], param: string, t: number, env: MathEnv, angles: AngleMode): { x: number; y: number; z: number } | null {
+  const local = bind(env, param, t)
+  const values = components.map((component) => numericValue(component, local, angles))
+  if (values.some((value) => value === null || !Number.isFinite(value))) return null
+  return { x: values[0] ?? 0, y: values[1] ?? 0, z: values[2] ?? 0 }
+}
+
+/** A vector r(t) with Parameter on t keeps its path and draws the arrow at the slider. An extra Parameter is bound and the path moves with it. */
+function placeVector(plots: Array<CurvePlot | SurfacePlot>, id: string, label: string, color: string, visible: boolean, components: Expr[], trace: string | null, slider: PlotSlider, env: MathEnv, angles: AngleMode, plot: PlotOptions, range: Interval): void {
+  if (trace === null) {
+    plots.push(parametricPlot(id, label, color, visible, components, slider.name, env, angles, plot, range, plot.dashed))
+    const sample = () => {
+      const tip = componentPoint(components, slider.name, slider.value, env, angles)
+      return tip ? [{ x: 0, y: 0, z: 0 }, tip] : []
+    }
+    plots.push({ kind: 'curve', statementId: id, label, color, visible, sample, path: sample(), arrow: true, slider })
+    return
+  }
+  const drawn = parametricPlot(id, label, color, visible, components, trace, env, angles, plot, range, plot.dashed)
+  drawn.slider = slider
+  plots.push(drawn)
 }
 
 function vectorPicture(value: Expr): { kind: 'arrow'; x: number; y: number; z: number } | { kind: 'parametric'; components: Expr[]; param: string } | null {
