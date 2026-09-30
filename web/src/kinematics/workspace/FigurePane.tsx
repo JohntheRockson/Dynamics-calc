@@ -8,7 +8,7 @@ import { DEFAULT_WINDOW, type PlotWindow } from './math/eval'
 import { clipToDomain, sheetsFromCurve } from './math/extrude'
 import { Scene3D, type GraphView } from './Scene3D'
 
-export function FigurePane({ view, playback, planes }: { view: WorkspaceView; playback: Playback; planes: Record<string, boolean> }) {
+export function FigurePane({ view, playback, planes, onSlider }: { view: WorkspaceView; playback: Playback; planes: Record<string, boolean>; onSlider?: (statementId: string, value: number) => void }) {
   const stageRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState(480)
   const [box, setBox] = useState<PlotWindow>(DEFAULT_WINDOW)
@@ -116,6 +116,25 @@ export function FigurePane({ view, playback, planes }: { view: WorkspaceView; pl
           <span className="badge">{show3d ? '3D' : '2D'}</span>
         </div>
       </div>
+      {view.sliders.length > 0 && (
+        <div className="figure-sliders">
+          {view.sliders.map((slider) => (
+            <label key={`${slider.statementId}:${slider.name}`} className="figure-slider">
+              <span>{slider.name}</span>
+              <input
+                type="range"
+                min={slider.min}
+                max={slider.max}
+                step={Math.max((slider.max - slider.min) / 200, 1e-4)}
+                value={slider.value}
+                aria-label={`${slider.name} slider`}
+                onChange={(event) => onSlider?.(slider.statementId, Number(event.target.value))}
+              />
+              <span className="figure-slider-value">{formatSlider(slider.value)}</span>
+            </label>
+          ))}
+        </div>
+      )}
       <div className="workspace-figure-stage" ref={stageRef}>
         {!hasFigure ? (
           <p className="workspace-figure-empty">Graphs and motion show up here. A calculation with no graph stays in the list.</p>
@@ -143,11 +162,18 @@ export function FigurePane({ view, playback, planes }: { view: WorkspaceView; pl
           />
         )}
         {interactive && <p className="figure-hint">Drag to move. Scroll to zoom. Click a curve to read a point.</p>}
-        {math3d && <p className="figure-hint">Scroll zooms inside the box. xy, xz, and yz look straight at those planes.</p>}
+        {math3d && <p className="figure-hint">{view.sliders.length > 0 ? 'Drag a slider to move that variable. Scroll zooms inside the box.' : 'Scroll zooms inside the box. xy, xz, and yz look straight at those planes.'}</p>}
       </div>
       {view.duration > 0 && <PlaybackBar playback={playback} disabled={false} />}
     </section>
   )
+}
+
+function formatSlider(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  const abs = Math.abs(value)
+  if (abs >= 1000 || (abs > 0 && abs < 0.01)) return value.toExponential(2)
+  return String(Number(value.toFixed(abs >= 10 ? 2 : 3)))
 }
 
 function resampleSurface(surface: FigureSurface, window: PlotWindow): FigureSurface {

@@ -1519,6 +1519,29 @@ textarea.num-input {
   color: var(--text-faint);
   pointer-events: none;
 }
+.figure-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.figure-slider {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 4.5em;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.figure-slider input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.figure-slider-value {
+  text-align: right;
+}
 .workspace-scene3d-canvas {
   position: absolute;
   inset: 0;

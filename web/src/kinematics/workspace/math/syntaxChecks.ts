@@ -181,6 +181,7 @@ export function runSyntaxChecks(): string[] {
     }
   }
   const graphSettings = 'Color, PlotPoints, MaxRecursion, Exclusions, Dashed, Domain'
+  const graphAndParameter = `${graphSettings}, Parameter`
   const states: [string, string][] = [
     ['Solve(|', 'params Solve 0'],
     ['Solve(x^2 = 4, |', 'params Solve 1'],
@@ -198,15 +199,16 @@ export function runSyntaxChecks(): string[] {
     ['Expand(Derivative(x^3, x){Order: 2})|', 'none'],
     ['Solve(x^2 = 4, x){|}', 'options Solve [Domain]'],
     ['Solve([a = 1, b = 2], [sigma, theta]){|}', 'options Solve [Domain, sigma, theta]'],
-    ['Plot3D(x*y, x, y){|}', `options Plot3D [x, y, ${graphSettings}]`],
-    ['f(x) = sin(x){|}', `options Graph [x, ${graphSettings}, Shade]`],
-    ['y = x^2{|}', `options Graph [${graphSettings}, Shade]`],
-    ['z = x*y{|}', `options Graph [${graphSettings}]`],
-    ['g(x, y) = x*y{|}', `options Graph [x, y, ${graphSettings}]`],
-    ['r(t) = [cos(t), sin(t)]{|}', `options Graph [t, ${graphSettings}]`],
-    ['Plot([cos(t), sin(t)], t){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed]`],
-    ['Plot(x^2, x){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade]`],
-    ['Derivative(x^3, x){|}', `options Derivative [Order, At, ${graphSettings}, Shade]`],
+    ['Plot3D(x*y, x, y){|}', `options Plot3D [x, y, ${graphAndParameter}]`],
+    ['f(x) = sin(x){|}', `options Graph [x, ${graphSettings}, Shade, Parameter]`],
+    ['y = x^2{|}', `options Graph [${graphSettings}, Shade, Parameter]`],
+    ['z = x*y{|}', `options Graph [${graphAndParameter}]`],
+    ['g(x, y) = x*y{|}', `options Graph [x, y, ${graphAndParameter}]`],
+    ['f(x, y, t) = x + y + t{|}', `options Graph [x, y, t, ${graphAndParameter}]`],
+    ['r(t) = [cos(t), sin(t)]{|}', `options Graph [t, ${graphAndParameter}]`],
+    ['Plot([cos(t), sin(t)], t){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed, Parameter]`],
+    ['Plot(x^2, x){|}', `options Plot [Domain, Color, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade, Parameter]`],
+    ['Derivative(x^3, x){|}', `options Derivative [Order, At, ${graphSettings}, Shade, Parameter]`],
     ['Integrate(x^2, x){|}', 'options Integrate [Bounds]'],
     ['Expand(Derivative(x^3, x){|})', 'options Derivative [Order, At]'],
     ['2*Derivative(x^3, x){|}', 'options Derivative [Order, At]'],
@@ -233,7 +235,7 @@ export function runSyntaxChecks(): string[] {
     const value = source.slice(0, start) + inserted + source.slice(end)
     return `${value.slice(0, start + caret)}|${value.slice(start + caret)}`
   }
-  expect(labels('Plot(sin(x), x){Color: red, |}') === 'Domain, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade', `used settings drop out of the list: ${labels('Plot(sin(x), x){Color: red, |}')}`)
+  expect(labels('Plot(sin(x), x){Color: red, |}') === 'Domain, PlotPoints, MaxRecursion, Exclusions, Dashed, Shade, Parameter', `used settings drop out of the list: ${labels('Plot(sin(x), x){Color: red, |}')}`)
   expect(labels('Plot(sin(x), x){Dashed, Pl|}') === 'PlotPoints', `typed letters filter the settings: ${labels('Plot(sin(x), x){Dashed, Pl|}')}`)
   expect(labels('Plot(sin(x), x){Color: re|}') === 'red', `typed letters filter the colors: ${labels('Plot(sin(x), x){Color: re|}')}`)
   expect(labels('2si|').startsWith('sin(') && labels('Solve(sig|') === '' && labels('so|lve') === '', 'names complete after two letters, and not in the middle of a word')

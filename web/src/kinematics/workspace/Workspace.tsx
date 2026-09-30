@@ -204,15 +204,27 @@ export function Workspace() {
   const [decimal, setDecimal] = useState<Record<string, boolean>>({})
   const [planes, setPlanes] = useState<Record<string, boolean>>({})
   const [angles, setAngles] = useState<AngleMode>('rad')
+  const [sliderValues, setSliderValues] = useState<Record<string, number>>({})
   const anglesRef = useRef(angles)
   anglesRef.current = angles
-  const compiled = useMemo(() => compileDocument(doc, angles), [doc, angles])
+  const compiled = useMemo(() => compileDocument(doc, angles, sliderValues), [doc, angles, sliderValues])
   const playback = usePlayback(Math.max(compiled.duration, 0.001))
 
   useEffect(() => {
     playback.reset(Math.max(compiled.duration, 0.001))
     // Restart whenever the statements change, including a new example with the same duration.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc])
+
+  useEffect(() => {
+    const ids = new Set(doc.statements.map((statement) => statement.id))
+    setSliderValues((current) => {
+      const alive = Object.keys(current).filter((id) => ids.has(id))
+      if (alive.length === Object.keys(current).length) return current
+      const next: Record<string, number> = {}
+      for (const id of alive) next[id] = current[id] ?? 0
+      return next
+    })
   }, [doc])
 
   const time = compiled.duration > 0 ? Math.min(playback.time, compiled.duration) : 0
@@ -338,7 +350,7 @@ export function Workspace() {
           }}
         />
       </section>
-      <FigurePane view={view} playback={playback} planes={planes} />
+      <FigurePane view={view} playback={playback} planes={planes} onSlider={(id, value) => setSliderValues((current) => ({ ...current, [id]: value }))} />
     </div>
   )
 }

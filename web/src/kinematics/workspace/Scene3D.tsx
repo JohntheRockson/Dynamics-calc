@@ -30,21 +30,50 @@ const GRAPH_CLIP = [
 
 export type GraphView = 'iso' | 'xy' | 'xz' | 'yz'
 
-function snapCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls, view: GraphView, target: THREE.Vector3, distance: number): void {
-  controls.target.copy(target)
-  if (view === 'xy') {
-    camera.up.set(0, 0, 1)
-    camera.position.set(target.x, target.y + distance, target.z)
-  } else if (view === 'xz') {
-    camera.up.set(0, 1, 0)
-    camera.position.set(target.x, target.y, target.z + distance)
-  } else if (view === 'yz') {
-    camera.up.set(0, 1, 0)
-    camera.position.set(target.x + distance, target.y, target.z)
-  } else {
-    camera.up.set(0, 1, 0)
-    camera.position.set(target.x + distance * 0.72, target.y + distance * 0.48, target.z + distance * 0.5)
+const FOV = 42
+/** Share of the figure pane the plot cube should cover, leaving a margin for axis labels. */
+const BOX_FILL = 0.92
+
+function viewPose(view: GraphView): { back: THREE.Vector3; up: THREE.Vector3 } {
+  if (view === 'xy') return { back: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1) }
+  if (view === 'xz') return { back: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) }
+  if (view === 'yz') return { back: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0) }
+  return { back: new THREE.Vector3(0.72, 0.48, 0.5).normalize(), up: new THREE.Vector3(0, 1, 0) }
+}
+
+function frameCorners(frame: PlotFrame): THREE.Vector3[] {
+  const { xMin, xMax, yMin, yMax, zMin, zMax } = frame.box
+  const corners: THREE.Vector3[] = []
+  for (const x of [xMin, xMax]) {
+    for (const y of [yMin, yMax]) {
+      for (const z of [zMin, zMax]) corners.push(place(frame, x, y, z))
+    }
   }
+  return corners
+}
+
+/** Distance that keeps every corner of the plot box inside the pane. */
+function distanceForBox(corners: THREE.Vector3[], center: THREE.Vector3, back: THREE.Vector3, upHint: THREE.Vector3, aspect: number): number {
+  const right = new THREE.Vector3().crossVectors(upHint, back)
+  if (right.lengthSq() < 1e-8) right.set(1, 0, 0)
+  right.normalize()
+  const up = new THREE.Vector3().crossVectors(back, right).normalize()
+  const tanV = Math.tan((FOV * Math.PI) / 360)
+  const tanH = tanV * Math.max(aspect, 0.25)
+  let distance = 0.5
+  for (const corner of corners) {
+    const rel = corner.clone().sub(center)
+    const depth = rel.dot(back)
+    distance = Math.max(distance, depth + Math.abs(rel.dot(right)) / (tanH * BOX_FILL), depth + Math.abs(rel.dot(up)) / (tanV * BOX_FILL))
+  }
+  return distance
+}
+
+function snapCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls, view: GraphView, target: THREE.Vector3, distance: number): void {
+  const { back, up } = viewPose(view)
+  controls.target.copy(target)
+  camera.up.copy(up)
+  camera.position.copy(target).addScaledVector(back, distance)
   camera.lookAt(target)
   controls.update()
 }
@@ -373,6 +402,7 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
   const fittedRef = useRef('')
+  const lockedFitRef = useRef<{ corners: THREE.Vector3[]; center: THREE.Vector3 } | null>(null)
   const labelsRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<PlotFrame>({ equal: true, box: emptyBox() })
   const spanRef = useRef(10)
@@ -395,7 +425,7 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
     if (!mount) return
 
     const scene = new THREE.Scene()
-    const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 5000)
+    const camera = new THREE.PerspectiveCamera(FOV, 1, 0.05, 5000)
     camera.position.set(8, 6, 8)
     cameraRef.current = camera
 
@@ -470,6 +500,15 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
       camera.aspect = width / height
       camera.updateProjectionMatrix()
       renderer.setSize(width, height)
+      const fit = lockedFitRef.current
+      const orbit = controlsRef.current
+      if (!fit || !orbit) return
+      const back = camera.position.clone().sub(orbit.target)
+      if (back.lengthSq() < 1e-6) return
+      back.normalize()
+      const distance = distanceForBox(fit.corners, orbit.target, back, camera.up, width / height)
+      camera.position.copy(orbit.target).addScaledVector(back, distance)
+      orbit.update()
     }
     resize()
     const observer = new ResizeObserver(resize)
@@ -497,6 +536,7 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
       cameraRef.current = null
       controlsRef.current = null
       fittedRef.current = ''
+      lockedFitRef.current = null
     }
   }, [])
 
@@ -586,12 +626,17 @@ export function Scene3D({ bodies, surfaces = [], fitKey, domainSpan, domainZ, on
       controls.maxDistance = span * 12
     }
     const stamp = `${fitKey}:${graphView}`
+    const mid = toWorld(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2)
+    const center = locked ? new THREE.Vector3(0, 0, 0) : new THREE.Vector3(mid.x, mid.y, mid.z)
+    const corners = frameCorners(frame)
+    // Scroll changes the math inside the cube. The camera stays framed on the cube, sized to the pane.
+    lockedFitRef.current = locked ? { corners, center } : null
     if (fittedRef.current !== stamp) {
       fittedRef.current = stamp
-      const mid = toWorld(frame, (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2, (box.zMin + box.zMax) / 2)
-      const center = locked ? new THREE.Vector3(0, 0, 0) : new THREE.Vector3(mid.x, mid.y, mid.z)
-      // Keep the whole origin-centered cube on screen. Zoom changes the math inside it.
-      const distance = locked ? 48 : span * 1.9
+      const mount = mountRef.current
+      const aspect = mount && mount.clientHeight > 0 ? mount.clientWidth / mount.clientHeight : Math.max(camera.aspect, 0.25)
+      const { back, up } = viewPose(graphView)
+      const distance = locked ? distanceForBox(corners, center, back, up, aspect) : span * 1.9
       snapCamera(camera, controls, graphView, center, distance)
       camera.near = Math.max(span / 800, 0.01)
       camera.far = span * 80

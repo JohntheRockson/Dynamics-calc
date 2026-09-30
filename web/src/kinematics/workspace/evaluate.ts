@@ -90,6 +90,15 @@ export interface WorkspaceView {
   blocks: BlockModel[]
   bodies: FigureBody[]
   surfaces: FigureSurface[]
+  sliders: FigureSlider[]
+}
+
+export interface FigureSlider {
+  statementId: string
+  name: string
+  min: number
+  max: number
+  value: number
 }
 
 interface Sample {
@@ -149,6 +158,7 @@ export interface CompiledDocument {
   dimension: 2 | 3
   duration: number
   fitKey: string
+  sliders: FigureSlider[]
 }
 
 const SCALAR_KEYS = ['speed', 'at', 'an', 'rho', 'omega', 'alpha'] as const
@@ -333,7 +343,7 @@ function circleGuide(motion: Motion): { x: number; y: number; z: number }[] | nu
   return pts
 }
 
-export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad'): CompiledDocument {
+export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad', sliders: Record<string, number> = {}): CompiledDocument {
   const points: PointModel[] = []
   for (const statement of doc.statements) {
     if (statement.type !== 'point') continue
@@ -363,7 +373,7 @@ export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad
   const relatives: RelativeModel[] = doc.statements
     .filter((s): s is Extract<Statement, { type: 'relative' }> => s.type === 'relative')
     .map((s) => ({ id: s.id, from: s.from, to: s.to }))
-  const math = compileMath(doc.statements, angles)
+  const math = compileMath(doc.statements, angles, sliders)
   const mathRows: RowModel[] = math.rows.map((row) => ({
     id: row.statementId,
     statementId: row.statementId,
@@ -385,9 +395,17 @@ export function compileDocument(doc: WorkspaceDocument, angles: AngleMode = 'rad
   const duration = points.reduce((max, point) => Math.max(max, point.simulate ?? 0), 0)
   const surfaceVisible = math.plots.some((plot) => plot.kind === 'surface' && plot.visible && surfaceHasFiniteZ(plot))
   const spaceCurve = math.plots.some((plot) => plot.kind === 'curve' && plot.visible && plot.path.some((point) => Number.isFinite(point.z) && Math.abs(point.z) > 1e-6))
-  const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible || spaceCurve ? 3 : 2
+  const slice = math.plots.some((plot) => plot.kind === 'curve' && plot.visible && plot.slice)
+  const dimension: 2 | 3 = points.some((point) => point.hasZ) || surfaceVisible || spaceCurve || slice ? 3 : 2
   const fitKey = `${angles}:${dimension}:${duration}:${points.map((point) => point.name).join(',')}:${relatives.map((rel) => rel.id).join(',')}:${math.plots.map((plot) => `${plot.statementId}${plot.visible ? '1' : '0'}`).join(',')}`
-  return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey }
+  const figureSliders: FigureSlider[] = []
+  const seenSliders = new Set<string>()
+  for (const plot of math.plots) {
+    if (!plot.visible || !plot.slider || seenSliders.has(plot.statementId)) continue
+    seenSliders.add(plot.statementId)
+    figureSliders.push({ statementId: plot.statementId, ...plot.slider })
+  }
+  return { points, relatives, mathRows, plots: math.plots, dimension, duration, fitKey, sliders: figureSliders }
 }
 
 function knownsAt(point: PointModel, time: number): Partial<Record<Qty, number>> {
@@ -622,11 +640,11 @@ export function viewAt(compiled: CompiledDocument, time: number): WorkspaceView 
     surfaces.push({ label: plot.label, color: plot.color, grid: plot.grid, sheets: plot.sheets, sample: plot.sample })
   }
 
-  return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces }
+  return { dimension: compiled.dimension, duration: compiled.duration, fitKey: compiled.fitKey, blocks, bodies, surfaces, sliders: compiled.sliders }
 }
 
-export function evaluateDocument(doc: WorkspaceDocument, time = 0, angles: AngleMode = 'rad'): WorkspaceView {
-  return viewAt(compileDocument(doc, angles), time)
+export function evaluateDocument(doc: WorkspaceDocument, time = 0, angles: AngleMode = 'rad', sliders: Record<string, number> = {}): WorkspaceView {
+  return viewAt(compileDocument(doc, angles, sliders), time)
 }
 
 export function runWorkspaceChecks(): string[] {
