@@ -647,6 +647,15 @@ export function runMathChecks(): string[] {
   expect(unknownParam.bodies.length === 0 && unknownParam.surfaces.length === 0 && unknownText.includes('not one of'), `an unknown parameter is refused: ${unknownText}`)
   const twice = validateMath('f(x, y) = x + y{Parameter: y, Parameter: x}')
   expect(twice === 'Parameter is set twice.', `Parameter twice: ${twice}`)
+  const hyper = evaluateDocument(appendMath(emptyDocument(), 'x^2/4 + y^2/9 - z^2/16 = 1'))
+  const hyperSheets = hyper.surfaces[0]?.sheets ?? []
+  const hyperPoint = hyperSheets.flat().flat().find((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z) && Math.abs(point.z) > 1)
+  const residual = hyperPoint ? hyperPoint.x ** 2 / 4 + hyperPoint.y ** 2 / 9 - hyperPoint.z ** 2 / 16 : Number.NaN
+  expect(hyper.dimension === 3 && hyper.surfaces.length === 1 && hyperSheets.length === 2, `an equation in x, y, and z is a surface: ${hyper.dimension}, sheets ${hyperSheets.length}`)
+  expect(Boolean(hyperPoint) && Math.abs(residual - 1) < 1e-6, `the hyperboloid satisfies the equation: ${residual}`)
+  const plottedHyper = evaluateDocument(appendMath(emptyDocument(), 'Plot3D(x^2/4 + y^2/9 - z^2/16 - 1, x, y, z)'))
+  expect(plottedHyper.dimension === 3 && plottedHyper.surfaces.length === 1, 'Plot3D accepts the third variable for an implicit surface')
+
   const coneSlider = evaluateDocument(appendMath(emptyDocument(), 'z^2 = x + t{Parameter: t}'))
   expect(coneSlider.sliders.length === 1 && coneSlider.bodies.filter((body) => body.role === 'plot').length === 2, `one slider for both branches: ${coneSlider.sliders.length}`)
 

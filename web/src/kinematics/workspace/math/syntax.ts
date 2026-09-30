@@ -45,7 +45,7 @@ export type MathInput =
   | { kind: 'solve'; equation: Expr; variable: string | null; domains: SearchDomain[]; raw: string; plot: PlotOptions; silent: boolean }
   | { kind: 'system'; equations: Expr[]; variables: string[] | null; domains: SearchDomain[]; raw: string; plot: PlotOptions; silent: boolean }
   | { kind: 'plot'; expr: Expr; variable: string | null; raw: string; plot: PlotOptions; silent: boolean }
-  | { kind: 'plot3d'; expr: Expr; variables: [string, string] | null; raw: string; plot: PlotOptions; silent: boolean }
+  | { kind: 'plot3d'; expr: Expr; variables: [string, string] | null; axes?: [string, string, string]; raw: string; plot: PlotOptions; silent: boolean }
   | { kind: 'expr'; expr: Expr; raw: string; plot: PlotOptions; silent: boolean }
 
 interface LineRead {
@@ -636,6 +636,11 @@ function bindPlot(call: CallExpr, line: LineRead, plot: PlotOptions, context: Bi
     return { kind: 'plot', expr: args[0] as Expr, variable, raw: line.raw, plot, silent: line.silent }
   }
   if (args.length === 1) return { kind: 'plot3d', expr: args[0] as Expr, variables: null, raw: line.raw, plot, silent: line.silent }
+  if (args.length === 4) {
+    const names = args.slice(1).map((arg) => (isVariable(arg) ? arg.name : null))
+    if (names.some((name) => name === null) || new Set(names).size !== 3) throw new MathError('Plot3D of an implicit surface needs three different variables, for example Plot3D(x^2/4 + y^2/9 - z^2/16 - 1, x, y, z).')
+    return { kind: 'plot3d', expr: args[0] as Expr, variables: null, axes: names as [string, string, string], raw: line.raw, plot, silent: line.silent }
+  }
   checkArity(spec, args)
   const x = requireVariable(spec, args, 1)
   const y = requireVariable(spec, args, 2)

@@ -1,5 +1,6 @@
 // Evaluate math statements in document order. A one-input function is a curve.
-// y = and x = are curves too. z = and z^2 = are surfaces. Other results stay in the console.
+// y = and x = are curves too. z = and z^2 = are surfaces. An equation in x, y, and z
+// is an implicit surface. Other results stay in the console.
 
 import type { Statement } from '../document'
 import { containsCas, evaluateCas, rewriteAll, solveSingle, solveSystem, type CasCurve, type CasVisual } from './cas'
@@ -16,6 +17,7 @@ import {
   numericConstant,
   numericValue,
   plain,
+  polynomialCoefficients,
   present,
   tex,
   texName,
@@ -353,6 +355,17 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
           : null
       if (equation) {
         const dep = dependentAxis(equation.left)
+        if (!dep && parsed.kind === 'expr') {
+          const drawn = implicitSurfacePlot(statement.id, equation.left, equation.right, env, angles, parsed.plot, colorFor(parsed.plot), statement.visible)
+          if (drawn) {
+            const formulaText = `${plain(equation.left)} = ${plain(equation.right)}`
+            const formulaTex = echo ?? `${tex(equation.left)} = ${tex(equation.right)}`
+            const warn = curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : 'No real points of that surface on [-10, 10].')
+            plots.push(drawn)
+            rows.push(rowBase(statement.id, statement.input, 'Surface', formulaText, formulaTex, 'surface', statement.visible, warn))
+            continue
+          }
+        }
         const held = dep ? holdParameter(parsed.plot, statement.id, env, angles, sliders) : null
         if (held && dep) {
           const color = colorFor(parsed.plot)
@@ -539,6 +552,22 @@ export function compileMath(statements: Statement[], angles: AngleMode = 'rad', 
         continue
       }
       if (parsed.kind === 'plot3d') {
+        const implicitInput = parsed.expr.type === 'eq' || parsed.axes ? parsed.expr : null
+        const implicitSymbols = freeSymbols(parsed.expr.type === 'eq' ? { type: 'add', args: [parsed.expr.left, parsed.expr.right] } : parsed.expr).filter((name) => name !== INFER_NAME)
+        const implicitReady = Boolean(implicitInput) || (!parsed.variables && implicitSymbols.length === 3 && implicitSymbols.every((name) => AXES.has(name)))
+        if (implicitReady) {
+          const drawn = implicitSurfacePlot(statement.id, parsed.expr.type === 'eq' ? parsed.expr.left : parsed.expr, parsed.expr.type === 'eq' ? parsed.expr.right : { type: 'rat', n: 0n, d: 1n }, env, angles, parsed.plot, colorFor(parsed.plot), statement.visible)
+          const title = parsed.expr.type === 'eq' ? `${plain(parsed.expr.left)} = ${plain(parsed.expr.right)}` : `Plot3D(${plain(parsed.expr)})`
+          const formula = echo ?? tex(parsed.expr)
+          if (!drawn) {
+            rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'surface', statement.visible, 'An implicit surface needs x, y, and z, with one of them only up to the second power, for example x^2/4 + y^2/9 - z^2/16 = 1.'))
+            continue
+          }
+          const warn = curveOnlyShade(parsed.plot) ?? (hasGeometry(drawn) ? null : 'No real points of that surface on [-10, 10].')
+          plots.push(drawn)
+          rows.push(rowBase(statement.id, statement.input, 'Plot3D', title, formula, 'surface', statement.visible, warn))
+          continue
+        }
         const parameter = parsed.plot.parameter
         const prepared = applyEnv(parsed.expr, env, 0)
         const symbols = freeSymbols(prepared).filter((name) => name !== INFER_NAME)
@@ -1107,6 +1136,83 @@ function sampleParametric(components: Expr[], param: string, env: MathEnv, windo
     path.push({ x: values[0] ?? Number.NaN, y: values[1] ?? Number.NaN, z: values[2] ?? 0 })
   }
   return path
+}
+
+type AxisName = 'x' | 'y' | 'z'
+
+/** An equation in x, y, and z, solved for the axis that appears as a line or a quadratic. */
+function implicitSurfacePlot(id: string, left: Expr, right: Expr, env: MathEnv, angles: AngleMode, plot: PlotOptions, color: string, visible: boolean): SurfacePlot | null {
+  const zero = normalize({ type: 'add', args: [applyEnv(left, env, 0), { type: 'mul', args: [{ type: 'rat', n: -1n, d: 1n }, applyEnv(right, env, 0)] }] })
+  const symbols = freeSymbols(zero)
+  if (symbols.length !== 3 || !symbols.every((name) => AXES.has(name))) return null
+  const solved = (['z', 'y', 'x'] as AxisName[]).map((axis) => ({ axis, coeffs: polynomialCoefficients(zero, axis) })).find((item) => {
+    const degree = coefficientDegree(item.coeffs)
+    return degree === 1 || degree === 2
+  })
+  if (!solved || !solved.coeffs) return null
+  const axis = solved.axis
+  const coeffs = solved.coeffs
+  const free = (['x', 'y', 'z'] as AxisName[]).filter((name) => name !== axis) as [AxisName, AxisName]
+  const sample = (window: PlotWindow) => sampleImplicit(coeffs, axis, free, env, window, angles, plot)
+  const sheets = sample(DEFAULT_WINDOW)
+  return { kind: 'surface', statementId: id, label: axis, color, visible, sheets, grid: sheets[0] ?? [], sample }
+}
+
+function coefficientDegree(coeffs: Expr[] | null): number {
+  if (!coeffs) return -1
+  let degree = coeffs.length - 1
+  while (degree > 0 && plain(coeffs[degree] ?? { type: 'rat', n: 0n, d: 1n }) === '0') degree -= 1
+  return degree
+}
+
+function axisSpan(name: AxisName, window: PlotWindow): [number, number] {
+  if (name === 'x') return [window.xMin, window.xMax]
+  if (name === 'y') return [window.yMin, window.yMax]
+  const half = Math.max(Math.abs(window.xMin), Math.abs(window.xMax), Math.abs(window.yMin), Math.abs(window.yMax))
+  return [-half, half]
+}
+
+function sampleImplicit(coeffs: Expr[], axis: AxisName, free: [AxisName, AxisName], env: MathEnv, window: PlotWindow, angles: AngleMode, plot: PlotOptions): { x: number; y: number; z: number }[][][] {
+  const count = Math.max(24, Math.min(80, Math.round(plot.points / 2)))
+  const [uName, vName] = free
+  const [uMin, uMax] = axisSpan(uName, window)
+  const [vMin, vMax] = axisSpan(vName, window)
+  const sheets: { x: number; y: number; z: number }[][][] = [[], []]
+  const degree = coefficientDegree(coeffs)
+  for (let row = 0; row < count; row += 1) {
+    const v = sampleAt(row, count, vMin, vMax)
+    const lines: { x: number; y: number; z: number }[][] = degree === 1 ? [[]] : [[], []]
+    for (let col = 0; col < count; col += 1) {
+      const u = sampleAt(col, count, uMin, uMax)
+      const local = bind(bind(env, uName, u), vName, v)
+      const numbers = coeffs.map((coeff) => numericValue(coeff, local, angles) ?? Number.NaN)
+      const roots = polynomialRoots(numbers[2] ?? 0, numbers[1] ?? 0, numbers[0] ?? 0).sort((a, b) => b - a)
+      lines.forEach((line, index) => {
+        const root = roots[index]
+        if (root === undefined || !Number.isFinite(root) || Math.abs(root) > CLIP) {
+          line.push({ x: Number.NaN, y: Number.NaN, z: Number.NaN })
+          return
+        }
+        const point = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+        point[uName] = u
+        point[vName] = v
+        point[axis] = root
+        line.push(point)
+      })
+    }
+    lines.forEach((line, index) => sheets[index]?.push(line))
+  }
+  return sheets.filter((sheet) => sheet.some((row) => row.some((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z))))
+}
+
+function polynomialRoots(a: number, b: number, c: number): number[] {
+  if (![a, b, c].every((value) => Number.isFinite(value))) return []
+  if (Math.abs(a) <= 1e-12) return Math.abs(b) <= 1e-12 ? [] : [-c / b]
+  const disc = b * b - 4 * a * c
+  if (disc < -1e-9) return []
+  if (disc <= 1e-9) return [-b / (2 * a)]
+  const root = Math.sqrt(disc)
+  return [(-b + root) / (2 * a), (-b - root) / (2 * a)]
 }
 
 function sampleSurface(body: Expr, names: [string, string], env: MathEnv, window: PlotWindow, angles: AngleMode, plot: PlotOptions, clips: { x: Interval | null; y: Interval | null }): { x: number; y: number; z: number }[][] {
