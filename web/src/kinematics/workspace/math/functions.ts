@@ -328,7 +328,7 @@ export const FUNCTIONS: FunctionSpec[] = [
     kernel: 'plot3d',
     aliases: [],
     section: 'graphs',
-    summary: 'Draw a surface z = f(x, y). Name a range for either input to trim it',
+    summary: 'Draw a surface z = f(x, y), or an equation in x, y, and z',
     params: [
       expression('The height of the surface', 'x^2 - y^2'),
       one('x', 'variable', 'a first variable', 'The first input', 'x'),
@@ -337,7 +337,7 @@ export const FUNCTIONS: FunctionSpec[] = [
     options: [],
     draws: true,
     variableRanges: true,
-    examples: ['Plot3D(x^2 - y^2, x, y)', 'Plot3D(sin(x)*cos(y), x, y){x: -pi..pi, y: -pi..pi, Color: teal}', 'Plot3D(sin(x)*cos(y) + t, x, y){Parameter: t}'],
+    examples: ['Plot3D(x^2 - y^2, x, y)', 'Plot3D(sin(x)*cos(y), x, y){x: -pi..pi, y: -pi..pi, Color: teal}', 'Plot3D(sin(x)*cos(y) + t, x, y){Parameter: t}', 'x^2/4 + y^2/9 - z^2/16 = 1'],
   },
   {
     name: 'Dot',
@@ -568,6 +568,7 @@ export const MATH_FORMS: FormSpec[] = [
   { section: 'graphs', title: 'Parametric curve', summary: 'A vector function of one input', example: 'r(t) = [cos(t), sin(t)]{t: 0..2*pi}' },
   { section: 'graphs', title: 'Space curve', summary: 'Three components draw in 3D', example: 'r(t) = [cos(t), sin(t), t/4]{t: 0..4*pi}' },
   { section: 'graphs', title: 'Surface', summary: 'A two-input function, or z = , draws a surface', example: 'g(x, y) = x^2 - y^2' },
+  { section: 'graphs', title: 'Implicit surface', summary: 'An equation in x, y, and z draws that surface', example: 'x^2/4 + y^2/9 - z^2/16 = 1' },
   { section: 'graphs', title: 'Slider', summary: 'Hold one variable on a slider. A slice of f(x, y) is a line in the 3D box; f(x, y, t) stays a surface', example: 'f(x, y) = sin(x) + y{Parameter: y = -2..2}' },
   { section: 'linear', title: 'Vector', summary: 'Square brackets, drawn as an arrow', example: '[1, 2, 3]' },
   { section: 'linear', title: 'Matrix', summary: 'Rows of the same length', example: '[[1, 2], [3, 4]]' },
