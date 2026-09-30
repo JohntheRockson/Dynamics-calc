@@ -12,7 +12,7 @@ export function FigurePane({ view, playback, planes, onSlider }: { view: Workspa
   const stageRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState(480)
   const [box, setBox] = useState<PlotWindow>(DEFAULT_WINDOW)
-  const [span, setSpan] = useState(10)
+  const [spanOverride, setSpanOverride] = useState<number | null>(null)
   const [graphView, setGraphView] = useState<GraphView>('iso')
   const [lift, setLift] = useState(false)
   const [plotterEpoch, setPlotterEpoch] = useState(0)
@@ -32,7 +32,7 @@ export function FigurePane({ view, playback, planes, onSlider }: { view: Workspa
 
   const resetView = useCallback(() => {
     setBox(DEFAULT_WINDOW)
-    setSpan(10)
+    setSpanOverride(null)
     setGraphView('iso')
   }, [])
   const motion = view.bodies.some((body) => body.role !== 'plot')
@@ -43,6 +43,8 @@ export function FigurePane({ view, playback, planes, onSlider }: { view: Workspa
   const show3d = forced3d || anyPlane || (lift && hasCurve)
   const interactive = !motion && hasCurve && !show3d
   const math3d = show3d && !motion
+  const fittedSpan = math3d ? vectorReach(view) : null
+  const span = spanOverride ?? fittedSpan ?? 10
   const windowFor = math3d ? { xMin: -span, xMax: span, yMin: -span, yMax: span } : show3d ? DEFAULT_WINDOW : box
   const baseZ = useMemo(() => {
     let reach = 10
@@ -145,7 +147,7 @@ export function FigurePane({ view, playback, planes, onSlider }: { view: Workspa
             fitKey={`${view.fitKey}:${planeSurfaces.map((surface) => surface.label).join(',')}`}
             domainSpan={math3d ? span : undefined}
             domainZ={math3d ? baseZ * (span / 10) : undefined}
-            onDomainSpan={math3d ? setSpan : undefined}
+            onDomainSpan={math3d ? setSpanOverride : undefined}
             graphView={graphView}
           />
         ) : (
@@ -167,6 +169,19 @@ export function FigurePane({ view, playback, planes, onSlider }: { view: Workspa
       {view.duration > 0 && <PlaybackBar playback={playback} disabled={false} />}
     </section>
   )
+}
+
+function vectorReach(view: WorkspaceView): number | null {
+  if (view.surfaces.length > 0 || !view.bodies.some((body) => body.role === 'plot' && body.arrow)) return null
+  let reach = 0
+  for (const body of view.bodies) {
+    if (body.role !== 'plot') continue
+    for (const point of body.path) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue
+      reach = Math.max(reach, Math.abs(point.x), Math.abs(point.y), Math.abs(point.z))
+    }
+  }
+  return reach > 0 ? reach * 1.25 : null
 }
 
 function formatSlider(value: number): string {
